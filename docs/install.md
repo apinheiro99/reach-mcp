@@ -23,6 +23,8 @@ npm run build
 
 ## Configuration
 
+See [development-environment.md](development-environment.md) for the toolchain, source tree layout and runtime paths.
+
 Copy `.env.example` and `config/example.json` to a private location outside the repository and fill in real values there. Never commit real values. See [configuration.md](configuration.md).
 
 ## Not covered yet
