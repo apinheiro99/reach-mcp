@@ -11,6 +11,8 @@ stages:
   - tag
 
 default:
+  tags:
+    - scope
   before_script:
     - npm ci
 
