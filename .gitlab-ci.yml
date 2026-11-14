@@ -1,0 +1,35 @@
+# Baseline CI: every job is blocking. Validation logic lives in package.json scripts.
+image: node:24-bookworm-slim
+
+stages:
+  - validate
+
+default:
+  before_script:
+    - npm ci
+
+public-surface:
+  stage: validate
+  script:
+    - npm run check:public-surface
+
+lint:
+  stage: validate
+  script:
+    - npm run lint
+
+typecheck:
+  stage: validate
+  script:
+    - npm run typecheck
+
+test:
+  stage: validate
+  script:
+    - npm test
+
+build-package:
+  stage: validate
+  script:
+    - npm run build
+    - npm run check:package
