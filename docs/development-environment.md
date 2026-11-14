@@ -38,8 +38,8 @@ Development services run under a dedicated non-root user, read their environment
 
 ## CI and result tags
 
-Every branch push runs five blocking validation jobs (Public Release Check, Lint, Type Check, Automated Tests, Build Package). A final `tag` stage then records the aggregate result as a Git tag on the tested commit, `vYYYY.MM.NNNNNN` for green and `vYYYY.MM.NNNNNN-fail` for red. The tag grammar and the tag push belong to GitGate `ci-tag`; this repository only invokes it, and a tag pipeline never reruns validation or tagging.
+Every branch push runs five blocking validation jobs (Public Release Check, Lint, Type Check, Automated Tests, Build Package). A final `tag` stage then records the aggregate result as a Git tag on the tested commit, `vYYYY.MM.NNNNNN` for green and `vYYYY.MM.NNNNNN-fail` for red. The tagging belongs to REACH itself: the `tag` stage computes the tag from the pipeline and pushes it with plain `git`, so the repository validates, tags and builds without any external project, and it can be moved to another GitLab unchanged. A tag pipeline never reruns validation or tagging.
 
-The tag stage needs two GitLab-side settings and no stored credential: the project setting that allows `CI_JOB_TOKEN` to push to the repository, and the project variable `GITGATE_PROJECT_PATH` naming where the GitGate CLI is fetched from at run time.
+The tag stage needs one GitLab-side setting and no stored credential: the project setting that allows `CI_JOB_TOKEN` to push to this same repository.
 
 Scope boundary: this is CI only. Production deployment (CD) is a later, separate piece of work.

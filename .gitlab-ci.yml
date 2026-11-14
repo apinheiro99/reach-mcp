@@ -1,9 +1,7 @@
 # Baseline CI: every validation job is blocking. Validation logic lives in package.json scripts.
-# The tag stage only records the aggregate result through GitGate `ci-tag` (sole owner of the tag contract
-# vYYYY.MM.NNNNNN[-fail]); nothing here builds or pushes a tag itself.
-# Requirements configured in GitLab, never in this repository:
-#   - project setting ci_push_repository_for_job_token_allowed (tag push with CI_JOB_TOKEN)
-#   - project variable GITGATE_PROJECT_PATH (where to fetch the GitGate CLI)
+# The tag stage is self-contained and records the aggregate result directly in this repository.
+# Tag contract: vYYYY.MM.NNNNNN[-fail].
+# GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
 image: node:24-bookworm
 
 stages:
@@ -65,9 +63,9 @@ default:
     # The server certificate may be internal: git trusts only what the runner hands it (verification is never turned off).
     - 'if [ -n "$CI_SERVER_TLS_CA_FILE" ]; then export GIT_SSL_CAINFO="$CI_SERVER_TLS_CA_FILE"; fi'
     - git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
-    # Fetch the canonical GitGate CLI at runtime with the job token; it is never vendored here.
-    - git clone --quiet --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${GITGATE_PROJECT_PATH}.git" "$CI_BUILDS_DIR/gitgate"
-    - node "$CI_BUILDS_DIR/gitgate/bin/gitgate.ts" ci-tag --result "$CI_TAG_RESULT" --sha "$CI_COMMIT_SHA" --pipeline-iid "$CI_PIPELINE_IID" --pipeline-created-at "$CI_PIPELINE_CREATED_AT"
+    - 'TAG="v$(date -u -d "$CI_PIPELINE_CREATED_AT" +%Y.%m).$(printf "%06d" "$CI_PIPELINE_IID")"; if [ "$CI_TAG_RESULT" = "fail" ]; then TAG="${TAG}-fail"; fi; export TAG'
+    - git tag "$TAG" "$CI_COMMIT_SHA"
+    - git push origin "refs/tags/$TAG"
 
 ci-tag-green:
   extends: .ci-tag

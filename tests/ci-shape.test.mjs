@@ -44,21 +44,28 @@ test("red tag job: branch push on_failure only, tag pipeline never", () => {
   assert.match(b, /\$CI_PIPELINE_SOURCE == "push"'\n\s+when: on_failure/);
 });
 
-test("tag jobs invoke the canonical GitGate ci-tag with exact provider metadata", () => {
+test("tagging is self-contained: PASS and FAIL grammar, tag on the tested SHA", () => {
   const b = block(".ci-tag");
-  assert.match(b, /gitgate\.ts" ci-tag --result "\$CI_TAG_RESULT" --sha "\$CI_COMMIT_SHA" --pipeline-iid "\$CI_PIPELINE_IID" --pipeline-created-at "\$CI_PIPELINE_CREATED_AT"/);
+  // PASS vYYYY.MM.NNNNNN, FAIL the same identity plus -fail
+  assert.match(b, /TAG="v\$\(date -u -d "\$CI_PIPELINE_CREATED_AT" \+%Y\.%m\)\.\$\(printf "%06d" "\$CI_PIPELINE_IID"\)"/);
+  assert.match(b, /if \[ "\$CI_TAG_RESULT" = "fail" \]; then TAG="\$\{TAG\}-fail"; fi/);
+  assert.match(b, /git tag "\$TAG" "\$CI_COMMIT_SHA"/);
+  assert.match(b, /git push origin "refs\/tags\/\$TAG"/);
   assert.match(b, /GIT_DEPTH: "0"/);
   assert.match(b, /before_script: \[\]/, "tag jobs must not run npm ci");
-  assert.match(b, /image: node:24-bookworm\n/, "tag jobs need git, absent from the slim image");
+  assert.match(b, /image: node:24-bookworm\n/, "tag jobs need git, absent from slim images");
 });
 
-test("GitGate is fetched at runtime from a GitLab variable with the job token only", () => {
+test("tag push uses only CI_JOB_TOKEN against the same repository", () => {
   const b = block(".ci-tag");
-  assert.match(b, /git clone .*\$\{CI_JOB_TOKEN\}@\$\{CI_SERVER_HOST\}\/\$\{GITGATE_PROJECT_PATH\}\.git/);
+  assert.match(b, /git remote set-url origin /);
+  assert.match(b, /\$\{CI_JOB_TOKEN\}@\$\{CI_SERVER_HOST\}\/\$\{CI_PROJECT_PATH\}\.git/);
   assert.doesNotMatch(ci, /echo[^\n]*CI_JOB_TOKEN/);
   assert.doesNotMatch(ci, /sslVerify|GIT_SSL_NO_VERIFY|--insecure/i);
 });
 
-test("tag logic is not duplicated in REACH CI", () => {
-  assert.doesNotMatch(ci, /git tag\b|git push\b|date \+|v\$\{?YEAR/);
+test("CI has no dependency on any external project", () => {
+  assert.doesNotMatch(ci, /git clone/);
+  assert.doesNotMatch(ci, /GITGATE_PROJECT_PATH/);
+  assert.doesNotMatch(ci, /gitgate/i);
 });
