@@ -15,7 +15,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --test \"tests/*.test.mjs\"",
+    "check:public-surface": "node scripts/public-surface.mjs",
+    "check:package": "node scripts/check-package-contents.mjs",
+    "validate": "npm run check:public-surface && npm run lint && npm run typecheck && npm test && npm run build && npm run check:package"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
