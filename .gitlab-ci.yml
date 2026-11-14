@@ -4,7 +4,7 @@
 # Requirements configured in GitLab, never in this repository:
 #   - project setting ci_push_repository_for_job_token_allowed (tag push with CI_JOB_TOKEN)
 #   - project variable GITGATE_PROJECT_PATH (where to fetch the GitGate CLI)
-image: node:24-bookworm-slim
+image: node:24-bookworm
 
 stages:
   - validate
@@ -23,31 +23,31 @@ default:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push"'
 
-public-surface:
+"Public Release Check":
   extends: .branch-push-only
   stage: validate
   script:
     - npm run check:public-surface
 
-lint:
+"Lint":
   extends: .branch-push-only
   stage: validate
   script:
     - npm run lint
 
-typecheck:
+"Type Check":
   extends: .branch-push-only
   stage: validate
   script:
     - npm run typecheck
 
-test:
+"Automated Tests":
   extends: .branch-push-only
   stage: validate
   script:
     - npm test
 
-build-package:
+"Build Package":
   extends: .branch-push-only
   stage: validate
   script:

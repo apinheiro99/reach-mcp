@@ -7,7 +7,7 @@ const ci = readFileSync(new URL("../.gitlab-ci.yml", import.meta.url), "utf8");
 // Top-level block of a job/template: from its header line to the next top-level key.
 function block(name) {
   const lines = ci.split("\n");
-  const start = lines.findIndex((l) => l === `${name}:`);
+  const start = lines.findIndex((l) => l === `${name}:` || l === `"${name}":`);
   assert.ok(start >= 0, `missing block ${name}`);
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
@@ -16,7 +16,7 @@ function block(name) {
   return lines.slice(start, end).join("\n");
 }
 
-const validationJobs = ["public-surface", "lint", "typecheck", "test", "build-package"];
+const validationJobs = ["Public Release Check", "Lint", "Type Check", "Automated Tests", "Build Package"];
 
 test("validation jobs are blocking and never run for tag pipelines", () => {
   const rules = block(".branch-push-only");
