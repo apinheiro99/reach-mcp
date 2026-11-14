@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+*.log
+logs/
+*.tsbuildinfo
+
+# Real configuration and secrets never belong here (see reach-private)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+.DS_Store
+.idea/
+.vscode/
