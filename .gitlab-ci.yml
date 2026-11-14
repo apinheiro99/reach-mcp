@@ -1,35 +1,88 @@
-# Baseline CI: every job is blocking. Validation logic lives in package.json scripts.
+# Baseline CI: every validation job is blocking. Validation logic lives in package.json scripts.
+# The tag stage only records the aggregate result through GitGate `ci-tag` (sole owner of the tag contract
+# vYYYY.MM.NNNNNN[-fail]); nothing here builds or pushes a tag itself.
+# Requirements configured in GitLab, never in this repository:
+#   - project setting ci_push_repository_for_job_token_allowed (tag push with CI_JOB_TOKEN)
+#   - project variable GITGATE_PROJECT_PATH (where to fetch the GitGate CLI)
 image: node:24-bookworm-slim
 
 stages:
   - validate
+  - tag
 
 default:
   before_script:
     - npm ci
 
+.branch-push-only:
+  rules:
+    # Result tags are pushed by the tag stage: a tag pipeline never runs validation or tagging again.
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+
 public-surface:
+  extends: .branch-push-only
   stage: validate
   script:
     - npm run check:public-surface
 
 lint:
+  extends: .branch-push-only
   stage: validate
   script:
     - npm run lint
 
 typecheck:
+  extends: .branch-push-only
   stage: validate
   script:
     - npm run typecheck
 
 test:
+  extends: .branch-push-only
   stage: validate
   script:
     - npm test
 
 build-package:
+  extends: .branch-push-only
   stage: validate
   script:
     - npm run build
     - npm run check:package
+
+.ci-tag:
+  stage: tag
+  image: node:24-bookworm
+  interruptible: false
+  variables:
+    GIT_DEPTH: "0"
+  before_script: []
+  script:
+    # The server certificate may be internal: git trusts only what the runner hands it (verification is never turned off).
+    - 'if [ -n "$CI_SERVER_TLS_CA_FILE" ]; then export GIT_SSL_CAINFO="$CI_SERVER_TLS_CA_FILE"; fi'
+    - git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+    # Fetch the canonical GitGate CLI at runtime with the job token; it is never vendored here.
+    - git clone --quiet --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${GITGATE_PROJECT_PATH}.git" "$CI_BUILDS_DIR/gitgate"
+    - node "$CI_BUILDS_DIR/gitgate/bin/gitgate.ts" ci-tag --result "$CI_TAG_RESULT" --sha "$CI_COMMIT_SHA" --pipeline-iid "$CI_PIPELINE_IID" --pipeline-created-at "$CI_PIPELINE_CREATED_AT"
+
+ci-tag-green:
+  extends: .ci-tag
+  variables:
+    CI_TAG_RESULT: pass
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: on_success
+
+ci-tag-red:
+  extends: .ci-tag
+  variables:
+    CI_TAG_RESULT: fail
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: on_failure

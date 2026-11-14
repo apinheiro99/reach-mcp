@@ -35,3 +35,11 @@ Configuration and environment files hold real values and stay outside the reposi
 ## Services
 
 Development services run under a dedicated non-root user, read their environment from `/etc/reach-mcp/`, and write only to the state and log directories above. The Server and Client runtimes and their unit files arrive in later versions.
+
+## CI and result tags
+
+Every branch push runs five blocking validation jobs (public surface, lint, typecheck, test, package build). A final `tag` stage then records the aggregate result as a Git tag on the tested commit, `vYYYY.MM.NNNNNN` for green and `vYYYY.MM.NNNNNN-fail` for red. The tag grammar and the tag push belong to GitGate `ci-tag`; this repository only invokes it, and a tag pipeline never reruns validation or tagging.
+
+The tag stage needs two GitLab-side settings and no stored credential: the project setting that allows `CI_JOB_TOKEN` to push to the repository, and the project variable `GITGATE_PROJECT_PATH` naming where the GitGate CLI is fetched from at run time.
+
+Scope boundary: this is CI only. Production deployment (CD) is a later, separate piece of work.
