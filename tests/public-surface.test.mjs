@@ -30,3 +30,16 @@ test("flags forbidden paths but allows .env.example", () => {
   assert.equal(scanFiles(["server.pem"], read)[0].category, "forbidden-path");
   assert.deepEqual(scanFiles([".env.example"], read), []);
 });
+
+test("detects a quoted JSON secret key and accepts its empty placeholder", () => {
+  const hit = scanText(fake('"REACH_CLIENT_SECRET": "', 'a1b2c3d4e5f6a7b8"'));
+  assert.equal(hit[0].category, "secret-assignment");
+  assert.deepEqual(scanText('"REACH_CLIENT_SECRET": ""'), []);
+});
+
+test("scans package-lock.json like any other tracked file", () => {
+  const lock = fake('{"resolved": "https://registry.example/x", "note": "host truenas', '.lab"}');
+  const findings = scanFiles(["package-lock.json"], () => lock);
+  assert.equal(findings[0].category, "private-hostname");
+  assert.equal(findings[0].file, "package-lock.json");
+});

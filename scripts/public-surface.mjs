@@ -7,7 +7,7 @@ import process from "node:process";
 const FORBIDDEN_PATHS = [/(^|\/)\.env(\.(?!example$)[^/]*)?$/, /\.(pem|key|p12|pfx|crt|cer)$/i];
 
 // The checker and its test necessarily contain the patterns they detect.
-const PATTERN_FILES = new Set(["package-lock.json", "scripts/public-surface.mjs", "tests/public-surface.test.mjs"]);
+const PATTERN_FILES = new Set(["scripts/public-surface.mjs", "tests/public-surface.test.mjs"]);
 
 const CONTENT_RULES = [
   { category: "private-key-block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
@@ -15,7 +15,7 @@ const CONTENT_RULES = [
   { category: "token-format", re: /\b(ghp_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b/ },
   {
     category: "secret-assignment",
-    re: /\b[A-Z0-9_]*(SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY)[A-Z0-9_]*\s*[=:]\s*["']?(?!\s|["']|<|\$|\.\.\.|changeme|example|placeholder)[^\s"']{8,}/i,
+    re: /\b[A-Z0-9_]*(SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY)[A-Z0-9_]*["']?\s*[=:]\s*["']?(?!\s|["']|<|\$|\.\.\.|changeme|example|placeholder)[^\s"']{8,}/i,
   },
   { category: "private-network-address", re: /(?<![\d.])(192\.168|10\.\d{1,3}|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}(?![\d.])/ },
   { category: "private-hostname", re: /\b[a-z0-9-]+\.(lab|internal|local)\b|\btruenas\b/i },
