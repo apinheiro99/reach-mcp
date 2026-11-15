@@ -1,40 +1,54 @@
 # Development environment
 
-Public, reusable prerequisites for developing REACH. Host-specific provisioning and recovery material is kept outside this repository.
+How to develop REACH and how to rebuild the development environment. The architecture itself lives in [architecture.md](architecture.md); this page does not restate it. Configuration is in [configuration.md](configuration.md), installation in [install.md](install.md).
 
 ## Toolchain
 
-- Debian 13 (trixie) with systemd. Other Linux distributions work for building, but the documented development target is Debian.
 - Node.js 24 or newer. The product `engines` contract is `>=24`; a development environment may pin a newer concrete version (the reference environment uses Node 26) as long as it satisfies it. `corepack` is not shipped with Node 26 and is not required.
+- TypeScript, ESM.
 - npm (bundled with Node.js), Git, OpenSSH client, `curl`, `ca-certificates`.
-- `nfs-common` only if the source tree is mounted over NFS.
+- Debian 13 (trixie) with systemd is the documented development target. Other Linux distributions work for building.
 
 ## Source tree layout
 
-Mirror the GitLab group structure under one root:
+One umbrella root, mirroring the GitLab group structure:
 
 ```
 /reach/
   reach-mcp/       product source (this repository)
-  reach-private/   private recovery and configuration (never published)
+  reach-private/   private configuration and recovery (never published)
 ```
 
-Keep one persistent copy of the source. Do not duplicate the repositories inside a container's local filesystem.
+Keep one persistent copy of the source and do not duplicate the repositories inside a container's local filesystem. `reach-mcp-client/` exists only on machines where the Client is installed; see [architecture.md](architecture.md) (runtime layout).
 
-## Runtime paths
+The target source layout is `packages/server`, `packages/client` and `packages/shared` in this single repository. The repository still holds the bootstrap tree (`src/`) until the implementation tasks introduce the packages.
 
-| Path | Contents |
-|---|---|
-| `/etc/reach-mcp/reach.yaml`, `reach.env` | Server configuration and environment |
-| `/etc/reach-mcp/client.yaml`, `client.env` | Client configuration and environment |
-| `/var/lib/reach-mcp/` | Runtime state |
-| `/var/log/reach-mcp/` | Logs |
+## Current DEV environment
 
-Configuration and environment files hold real values and stay outside the repository; `.env.example` and `config/example.json` only show names and shapes. See [configuration.md](configuration.md).
+The reference environment is a Debian 13 Incus container managed with systemd:
 
-## Services
+- `/reach` is an Incus disk device backed by shared storage on the host, so the source survives rebuilding the container.
+- Node comes from the pinned official tarball with its checksum verified, linked into `/usr/local/bin` (`node`, `npm`, `npx`) so non-login shells such as SSH commands and scheduled jobs find it.
+- A systemd timer fetches the CI result tags (below) into the shared clones every 60 seconds. It fetches tags only: never branches, never the work tree.
 
-Development services run under a dedicated non-root user, read their environment from `/etc/reach-mcp/`, and write only to the state and log directories above. The Server and Client runtimes and their unit files arrive in later versions.
+Production Server deployment is containerized and is a separate concern, see [install.md](install.md).
+
+## Rebuilding the environment
+
+The container definition (Incus profile plus cloud-init) is private provisioning material kept in `reach-private/provisioning/incus/`. To rebuild:
+
+1. Create the container from that definition and start it; cloud-init does the rest, including the Node toolchain.
+2. Wait for `cloud-init status` to report `done`.
+3. Verify: `env -i PATH=/usr/local/bin:/usr/bin:/bin node -v` prints the pinned version, and `/reach` shows `reach-mcp` and `reach-private`.
+4. Install dependencies and validate from the source tree:
+
+```sh
+cd /reach/reach-mcp
+npm install
+npm run validate
+```
+
+Recreating a container changes its SSH host key; remove the old entry from `known_hosts` before reconnecting.
 
 ## CI and result tags
 
@@ -42,4 +56,4 @@ Every branch push runs five blocking validation jobs (Public Release Check, Lint
 
 The tag stage needs one GitLab-side setting and no stored credential: the project setting that allows `CI_JOB_TOKEN` to push to this same repository.
 
-Scope boundary: this is CI only. Production deployment (CD) is a later, separate piece of work.
+This is CI only. Production deployment (CD) is separate, later work.
