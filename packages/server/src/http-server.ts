@@ -17,13 +17,25 @@ const pathOf = (req: IncomingMessage): string => new URL(req.url ?? "/", "http:/
 
 export function createHttpServer(deps: HttpServerDeps): Server {
   const clients = new WebSocketServer({ noServer: true });
-  const server = createServer((req, res) => {
+  // Repeated Authorization lines are joined into one value, which the auth owner's exact parser then refuses.
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
     if (pathOf(req) !== MCP_PATH) {
       res.writeHead(404).end();
       return;
     }
     const bearer = bearerCredential(req.headers);
-    if (bearer === null || !sameDigest(hashCredential(bearer), deps.config.mcpBearerDigest())) {
+    if (bearer === null) {
+      res.writeHead(401, { "WWW-Authenticate": "Bearer" }).end();
+      return;
+    }
+    let expected: string;
+    try {
+      expected = deps.config.mcpBearerDigest();
+    } catch {
+      res.writeHead(503).end(); // no active configuration: closed, and the SDK is never created
+      return;
+    }
+    if (!sameDigest(hashCredential(bearer), expected)) {
       res.writeHead(401, { "WWW-Authenticate": "Bearer" }).end();
       return;
     }
