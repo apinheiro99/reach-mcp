@@ -115,8 +115,8 @@ export class FilesystemWriter {
       writeFileSync(tmp, data, { flag: "wx" });
       // The overwrite guard runs here, immediately before the replacing rename, on the file as it is NOW.
       if (guardOverwrite && existing) {
-        const current = statSync(abs).size <= this.limits.maxWriteFileBytes ? readFileSync(abs) : null;
-        const reason = current ? this.protectedReason(current) : "the existing file is too large to be checked";
+        const current = statSync(abs).size <= this.limits.maxFileBytes ? readFileSync(abs) : null;
+        const reason = current ? this.protectedReason(current) : "the existing file is larger than a normal read allows";
         if (reason) throw new FsError("DENIED", `full overwrite refused: ${reason}; use a targeted edit`);
       }
       renameSync(tmp, abs);

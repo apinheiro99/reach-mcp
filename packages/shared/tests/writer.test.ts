@@ -222,3 +222,17 @@ test("the writer rejects a project root that does not contain the write root", (
   const { area, outside } = setup();
   assert.throws(() => new FilesystemWriter({ root: area, projectRoot: outside }));
 });
+
+test("overwrite guard follows the READ limit, not the write limit, for the existing file", () => {
+  const { area, writer } = setup({ maxFileBytes: 100, maxWriteFileBytes: 1000 });
+  const big = "x".repeat(500);
+  writeFileSync(path.join(area, "big.txt"), big);
+  assert.equal(code(() => writer.write("big.txt", "replacement")), "DENIED", "a normal read would refuse this file, so the overwrite is refused");
+  assert.equal(read(area, "big.txt"), big, "original bytes intact");
+  assert.deepEqual(readdirSync(area).filter((n) => n.endsWith(".tmp")), []);
+  assert.equal(writer.write("new-big.txt", "y".repeat(500)).bytes, 500, "a new file of that size is still allowed by the write limit");
+  writeFileSync(path.join(area, "small.txt"), "z".repeat(100));
+  writer.write("small.txt", "changed");
+  assert.equal(read(area, "small.txt"), "changed", "an existing file within the read limit still overwrites");
+  assert.equal(writer.edit("big.txt", "xxx", "yyy", true).replacements, 166, "targeted edit keeps using the write bound");
+});
