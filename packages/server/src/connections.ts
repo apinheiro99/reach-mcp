@@ -57,6 +57,10 @@ export class ClientConnectionRegistry {
   readonly #now: () => number;
   readonly #schedule: Schedule;
   #cancelSweep: (() => void) | null = null;
+  /** Outcomes of requests that were sent; the only request counters in the Server. */
+  #completed = 0;
+  #failed = 0;
+  #timedOut = 0;
 
   constructor(options: ConnectionOptions) {
     this.#options = options;
@@ -125,6 +129,11 @@ export class ClientConnectionRegistry {
     for (const clientId of this.#sessions.keys()) this.syncPolicy(clientId);
   }
 
+  /** Small request totals for the health snapshot. */
+  requestCounters(): { in_flight: number; completed: number; failed: number; timed_out: number } {
+    return { in_flight: this.#pending.size, completed: this.#completed, failed: this.#failed, timed_out: this.#timedOut };
+  }
+
   status(): SessionStatus[] {
     return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
   }
@@ -152,12 +161,19 @@ export class ClientConnectionRegistry {
     if (!envelope.ok) return refuse(envelope.error);
     const mutation = isMutation(operation.op);
     return new Promise<ResponseEnvelope>((resolve) => {
+      let timedOut = false;
       const settle = (response: ResponseEnvelope) => {
         if (!this.#pending.delete(requestId)) return;
         cancel();
+        if (timedOut) this.#timedOut++;
+        else if (response.ok) this.#completed++;
+        else this.#failed++;
         resolve(response);
       };
-      const cancel = this.#schedule(() => settle(failureResponse(requestId, this.#lost(mutation, "request timed out"))), this.#requestTimeoutMs);
+      const cancel = this.#schedule(() => {
+        timedOut = true;
+        settle(failureResponse(requestId, this.#lost(mutation, "request timed out")));
+      }, this.#requestTimeoutMs);
       this.#pending.set(requestId, { session, mutation, settle, cancel });
       if (!this.#send(session, envelope.data)) settle(failureResponse(requestId, this.#lost(mutation, "client is offline")));
     });

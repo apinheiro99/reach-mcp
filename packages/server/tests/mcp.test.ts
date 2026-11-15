@@ -72,6 +72,8 @@ test("each operation tool routes the exact shared Operation to the addressed Cli
   const r = (await pending).body.result;
   assert.equal(r.isError, undefined);
   assert.equal(r.structuredContent.op, "fs_read");
+  assert.equal(r._meta.request_id, request.request_id, "the id the Client saw on the wire");
+  assert.equal(JSON.parse(r.content[0].text).request_id, request.request_id);
   assert.equal(r.structuredContent.content, "2: x");
   await rt.close();
 });
@@ -112,6 +114,9 @@ test("concurrent calls are independent: out-of-order answers reach the right cal
   const [ra, rb] = await Promise.all([a, b]);
   assert.equal(ra.body.result.structuredContent.path, "a");
   assert.equal(rb.body.result.structuredContent.path, "b");
+  assert.equal(ra.body.result._meta.request_id, forPath("a").request_id);
+  assert.equal(rb.body.result._meta.request_id, forPath("b").request_id);
+  assert.notEqual(ra.body.result._meta.request_id, rb.body.result._meta.request_id);
   await rt.close();
 });
 
@@ -125,6 +130,8 @@ test("a mutation tool that times out on the Client is reported as indeterminate,
   const r = (await pending).body.result;
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /MUTATION_INDETERMINATE/);
+  assert.equal(r._meta.request_id, requestsOf(client)[0]!.request_id, "a failure carries the id that was sent");
+  assert.match(r.content[0].text, new RegExp(`request_id ${requestsOf(client)[0]!.request_id}`));
   await rt.close();
 });
 

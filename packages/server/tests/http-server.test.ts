@@ -34,7 +34,7 @@ test("/mcp: missing or wrong bearer is a 401 before the SDK; the right one reach
 
 test("only /mcp and the Client upgrade path exist: every other path is a 404, authenticated or not", async () => {
   const rt = await startRuntime();
-  for (const p of ["/", "/health", "/admin", "/mcp/extra", "/client", "/ui", "/.well-known/oauth-authorization-server"]) {
+  for (const p of ["/", "/healthz", "/admin", "/mcp/extra", "/client", "/ui", "/.well-known/oauth-authorization-server"]) {
     for (const headers of [{}, { Authorization: `Bearer ${MCP_MARKER}` }]) {
       const res = await fetch(`http://127.0.0.1:${rt.port}${p}`, { headers });
       assert.equal(res.status, 404, p);

@@ -46,10 +46,11 @@ const ANNOTATIONS: Record<Op, typeof READ | { readOnlyHint: false; destructiveHi
 
 const TARGET = { client_id: ClientId, project_id: ProjectId };
 
-/** The compact MCP outcome of a routed request. */
+/** The compact MCP outcome of a routed request; the request_id is the one that travelled on the wire. */
 function toToolResult(response: ResponseEnvelope): CallToolResult {
-  if (response.ok) return { content: [{ type: "text", text: JSON.stringify(response.result) }], structuredContent: response.result };
-  return { isError: true, content: [{ type: "text", text: `${response.error.code}: ${response.error.message}` }] };
+  const request_id = response.request_id;
+  if (response.ok) return { content: [{ type: "text", text: JSON.stringify({ request_id, result: response.result }) }], structuredContent: response.result, _meta: { request_id } };
+  return { isError: true, content: [{ type: "text", text: `${response.error.code}: ${response.error.message} (request_id ${request_id})` }], _meta: { request_id } };
 }
 
 /** A fresh server per HTTP request: the stateless transport keeps no MCP session. */
