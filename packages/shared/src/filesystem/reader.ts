@@ -54,6 +54,10 @@ export class FilesystemReader {
     this.policy = buildPathPolicy(options.extraDenyGlobs);
   }
 
+  get fsLimits(): FsLimits {
+    return this.limits;
+  }
+
   get denyGlobs(): string[] {
     return this.policy.denyGlobs;
   }

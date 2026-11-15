@@ -23,6 +23,8 @@ export type FsLimits = {
   maxImagePixels: number;
   /** Largest file the controlled writer stores or edits. */
   maxWriteFileBytes: number;
+  /** Most pages one PDF read returns. */
+  maxPdfPages: number;
   /** Whole calendar days a trash folder is kept before the writer purges it. */
   trashRetentionDays: number;
 };
@@ -45,6 +47,7 @@ export const DEFAULT_FS_LIMITS: FsLimits = {
   maxImageHeight: 16384,
   maxImagePixels: 64_000_000,
   maxWriteFileBytes: 20_000_000,
+  maxPdfPages: 20,
   trashRetentionDays: 15,
 };
 
