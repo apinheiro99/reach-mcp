@@ -31,6 +31,22 @@ The reference environment is a Debian 13 Incus container managed with systemd:
 - Node comes from the pinned official tarball with its checksum verified, linked into `/usr/local/bin` (`node`, `npm`, `npx`) so non-login shells such as SSH commands and scheduled jobs find it.
 - A systemd timer fetches the CI result tags (below) into the shared clones every 60 seconds. It fetches tags only: never branches, never the work tree.
 
+## DEV runtime (Server and Client)
+
+The two processes run straight from the source tree with Node's built-in TypeScript support, so there is no second build output: `packages/server/src/main.ts` and `packages/client/src/main.ts`. Each is composed in one place (`runtime.ts` next to it); systemd owns restarts and nothing in REACH supervises itself.
+
+Server flags (runtime values only; projects, Clients, credentials, policies and logging settings come from the config file): `--config <file>`, `--proposal <file>`, `--logs <dir>`, `--data-port <n>`, `--admin-port <n>`, `--build <id>`, and optionally `--data-host` and `--admin-host` (both default to `127.0.0.1`) and `--repository-commit <id>`. Unknown, duplicate, missing or valueless flags and invalid ports exit with code 2 and a usage line that never repeats a value. With no usable config file the Server starts in setup mode: the admin listener works, and `/mcp`, `/health` and `/client` stay refused until the first configuration is saved there. The process prints one line, `reach-server listening data=<port> admin=<port>`, and stops cleanly on SIGTERM or SIGINT.
+
+Client flags: `--bootstrap <file>`, `--build <id>` and the explicit DEV switch `--allow-insecure-ws`, which only enables the bootstrap option that accepts a `ws://` endpoint. The endpoint, Client id, credential and root anchors exist only in the bootstrap file (mode 0600), never on the command line or in a unit. The Client and the Server must be given the same `--build` value; that equality is the whole compatibility rule for now.
+
+DEV units live in `deploy/dev/` (`reach-mcp-server.service`, `reach-mcp-client.service`). They run as the container's unprivileged `dev` user with `Restart=on-failure`, bind both Server listeners to loopback (the admin page has no login of its own, so reach it through an SSH tunnel) and use only these paths:
+
+- `/reach/reach-private/server/config.json` and `/reach/reach-private/server/proposal.json`: the Server configuration and the pending proposal;
+- `/reach/reach-private/client/bootstrap.env`: the Client bootstrap;
+- `/reach/reach-mcp/logs`: `reach.log` and `audit.log` with their rotated files (the directory is created on first write and is git-ignored).
+
+To install on the DEV container, with the repository built and `npm install` done: copy both unit files to `/etc/systemd/system/`, run `systemctl daemon-reload`, then `systemctl enable --now reach-mcp-server`. Open the admin page through the tunnel, create the first configuration and a Client credential, write that Client's bootstrap file under `reach-private`, then `systemctl enable --now reach-mcp-client`. Production Docker, tunnel and CD are separate work.
+
 Production Server deployment is containerized and is a separate concern, see [install.md](install.md).
 
 ## Rebuilding the environment
