@@ -10,7 +10,7 @@ test("detects a private key block without echoing it", () => {
 });
 
 test("detects a real-looking secret assignment", () => {
-  const hits = scanText(fake("REACH_CLIENT_SECRET=", "a1b2c3d4e5f6a7b8"));
+  const hits = scanText(fake("SERVICE_SECRET=", "a1b2c3d4e5f6a7b8"));
   assert.equal(hits[0].category, "secret-assignment");
 });
 
@@ -20,21 +20,21 @@ test("detects private network and hostnames", () => {
 });
 
 test("accepts documented placeholders", () => {
-  const placeholders = ["REACH_CLIENT_SECRET=", "REACH_SERVER_URL=", "REACH_SERVER_PORT=0", "REACH_ROLE=server"].join("\n");
+  const placeholders = ["SERVICE_SECRET=", "SERVICE_TOKEN=changeme", "SERVICE_URL=", "SERVICE_PORT=0"].join("\n");
   assert.deepEqual(scanText(placeholders), []);
 });
 
-test("flags forbidden paths but allows .env.example", () => {
+test("flags forbidden paths", () => {
   const read = () => "";
   assert.equal(scanFiles([".env"], read)[0].category, "forbidden-path");
+  assert.equal(scanFiles(["config/.env.production"], read)[0].category, "forbidden-path");
   assert.equal(scanFiles(["server.pem"], read)[0].category, "forbidden-path");
-  assert.deepEqual(scanFiles([".env.example"], read), []);
 });
 
 test("detects a quoted JSON secret key and accepts its empty placeholder", () => {
-  const hit = scanText(fake('"REACH_CLIENT_SECRET": "', 'a1b2c3d4e5f6a7b8"'));
+  const hit = scanText(fake('"SERVICE_SECRET": "', 'a1b2c3d4e5f6a7b8"'));
   assert.equal(hit[0].category, "secret-assignment");
-  assert.deepEqual(scanText('"REACH_CLIENT_SECRET": ""'), []);
+  assert.deepEqual(scanText('"SERVICE_SECRET": ""'), []);
 });
 
 test("scans package-lock.json like any other tracked file", () => {
