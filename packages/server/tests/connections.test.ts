@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
@@ -11,6 +11,7 @@ const OTHER = "cred-marker-" + "Rt19Xe";
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-conn-"));
 const configFile = path.join(dir, "config.json");
 const baseConfig = () => ({
+  mcp_bearer_sha256: hashCredential("mcp-marker-" + "Kd40"),
   clients: [
     { client_id: "laptop", enabled: true, credential_sha256: hashCredential(MARKER), projects: [{ project_id: "web", physical_root: "/srv/web", mode: "read_write" }, { project_id: "api", physical_root: "/srv/api", mode: "read_only" }] },
     { client_id: "desktop", enabled: true, credential_sha256: hashCredential(OTHER), projects: [{ project_id: "web", physical_root: "/home/u/web", mode: "read_only" }] },
@@ -293,11 +294,11 @@ test("the pending bound and duplicate in-flight ids are refused deterministicall
   await t.done();
 });
 
-test("an invalid option is refused, and the server package keeps to routing: no filesystem, MCP, UI or database", () => {
+test("an invalid option is refused, and the connection registry keeps to routing: no filesystem, MCP, UI or database", () => {
   const config = new ServerConfigStore(configFile);
   assert.throws(() => new ClientConnectionRegistry({ config, serverBuild: "s", isBuildCompatible: () => true, staleMs: 0 }), RangeError);
   const src = path.join(import.meta.dirname, "..", "src");
-  const text = readdirSync(src).filter((f) => f !== "config.ts").map((f) => readFileSync(path.join(src, f), "utf8")).join("\n");
+  const text = readFileSync(path.join(src, "connections.ts"), "utf8");
   assert.ok(!/node:fs|node:child_process|sqlite|express|fastify|\/mcp\b/.test(text));
   assert.ok(!/credential_sha256|console\./.test(text));
 });

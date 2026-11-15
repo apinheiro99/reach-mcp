@@ -62,9 +62,11 @@ The current Dev MCP is a working prototype and provides proven implementation pa
 - Node.js >= 24;
 - TypeScript;
 - ESM;
-- `@modelcontextprotocol/sdk`;
+- `@modelcontextprotocol/server` and its Node adapter `@modelcontextprotocol/node` (MCP SDK v2);
 - Zod;
 - ChatGPT-facing MCP using Streamable HTTP.
+
+Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. Every other path answers 404; there is no admin UI, health route or MCP session state on this listener. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
 
 REACH should remain Node/TypeScript unless a concrete blocker appears.
 

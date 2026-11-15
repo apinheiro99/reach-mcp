@@ -2,7 +2,7 @@
 // routing. Registered Clients, projects and credential digests come only from the config store; nothing a Client says
 // about itself adds a project. One Map holds sessions, one Map holds requests awaiting a response, and a response can
 // only settle the request that was sent on the same session. A request is never sent twice.
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import WebSocket from "ws";
 import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
@@ -18,7 +18,8 @@ import {
   type Operation,
   type WireError,
 } from "../../shared/src/wire/index.ts";
-import { hashCredential, type ServerConfigStore } from "./config.ts";
+import { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
+import type { ServerConfigStore } from "./config.ts";
 
 export type ConnectionOptions = {
   config: ServerConfigStore;
@@ -44,16 +45,6 @@ type Pending = { session: Session; mutation: boolean; settle: (response: Respons
 export type SessionStatus = { client_id: string; client_build: string; connected_since: number; last_seen: number; online: boolean };
 
 const AUTH_FAILED: WireError = { code: "AUTH_FAILED", message: "authentication failed" };
-
-/** The single bearer credential of an Authorization header, or null when absent, malformed or repeated. */
-function bearerCredential(headers: IncomingHttpHeaders): string | null {
-  const value = headers.authorization;
-  const match = typeof value === "string" ? /^Bearer (\S+)$/.exec(value) : null;
-  return match?.[1] ?? null;
-}
-
-/** Constant-time comparison of two SHA-256 hex digests. */
-const sameDigest = (a: string, b: string): boolean => a.length === 64 && b.length === 64 && timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
 
 export class ClientConnectionRegistry {
   readonly #sessions = new Map<string, Session>();
