@@ -21,6 +21,10 @@ export type FsLimits = {
   maxImageWidth: number;
   maxImageHeight: number;
   maxImagePixels: number;
+  /** Largest file the controlled writer stores or edits. */
+  maxWriteFileBytes: number;
+  /** Whole calendar days a trash folder is kept before the writer purges it. */
+  trashRetentionDays: number;
 };
 
 export const DEFAULT_FS_LIMITS: FsLimits = {
@@ -40,6 +44,8 @@ export const DEFAULT_FS_LIMITS: FsLimits = {
   maxImageWidth: 8192,
   maxImageHeight: 16384,
   maxImagePixels: 64_000_000,
+  maxWriteFileBytes: 20_000_000,
+  trashRetentionDays: 15,
 };
 
 export function resolveLimits(overrides: Partial<FsLimits> = {}): FsLimits {

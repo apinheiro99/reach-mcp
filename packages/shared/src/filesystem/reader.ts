@@ -36,7 +36,7 @@ export type SearchOptions = {
 export type SearchMatch = { pattern: string; path: string; line: number; text: string; before?: string[]; after?: string[] };
 export type Entry = { path: string; type: "file" | "dir"; size?: number };
 
-const BINARY_SNIFF_BYTES = 8192;
+export const BINARY_SNIFF_BYTES = 8192;
 /** A quantified group that is itself quantified, e.g. (a+)+ or (.*)*: the classic catastrophic-backtracking shape. */
 const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)[+*{]/;
 
