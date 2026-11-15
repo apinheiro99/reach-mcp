@@ -45,9 +45,8 @@ export function createHttpServer(deps: HttpServerDeps): Server {
     const pathname = pathOf(req);
     if (pathname === HEALTH_PATH) {
       if (req.method !== "GET") return void res.writeHead(405).end();
-      // Without an active configuration there is nothing to protect and nothing to authenticate against: report that.
-      const auth = deps.config.isActive() ? authenticate(deps.config, req) : 200;
-      if (auth === 401) return void res.writeHead(401, { "WWW-Authenticate": "Bearer" }).end();
+      const auth = deps.config.isActive() ? authenticate(deps.config, req) : 503; // fail closed: no health body without an active configuration
+      if (auth !== 200) return void res.writeHead(auth, auth === 401 ? { "WWW-Authenticate": "Bearer" } : {}).end();
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(buildHealth({ ...deps, uptimeSeconds })));
       return;
     }

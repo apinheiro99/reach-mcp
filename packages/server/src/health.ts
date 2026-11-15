@@ -18,13 +18,20 @@ export type HealthSnapshot = {
   repository_commit: string | null;
   uptime_seconds: number;
   config_active: boolean;
-  clients: { connected: number; sessions: { client_id: string; client_build: string; online: boolean; last_seen: number }[] };
+  clients: { connected: number; sessions: { client_id: string; enabled: boolean; online: boolean; client_build: string | null; last_seen: number | null }[] };
   requests: { in_flight: number; completed: number; failed: number; timed_out: number };
 };
 
 export function buildHealth({ config, connections, serverBuild, repositoryCommit, uptimeSeconds }: HealthDeps): HealthSnapshot {
   const active = config.isActive();
-  const sessions = connections.status().map((s) => ({ client_id: s.client_id, client_build: s.client_build, online: s.online, last_seen: s.last_seen }));
+  // Every configured Client, joined with its live session (if any); only these fields, never projects or roots.
+  const live = new Map(connections.status().map((s) => [s.client_id, s]));
+  const sessions = active
+    ? config.snapshot().clients.map(({ client_id, enabled }) => {
+        const s = live.get(client_id);
+        return { client_id, enabled, online: s?.online ?? false, client_build: s?.client_build ?? null, last_seen: s?.last_seen ?? null };
+      })
+    : [];
   return {
     status: active ? "ok" : "degraded",
     server_build: serverBuild,

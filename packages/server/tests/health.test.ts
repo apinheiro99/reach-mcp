@@ -21,8 +21,12 @@ test("active runtime: /health with the bearer returns the minimal snapshot and n
   assert.equal(health.repository_commit, null);
   assert.equal(health.config_active, true);
   assert.equal(health.clients.connected, 1);
-  assert.deepEqual(Object.keys(health.clients.sessions[0]).sort(), ["client_build", "client_id", "last_seen", "online"]);
+  assert.deepEqual(Object.keys(health.clients.sessions[0]).sort(), ["client_build", "client_id", "enabled", "last_seen", "online"]);
   assert.equal(health.clients.sessions[0].client_id, "laptop");
+  assert.equal(health.clients.sessions[0].online, true);
+  assert.equal(typeof health.clients.sessions[0].client_build, "string");
+  assert.equal(typeof health.clients.sessions[0].last_seen, "number");
+  assert.deepEqual(health.clients.sessions[1], { client_id: "idle", enabled: true, online: false, client_build: null, last_seen: null }, "a configured but disconnected Client is listed offline");
   assert.deepEqual(health.requests, { in_flight: 0, completed: 0, failed: 0, timed_out: 0 });
   for (const secret of [PHYSICAL_ROOT, "/srv/", MCP_MARKER, CLIENT_MARKER, "physical_root", "credential", "sha256", "config.json", "127.0.0.1"]) assert.ok(!text.includes(secret), `leaked ${secret}`);
   await rt.close();
@@ -37,16 +41,19 @@ test("/health uses the same bearer owner: missing or wrong is 401; only GET; oth
   await rt.close();
 });
 
-test("inactive config: /health still answers with a degraded snapshot and does not throw", async () => {
+test("inactive config: /health is a controlled 503 with no body, with or without a bearer", async () => {
   const config = new ServerConfigStore("/nonexistent/config.json");
   const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-9", isBuildCompatible: () => true });
   const server = createHttpServer({ config, connections, serverBuild: "srv-9", repositoryCommit: "abc1234", uptimeSeconds: () => 42.9 });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const port = (server.address() as import("node:net").AddressInfo).port;
-  const res = await getHealth(port, null);
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { status: "degraded", server_build: "srv-9", repository_commit: "abc1234", uptime_seconds: 42, config_active: false, clients: { connected: 0, sessions: [] }, requests: { in_flight: 0, completed: 0, failed: 0, timed_out: 0 } });
+  for (const token of [null, MCP_MARKER]) {
+    const res = await getHealth(port, token);
+    assert.equal(res.status, 503);
+    assert.equal(await res.text(), "");
+  }
   assert.equal((await fetch(`http://127.0.0.1:${port}/nothing`)).status, 404, "the listener keeps serving");
+  assert.deepEqual(buildHealth({ config, connections, serverBuild: "srv-9", uptimeSeconds: () => 1 }).clients, { connected: 0, sessions: [] });
   connections.stop();
   server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => r()));
