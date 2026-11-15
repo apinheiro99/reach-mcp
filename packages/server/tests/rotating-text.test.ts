@@ -92,6 +92,40 @@ test("retention days are taken from the current settings; a failing directory ne
   assert.equal(writerFor(path.join(blocked, "sub"), settings, clock).write("x"), false);
 });
 
+test("the active file is never a followed symlink or other non-regular object, for the log and the audit", () => {
+  const dir = fresh();
+  const outside = path.join(fresh(), "outside.txt");
+  writeFileSync(outside, "untouched");
+  const clock = { now: at("2026-03-04T10:00:00") };
+  const settings = { max_bytes: 100_000, retention_days: 5 };
+  for (const base of ["reach", "audit"]) {
+    symlinkSync(outside, path.join(dir, `${base}.log`));
+    assert.equal(writerFor(dir, settings, clock, base).write("must not land outside"), false, `${base}: live symlink`);
+  }
+  assert.equal(readFileSync(outside, "utf8"), "untouched");
+  const dangling = fresh();
+  symlinkSync(path.join(dangling, "missing-target"), path.join(dangling, "reach.log"));
+  assert.equal(writerFor(dangling, settings, clock).write("x"), false, "a dangling symlink is refused too");
+  assert.ok(!existsSync(path.join(dangling, "missing-target")), "the target was never created");
+  const asDir = fresh();
+  mkdirSync(path.join(asDir, "reach.log"));
+  assert.equal(writerFor(asDir, settings, clock).write("x"), false, "a directory is refused");
+  assert.deepEqual(readdirSync(dir).sort(), ["audit.log", "reach.log"], "nothing was renamed or removed");
+});
+
+test("a single line larger than max_bytes is refused whole: nothing is created, enlarged or rotated", () => {
+  const dir = fresh();
+  const clock = { now: at("2026-03-04T10:00:00") };
+  const settings = { max_bytes: 1024, retention_days: 5 };
+  const w = writerFor(dir, settings, clock);
+  assert.equal(w.write("x".repeat(1024)), false, "the line plus its newline is 1025 bytes");
+  assert.deepEqual(readdirSync(dir), [], "no file was created");
+  assert.equal(w.write("y".repeat(1023)), true, "exactly the limit is allowed");
+  assert.equal(w.write("z".repeat(2000)), false);
+  assert.deepEqual(readdirSync(dir), ["reach.log"], "no rotation was triggered by the refused line");
+  assert.equal(readFileSync(path.join(dir, "reach.log"), "utf8"), `${"y".repeat(1023)}\n`);
+});
+
 test("one rotation implementation serves both writers; no logging framework or global exists", () => {
   const src = path.join(import.meta.dirname, "..", "src");
   const read = (f: string) => readFileSync(path.join(src, f), "utf8");
