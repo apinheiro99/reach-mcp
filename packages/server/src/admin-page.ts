@@ -18,6 +18,9 @@ input,select{font:inherit;margin:.15rem .3rem .15rem 0}input[type=text],input[ty
 <fieldset><legend>MCP bearer</legend>
 <input id="bearer" type="password" autocomplete="new-password" placeholder="leave empty to keep the current one">
 <small>At least 16 characters, no spaces. Only its digest is stored and it is never shown again.</small></fieldset>
+<fieldset><legend>Logs and audit</legend>
+<label>Largest file, bytes <input id="log-bytes" type="number" min="1024"></label>
+<label>Days to keep <input id="log-days" type="number" min="1"></label></fieldset>
 <section id="proposal" hidden></section>
 <section id="clients"></section>
 <button id="add-client" type="button">Add Client</button>
@@ -25,7 +28,7 @@ input,select{font:inherit;margin:.15rem .3rem .15rem 0}input[type=text],input[ty
 "use strict";
 const DEBOUNCE_MS = 600;
 const status = document.getElementById("status");
-let model = { clients: [] };
+let model = { clients: [], logging: { max_bytes: 0, retention_days: 0 } };
 let timer = null;
 let saving = Promise.resolve();
 
@@ -48,7 +51,7 @@ function save() {
   saving = saving.then(async () => {
     say("Saving…");
     const bearer = document.getElementById("bearer").value;
-    const edit = { clients: model.clients.map(({ has_credential, ...c }) => c) };
+    const edit = { logging: model.logging, clients: model.clients.map(({ has_credential, ...c }) => c) };
     if (bearer) edit.mcp_bearer = bearer;
     const r = await api("PUT", "/admin/api/config", edit);
     if (r.ok) { document.getElementById("bearer").value = ""; say("Saved", "good"); await refresh(false); }
@@ -132,10 +135,18 @@ async function refresh(rebuild) {
   const clients = h.clients.sessions.map((s) => s.client_id + (s.online ? " online" : " offline")).join(", ") || "none";
   document.getElementById("health").textContent = "Build " + h.server_build + " · up " + h.uptime_seconds + "s · config " + (h.config_active ? "active" : "not active") +
     " · Clients: " + clients + " · requests in flight " + h.requests.in_flight + ", done " + h.requests.completed + ", failed " + h.requests.failed + ", timed out " + h.requests.timed_out;
-  if (rebuild) { model = { clients: config.json.clients }; render(); }
+  if (rebuild) {
+    model = { clients: config.json.clients, logging: config.json.logging };
+    document.getElementById("log-bytes").value = model.logging.max_bytes;
+    document.getElementById("log-days").value = model.logging.retention_days;
+    render();
+  }
 }
 
 document.getElementById("bearer").addEventListener("input", schedule);
+for (const [id, key] of [["log-bytes", "max_bytes"], ["log-days", "retention_days"]]) {
+  document.getElementById(id).addEventListener("input", (e) => { model.logging[key] = Number(e.target.value); schedule(); });
+}
 document.getElementById("add-client").addEventListener("click", () => { model.clients.push({ client_id: "", enabled: false, projects: [], has_credential: false }); render(); schedule(); });
 refresh(true).then(loadProposal).then(() => say("Ready"));
 setInterval(() => { refresh(false); loadProposal(); }, 5000);

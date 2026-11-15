@@ -1,8 +1,11 @@
 export { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
-export { ConfigError, ServerConfig, ServerConfigStore, ProposedEdit, type EditableClient, type PublicClient } from "./config.ts";
+export { ConfigError, DEFAULT_LOGGING, LoggingSettings, ServerConfig, ServerConfigStore, ProposedEdit, type EditableClient, type PublicClient } from "./config.ts";
 export { ClientConnectionRegistry, type ConnectionOptions, type SessionStatus } from "./connections.ts";
 export { buildMcpServer, type McpDeps } from "./mcp.ts";
 export { createHttpServer, type HttpServerDeps } from "./http-server.ts";
 export { buildHealth, type HealthDeps, type HealthSnapshot } from "./health.ts";
 export { createAdminServer, type AdminDeps } from "./admin.ts";
 export { ProposalStore, type DecisionResult, type DiffEntry, type ProposalDeps, type ProposalSummary, type ProposeResult } from "./proposals.ts";
+export { RotatingTextWriter, oneLine, type LogSettings, type RotatingTextDeps } from "./rotating-text.ts";
+export { NO_LOGGER, OperationalLogger, type Level, type Logger } from "./logging.ts";
+export { AuditWriter, NO_AUDIT, type Audit, type AuditEvent } from "./audit.ts";

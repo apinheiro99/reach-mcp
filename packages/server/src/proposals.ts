@@ -7,7 +7,9 @@ import { readFileSync, rmSync } from "node:fs";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { z } from "zod";
 import { ConfigError, EditableView, ProposedEdit, type ServerConfigStore } from "./config.ts";
+import { NO_AUDIT, type Audit } from "./audit.ts";
 import type { ClientConnectionRegistry } from "./connections.ts";
+import { NO_LOGGER, type Logger } from "./logging.ts";
 
 /** The persisted file, strict at every level: an unknown or secret field anywhere makes the whole proposal unusable. */
 const StoredProposal = z.strictObject({ proposal_id: z.string().min(1).max(128), created_at: z.iso.datetime(), base: EditableView, edit: ProposedEdit });
@@ -17,7 +19,7 @@ export type ProposalSummary = { proposal_id: string; created_at: string; diff: D
 export type ProposeResult = { status: "pending"; proposal_id: string } | { status: "already_pending"; proposal_id: string } | { status: "invalid"; problems: readonly string[] };
 export type DecisionResult = { status: "approved" | "rejected" | "stale" | "not_found" } | { status: "invalid"; problems: readonly string[] };
 
-export type ProposalDeps = { path: string; config: ServerConfigStore; connections: ClientConnectionRegistry; now?: () => Date; id?: () => string };
+export type ProposalDeps = { path: string; config: ServerConfigStore; connections: ClientConnectionRegistry; now?: () => Date; id?: () => string; logger?: Logger; audit?: Audit };
 
 /** Stable text for comparing two views regardless of key order. */
 const canon = (value: unknown): string => JSON.stringify(value, (_k, v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v));
@@ -64,6 +66,7 @@ export class ProposalStore {
     const proposal_id = (this.#deps.id ?? randomUUID)();
     const stored: StoredProposal = { proposal_id, created_at: (this.#deps.now ?? (() => new Date()))().toISOString(), base: this.#deps.config.editableView(), edit };
     writeFileAtomic(this.#deps.path, `${JSON.stringify(stored, null, 2)}\n`);
+    this.#note("ai", "proposal_create", "pending", proposal_id);
     return { status: "pending", proposal_id };
   }
 
@@ -72,15 +75,20 @@ export class ProposalStore {
     const stored = this.#read();
     if (!stored || stored.proposal_id !== proposalId) return { status: "not_found" };
     const { config, connections } = this.#deps;
-    if (canon(config.editableView()) !== canon(stored.base)) return { status: "stale" };
+    if (canon(config.editableView()) !== canon(stored.base)) {
+      this.#note("human", "proposal_approve", "stale", proposalId);
+      return { status: "stale" };
+    }
     try {
       config.applyEdit(config.validateEdit(stored.edit));
     } catch (error) {
-      if (error instanceof ConfigError) return { status: "invalid", problems: error.problems };
-      throw error;
+      if (!(error instanceof ConfigError)) throw error;
+      this.#note("human", "proposal_approve", "invalid", proposalId);
+      return { status: "invalid", problems: error.problems };
     }
     connections.syncAllPolicies();
     this.#remove();
+    this.#note("human", "proposal_approve", "approved", proposalId);
     return { status: "approved" };
   }
 
@@ -89,7 +97,14 @@ export class ProposalStore {
     const stored = this.#read();
     if (!stored || stored.proposal_id !== proposalId) return { status: "not_found" };
     this.#remove();
+    this.#note("human", "proposal_reject", "rejected", proposalId);
     return { status: "rejected" };
+  }
+
+  /** One log line and one audit record per proposal event; ids and outcomes only, never the edit. */
+  #note(actor: string, action: string, result: string, proposalId: string): void {
+    (this.#deps.logger ?? NO_LOGGER).log(result === "stale" || result === "invalid" ? "WARNING" : "INFO", "proposals", `${action} ${result} proposal_id=${proposalId}`);
+    (this.#deps.audit ?? NO_AUDIT).record({ actor, action, target: proposalId, result });
   }
 
   #diff(stored: StoredProposal): DiffEntry[] {
