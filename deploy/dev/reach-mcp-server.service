@@ -1,0 +1,18 @@
+# REACH MCP Server on the DEV container (Debian 13, systemd). No credential belongs in this file: the Server reads its
+# configuration, proposal and logs from the paths below, and the admin page creates the configuration in setup mode.
+# The admin listener has no login of its own: keep it on loopback and reach it through an SSH tunnel.
+[Unit]
+Description=REACH MCP Server (DEV)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev
+WorkingDirectory=/reach/reach-mcp
+ExecStart=/usr/local/bin/node packages/server/src/main.ts --config /reach/reach-private/server/config.json --proposal /reach/reach-private/server/proposal.json --logs /reach/reach-mcp/logs --data-host 127.0.0.1 --data-port 8787 --admin-host 127.0.0.1 --admin-port 8788 --build dev
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
