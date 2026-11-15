@@ -16,6 +16,9 @@ import {
   Operation,
   OperationResult,
   parseWire,
+  PolicySync,
+  POLICY_SYNC_MAX_PROJECTS,
+  PostWelcomeMessage,
   RequestEnvelope,
   ResponseEnvelope,
   ServerMessage,
@@ -89,8 +92,34 @@ test("request envelope: needs request_id, project_id and a known typed operation
   assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list" }, { conversation_id: "c" })).success, false, "no conversation identity");
   assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list", unknown: 1 })).success, false, "strict operation objects");
   assert.equal(RequestEnvelope.safeParse(request({ op: "git_commit" })).success, false, "no mutating Git operation exists");
+  assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list" })).success, true);
+});
+
+const policyFrame = { kind: "policy_sync", policies: [{ project_id: "p1", physical_root: "/srv/p1", mode: "read_only" }] };
+const responseFrame = { kind: "response", request_id: "req-1", ok: true, result: { op: "fs_write", path: "a.txt", bytes: 3 } };
+
+test("direction: the Client sends hello and responses, the Server sends welcome, reject, policy and requests", () => {
   assert.equal(ClientMessage.safeParse(hello).success, true);
-  assert.equal(ClientMessage.safeParse(request({ op: "fs_list" })).success, true);
+  assert.equal(ClientMessage.safeParse(responseFrame).success, true);
+  assert.equal(ClientMessage.safeParse(request({ op: "fs_list" })).success, false, "a request is never Client -> Server");
+  assert.equal(ClientMessage.safeParse(policyFrame).success, false);
+  for (const frame of [{ kind: "welcome", server_build: "b", compatible: true }, { kind: "reject", error: { code: "AUTH_FAILED", message: "m" } }, policyFrame, request({ op: "fs_list" })]) {
+    assert.equal(ServerMessage.safeParse(frame).success, true, JSON.stringify(frame).slice(0, 40));
+  }
+  assert.equal(ServerMessage.safeParse(responseFrame).success, false, "a response is never Server -> Client");
+  assert.equal(ServerMessage.safeParse(hello).success, false);
+  assert.equal(PostWelcomeMessage.safeParse(policyFrame).success, true);
+  assert.equal(PostWelcomeMessage.safeParse(request({ op: "fs_list" })).success, true);
+  assert.equal(PostWelcomeMessage.safeParse({ kind: "welcome", server_build: "b", compatible: true }).success, false);
+});
+
+test("policy_sync: strict full snapshot, bounded, with absolute roots", () => {
+  assert.equal(PolicySync.safeParse(policyFrame).success, true);
+  assert.equal(PolicySync.safeParse({ kind: "policy_sync", policies: [] }).success, true, "an empty snapshot removes every project");
+  assert.equal(PolicySync.safeParse({ ...policyFrame, extra: 1 }).success, false);
+  assert.equal(PolicySync.safeParse({ kind: "policy_sync", policies: [{ project_id: "p", physical_root: "rel", mode: "read_only" }] }).success, false);
+  const many = Array.from({ length: POLICY_SYNC_MAX_PROJECTS + 1 }, (_, i) => ({ project_id: `p${i}`, physical_root: "/r", mode: "read_only" }));
+  assert.equal(PolicySync.safeParse({ kind: "policy_sync", policies: many }).success, false);
 });
 
 test("responses: success or error, each with exactly one request_id", () => {
@@ -102,7 +131,7 @@ test("responses: success or error, each with exactly one request_id", () => {
   assert.equal(ResponseEnvelope.safeParse({ ...ok, request_id: undefined }).success, false);
   assert.equal(ResponseEnvelope.safeParse({ ...ok, error: err.error }).success, false, "not both result and error");
   assert.equal(ResponseEnvelope.safeParse({ kind: "response", request_id: "r", ok: false, error: { code: "NOPE", message: "x" } }).success, false);
-  for (const frame of [ok, err, { kind: "welcome", server_build: "b", compatible: true }]) assert.ok(ServerMessage.safeParse(frame).success);
+  for (const frame of [ok, err]) assert.ok(ClientMessage.safeParse(frame).success);
 });
 
 test("every filesystem operation validates its arguments; mutations are distinct from reads", () => {
@@ -202,7 +231,7 @@ test("compact errors: stable codes, bounded message and details, no raw exceptio
 
 test("every FsError code is a valid wire error code", () => {
   for (const code of FS_ERROR_CODES) assert.ok(WireError.safeParse({ code, message: "m" }).success, code);
-  for (const code of ["AUTH_FAILED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD", "BAD_REQUEST", "INTERNAL"]) assert.ok(WireError.safeParse({ code, message: "m" }).success, code);
+  for (const code of ["AUTH_FAILED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD", "BAD_REQUEST", "INTERNAL", "MUTATION_INDETERMINATE"]) assert.ok(WireError.safeParse({ code, message: "m" }).success, code);
 });
 
 test("the wire module is data only: no network, process or filesystem imports", () => {
@@ -215,7 +244,7 @@ test("the wire module is data only: no network, process or filesystem imports", 
 
 test("inferred types stay aligned with the schemas (checked by the typecheck)", () => {
   const sample: RequestEnvelope = { kind: "request", request_id: "r", project_id: "p", operation: { op: "fs_read", path: "a.ts", start_line: 1 } };
-  const reply: ServerMessage = { kind: "response", request_id: "r", ok: false, error: { code: "DENIED", message: "m" } };
+  const reply: ClientMessage = { kind: "response", request_id: "r", ok: false, error: { code: "DENIED", message: "m" } };
   // @ts-expect-error an operation outside the union does not type-check
   const bogus: Operation = { op: "shell_exec" };
   assert.equal(sample.operation.op, "fs_read");

@@ -42,3 +42,10 @@ export const EffectiveProjectPolicy = z.strictObject({
   limits: EffectiveLimits.optional(),
 });
 export type EffectiveProjectPolicy = z.infer<typeof EffectiveProjectPolicy>;
+
+/** Most project policies one snapshot may carry. */
+export const POLICY_SYNC_MAX_PROJECTS = 200;
+
+/** Server -> Client: the complete set of effective project policies. A full snapshot, so a removed project simply disappears. */
+export const PolicySync = z.strictObject({ kind: z.literal("policy_sync"), policies: z.array(EffectiveProjectPolicy).max(POLICY_SYNC_MAX_PROJECTS) });
+export type PolicySync = z.infer<typeof PolicySync>;
