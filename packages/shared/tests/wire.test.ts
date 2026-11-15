@@ -8,7 +8,9 @@ import {
   BuildCompatibility,
   ClientHello,
   ClientMessage,
+  failureResponse,
   FS_ERROR_CODES,
+  MUTATION_INDETERMINATE_ERROR,
   HandshakeReply,
   incompatibleBuildError,
   isMutation,
@@ -250,4 +252,12 @@ test("inferred types stay aligned with the schemas (checked by the typecheck)", 
   assert.equal(sample.operation.op, "fs_read");
   assert.equal(reply.kind, "response");
   assert.ok(bogus);
+});
+
+test("canonical helpers: one failure-response constructor and one mutation-indeterminate error", () => {
+  const response = failureResponse("req-9", { code: "DENIED", message: "blocked" });
+  assert.deepEqual(response, { kind: "response", request_id: "req-9", ok: false, error: { code: "DENIED", message: "blocked" } });
+  assert.equal(ResponseEnvelope.safeParse(response).success, true);
+  assert.deepEqual(MUTATION_INDETERMINATE_ERROR, { code: "MUTATION_INDETERMINATE", message: "mutation outcome is unknown; it is not retried" });
+  assert.equal(WireError.safeParse(MUTATION_INDETERMINATE_ERROR).success, true);
 });

@@ -8,8 +8,10 @@ import WebSocket from "ws";
 import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
 import {
   ClientHello,
+  failureResponse,
   incompatibleBuildError,
   isMutation,
+  MUTATION_INDETERMINATE_ERROR,
   parseWire,
   RequestEnvelope,
   ResponseEnvelope,
@@ -41,7 +43,6 @@ type Pending = { session: Session; mutation: boolean; settle: (response: Respons
 
 export type SessionStatus = { client_id: string; client_build: string; connected_since: number; last_seen: number; online: boolean };
 
-const failure = (requestId: string, error: WireError): ResponseEnvelope => ({ kind: "response", request_id: requestId, ok: false, error });
 const AUTH_FAILED: WireError = { code: "AUTH_FAILED", message: "authentication failed" };
 
 /** The single bearer credential of an Authorization header, or null when absent, malformed or repeated. */
@@ -148,7 +149,7 @@ export class ClientConnectionRegistry {
    */
   route(clientId: string, projectId: string, operation: Operation, options: { requestId?: string } = {}): Promise<ResponseEnvelope> {
     const requestId = options.requestId ?? `req-${randomUUID()}`;
-    const refuse = (error: WireError) => Promise.resolve(failure(requestId, error));
+    const refuse = (error: WireError) => Promise.resolve(failureResponse(requestId, error));
     const policies = this.#options.config.effectivePoliciesFor(clientId);
     if (!policies) return refuse({ code: "NOT_FOUND", message: "unknown client" });
     if (!policies.some((p) => p.project_id === projectId)) return refuse({ code: "NOT_FOUND", message: "unknown project" });
@@ -165,15 +166,15 @@ export class ClientConnectionRegistry {
         cancel();
         resolve(response);
       };
-      const cancel = this.#schedule(() => settle(failure(requestId, this.#lost(mutation, "request timed out"))), this.#requestTimeoutMs);
+      const cancel = this.#schedule(() => settle(failureResponse(requestId, this.#lost(mutation, "request timed out"))), this.#requestTimeoutMs);
       this.#pending.set(requestId, { session, mutation, settle, cancel });
-      if (!this.#send(session, envelope.data)) settle(failure(requestId, this.#lost(mutation, "client is offline")));
+      if (!this.#send(session, envelope.data)) settle(failureResponse(requestId, this.#lost(mutation, "client is offline")));
     });
   }
 
   /** What a caller learns when no response arrived: a mutation may or may not have run, a read simply failed. */
   #lost(mutation: boolean, text: string): WireError {
-    return mutation ? { code: "MUTATION_INDETERMINATE", message: "mutation outcome is unknown; it is not retried" } : { code: "INTERNAL", message: text };
+    return mutation ? MUTATION_INDETERMINATE_ERROR : { code: "INTERNAL", message: text };
   }
 
   #isStale(session: Session): boolean {
@@ -248,7 +249,7 @@ export class ClientConnectionRegistry {
     if (this.#sessions.get(session.clientId) !== session) return;
     this.#sessions.delete(session.clientId);
     for (const [id, pending] of [...this.#pending]) {
-      if (pending.session === session) pending.settle(failure(id, this.#lost(pending.mutation, "client disconnected")));
+      if (pending.session === session) pending.settle(failureResponse(id, this.#lost(pending.mutation, "client disconnected")));
     }
   }
 }
