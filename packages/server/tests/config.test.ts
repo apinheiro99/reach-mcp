@@ -10,6 +10,7 @@ const dir = mkdtempSync(path.join(tmpdir(), "reach-server-config-"));
 const MARKER_A = "cred-marker-" + "Aq83Lm";
 const MARKER_B = "cred-marker-" + "Bz51Pk";
 
+const MCP = { mcp_bearer_sha256: hashCredential("mcp-marker-" + "Kd40") };
 const project = (id: string, root: string, extra: object = {}) => ({ project_id: id, physical_root: root, mode: "read_only", ...extra });
 const client = (id: string, marker: string | null, projects: object[], extra: object = {}) => ({
   client_id: id,
@@ -19,6 +20,7 @@ const client = (id: string, marker: string | null, projects: object[], extra: ob
   ...extra,
 });
 const valid = () => ({
+  mcp_bearer_sha256: hashCredential("mcp-marker-" + "Kd40"),
   clients: [
     client("laptop", MARKER_A, [project("web", "/srv/web", { mode: "read_write", writable_globs: ["docs/**"], deny_globs: ["*.key"], limits: { maxReadLines: 100 } }), project("api", "C:\\work\\api")], { display_name: "Work laptop" }),
     client("desktop", MARKER_B, [project("web", "/home/u/web")]),
@@ -50,8 +52,8 @@ test("a valid file loads; the same project name under two Clients is allowed; ro
 
 test("strictness: unknown keys, malformed JSON, bad ids, relative roots, bad modes, globs, limits and digests are refused", () => {
   const base = valid();
-  const withClient = (patch: object) => ({ clients: [{ ...base.clients[0], ...patch }] });
-  const withProject = (patch: object) => ({ clients: [{ ...base.clients[0], projects: [{ ...(base.clients[0]!.projects[0] as object), ...patch }] }] });
+  const withClient = (patch: object) => ({ ...MCP, clients: [{ ...base.clients[0], ...patch }] });
+  const withProject = (patch: object) => ({ ...MCP, clients: [{ ...base.clients[0], projects: [{ ...(base.clients[0]!.projects[0] as object), ...patch }] }] });
   assert.match(load(null, "{ not json"), /not valid JSON/);
   assert.ok(load({ ...base, extra: 1 }));
   assert.ok(load(withClient({ extra: 1 })));
@@ -70,14 +72,14 @@ test("strictness: unknown keys, malformed JSON, bad ids, relative roots, bad mod
 
 test("uniqueness: duplicate client_id and duplicate project_id inside a Client are refused", () => {
   const base = valid();
-  assert.match(load({ clients: [base.clients[0], { ...base.clients[1], client_id: "laptop" }] }), /duplicate client_id/);
-  assert.match(load({ clients: [client("c", MARKER_A, [project("p", "/a"), project("p", "/b")])] }), /duplicate project_id within a client/);
+  assert.match(load({ ...MCP, clients: [base.clients[0], { ...base.clients[1], client_id: "laptop" }] }), /duplicate client_id/);
+  assert.match(load({ ...MCP, clients: [client("c", MARKER_A, [project("p", "/a"), project("p", "/b")])] }), /duplicate project_id within a client/);
 });
 
 test("an enabled Client needs a credential digest; a disabled one may keep or lack it", () => {
-  assert.match(load({ clients: [client("c", null, [])] }), /needs a credential digest/);
-  assert.equal(load({ clients: [client("c", null, [], { enabled: false })] }), "");
-  assert.equal(load({ clients: [client("c", MARKER_A, [], { enabled: false })] }), "");
+  assert.match(load({ ...MCP, clients: [client("c", null, [])] }), /needs a credential digest/);
+  assert.equal(load({ ...MCP, clients: [client("c", null, [], { enabled: false })] }), "");
+  assert.equal(load({ ...MCP, clients: [client("c", MARKER_A, [], { enabled: false })] }), "");
 });
 
 test("initial load failure leaves nothing active", () => {
@@ -96,12 +98,12 @@ test("an invalid reload keeps the previous snapshot exactly; a valid reload repl
   const policiesBefore = JSON.stringify(store.effectivePoliciesFor("laptop"));
   writeFileSync(file, "{ truncated");
   assert.throws(() => store.reload(), ConfigError);
-  writeFileSync(file, JSON.stringify({ clients: [client("laptop", MARKER_A, [project("web", "/srv/web"), project("web", "/dup")])] }));
+  writeFileSync(file, JSON.stringify({ ...MCP, clients: [client("laptop", MARKER_A, [project("web", "/srv/web"), project("web", "/dup")])] }));
   assert.throws(() => store.reload(), ConfigError);
   assert.equal(JSON.stringify(store.snapshot()), before, "the last good snapshot is untouched");
   assert.equal(JSON.stringify(store.effectivePoliciesFor("laptop")), policiesBefore);
   assert.match(readFileSync(file, "utf8"), /web.*dup/s, "the file is never rewritten or repaired");
-  writeFileSync(file, JSON.stringify({ clients: [client("laptop", MARKER_A, [project("only", "/srv/only")])] }));
+  writeFileSync(file, JSON.stringify({ ...MCP, clients: [client("laptop", MARKER_A, [project("only", "/srv/only")])] }));
   store.reload();
   assert.deepEqual(store.snapshot().clients.map((c) => c.client_id), ["laptop"], "desktop was removed");
   assert.deepEqual(store.effectivePoliciesFor("laptop")?.map((p) => p.project_id), ["only"]);
@@ -109,7 +111,7 @@ test("an invalid reload keeps the previous snapshot exactly; a valid reload repl
 });
 
 test("effective policies are shared-valid, carry only operational fields, and exist only for an enabled registered Client", () => {
-  const store = new ServerConfigStore(write({ clients: [...valid().clients, client("off", MARKER_A, [project("p", "/x")], { enabled: false })] }));
+  const store = new ServerConfigStore(write({ ...MCP, clients: [...valid().clients, client("off", MARKER_A, [project("p", "/x")], { enabled: false })] }));
   store.loadInitial();
   const policies = store.effectivePoliciesFor("laptop")!;
   assert.equal(PolicySync.safeParse({ kind: "policy_sync", policies }).success, true);
@@ -134,7 +136,7 @@ test("credentials: the hash is stable lowercase SHA-256; no plaintext or digest 
   const publicText = JSON.stringify(store.snapshot());
   for (const secret of [MARKER_A, MARKER_B, hashCredential(MARKER_A), "credential_sha256"]) assert.ok(!publicText.includes(secret), "public snapshot is free of credential material");
   assert.ok(!readFileSync(file, "utf8").includes(MARKER_A), "the file holds only the digest");
-  writeFileSync(file, JSON.stringify({ clients: [client("c", MARKER_A, [], { credential_sha256: hashCredential(MARKER_A).toUpperCase() })] }));
+  writeFileSync(file, JSON.stringify({ ...MCP, clients: [client("c", MARKER_A, [], { credential_sha256: hashCredential(MARKER_A).toUpperCase() })] }));
   const message = problems(() => store.reload());
   assert.ok(message && !message.includes(hashCredential(MARKER_A)) && !message.includes(MARKER_A), "errors never echo values");
 });
@@ -144,4 +146,17 @@ test("the config module holds no network, session, watcher, database or UI code"
   const text = readFileSync(path.join(src, "config.ts"), "utf8");
   assert.ok(!/node:(net|http|https|tls|dgram|child_process)\b|\bws\b|fs\.watch|\bwatch\(|sqlite|yaml/i.test(text));
   assert.ok(!/\/reach\/|reach-private/.test(text), "no hardcoded private path");
+});
+
+test("the MCP bearer digest is required and strict, stays out of the public snapshot, and is exposed only through its accessor", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  assert.equal(store.mcpBearerDigest(), valid().mcp_bearer_sha256);
+  assert.ok(!JSON.stringify(store.snapshot()).includes("mcp_bearer"), "not in the public view");
+  assert.match(load({ clients: [] }), /mcp_bearer_sha256/);
+  assert.ok(load({ ...MCP, mcp_bearer_sha256: "ABC", clients: [] }));
+  writeFileSync(file, JSON.stringify({ clients: [] }));
+  assert.throws(() => store.reload(), ConfigError);
+  assert.equal(store.mcpBearerDigest(), valid().mcp_bearer_sha256, "a bad reload keeps the previous digest");
 });

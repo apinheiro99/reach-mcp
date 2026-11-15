@@ -2,22 +2,24 @@
 // complete candidate first and swaps it in only when everything validated, so an invalid file never replaces the last
 // good configuration. The file format is an implementation detail. Only a SHA-256 digest of each Client credential is
 // stored. Physical roots belong to the remote Client host and are never checked against this machine's filesystem.
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { ClientId, EffectiveProjectPolicy } from "../../shared/src/wire/index.ts";
+
+/** SHA-256 of a credential, lowercase hex. */
+const Digest = z.string().regex(/^[0-9a-f]{64}$/, "must be 64 lowercase hex characters");
 
 const ClientEntry = z.strictObject({
   client_id: ClientId,
   display_name: z.string().min(1).max(100).optional(),
   enabled: z.boolean(),
   /** SHA-256 of the Client credential, lowercase hex. Required while the Client is enabled. */
-  credential_sha256: z.string().regex(/^[0-9a-f]{64}$/, "must be 64 lowercase hex characters").optional(),
+  credential_sha256: Digest.optional(),
   projects: z.array(EffectiveProjectPolicy).max(200),
 });
 
 export const ServerConfig = z
-  .strictObject({ clients: z.array(ClientEntry).max(500) })
+  .strictObject({ /** SHA-256 of the bearer token ChatGPT presents to /mcp. */ mcp_bearer_sha256: Digest, clients: z.array(ClientEntry).max(500) })
   .superRefine((config, ctx) => {
     const seen = new Set<string>();
     config.clients.forEach((client, c) => {
@@ -45,9 +47,6 @@ export class ConfigError extends Error {
     this.problems = problems;
   }
 }
-
-/** Canonical lowercase hex SHA-256 of a presented or enrolled credential. Not reversible; the plaintext is never kept. */
-export const hashCredential = (credential: string): string => createHash("sha256").update(credential, "utf8").digest("hex");
 
 function parseConfig(text: string): ServerConfig {
   let json: unknown;
@@ -93,6 +92,11 @@ export class ServerConfigStore {
   effectivePoliciesFor(clientId: string): EffectiveProjectPolicy[] | null {
     const client = this.#enabledClient(clientId);
     return client ? structuredClone(client.projects) : null;
+  }
+
+  /** The digest the MCP endpoint's bearer token must match. */
+  mcpBearerDigest(): string {
+    return this.#requireActive().mcp_bearer_sha256;
   }
 
   /** The stored digest of an enabled Client, for the admission check; null for an unknown or disabled one. */
