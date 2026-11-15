@@ -1,0 +1,141 @@
+// The Client's only local configuration: one private KEY=VALUE file with endpoint, client_id, credential and the
+// physical root anchors. The file is data, not shell: no interpolation, includes, multiline values or env fallback.
+// Operational project policy (modes, allowlists, deny rules, limits) is owned by the Server and never read here.
+// POSIX: a file readable or writable by group/others is refused, never auto-fixed. Windows: mode bits do not apply, so
+// that check is skipped and the operator must protect the file with an ACL.
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import path from "node:path";
+import { ClientId, Credential } from "../../shared/src/wire/index.ts";
+
+export const BOOTSTRAP_KEYS = ["REACH_SERVER_URL", "REACH_CLIENT_ID", "REACH_CLIENT_CREDENTIAL", "REACH_ROOTS"] as const;
+
+export type BootstrapOptions = {
+  /** Development and tests only: accept ws:// besides wss://. Never inferred from the host name. */
+  allowInsecureWs?: boolean;
+  /** Overridable so the Windows branch is testable on any host. */
+  platform?: NodeJS.Platform;
+};
+
+/** Every problem names a key or a line, never a value, so no message can carry the credential. */
+export class BootstrapError extends Error {
+  readonly problems: readonly string[];
+
+  constructor(problems: string[]) {
+    super(`invalid Client bootstrap: ${problems.join("; ")}`);
+    this.problems = problems;
+  }
+}
+
+export type PublicBootstrap = { endpoint: string; clientId: string; anchors: readonly string[] };
+
+/** Holds the credential in a private field: JSON, inspect and spread of this object never show it. */
+export class Bootstrap {
+  readonly endpoint: string;
+  readonly clientId: string;
+  readonly anchors: readonly string[];
+  readonly #credential: string;
+
+  constructor(endpoint: string, clientId: string, credential: string, anchors: readonly string[]) {
+    this.endpoint = endpoint;
+    this.clientId = clientId;
+    this.#credential = credential;
+    this.anchors = anchors;
+  }
+
+  /** The only way to read the credential; used when authenticating to the Server. */
+  credential(): string {
+    return this.#credential;
+  }
+
+  publicView(): PublicBootstrap {
+    return { endpoint: this.endpoint, clientId: this.clientId, anchors: this.anchors };
+  }
+}
+
+function parseLines(text: string, problems: string[]): Map<string, string> {
+  const values = new Map<string, string>();
+  text.split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) return;
+    const eq = line.indexOf("=");
+    const key = eq > 0 ? line.slice(0, eq).trim() : "";
+    if (!key) return void problems.push(`line ${index + 1}: expected KEY=VALUE`);
+    if (!(BOOTSTRAP_KEYS as readonly string[]).includes(key)) return void problems.push(`line ${index + 1}: unknown key`);
+    if (values.has(key)) return void problems.push(`duplicate key ${key}`);
+    values.set(key, line.slice(eq + 1).trim());
+  });
+  return values;
+}
+
+function checkEndpoint(value: string, allowInsecureWs: boolean, problems: string[]): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return void problems.push("REACH_SERVER_URL is not an absolute URL");
+  }
+  const secure = url.protocol === "wss:";
+  if (!secure && !(allowInsecureWs && url.protocol === "ws:")) problems.push("REACH_SERVER_URL must use wss://");
+  if (url.username || url.password) problems.push("REACH_SERVER_URL must not carry credentials");
+  if (url.search || url.hash) problems.push("REACH_SERVER_URL must not carry a query or fragment");
+}
+
+function checkSchema(key: string, schema: { safeParse(v: unknown): { success: boolean } }, value: string, problems: string[]): void {
+  if (!schema.safeParse(value).success) problems.push(`${key} is invalid`);
+}
+
+function canonicalAnchors(value: string, problems: string[]): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return void problems.push("REACH_ROOTS is not valid JSON"), [];
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((r) => typeof r === "string" && r !== "")) {
+    return void problems.push("REACH_ROOTS must be a non-empty JSON array of path strings"), [];
+  }
+  const anchors: string[] = [];
+  for (const root of parsed as string[]) {
+    if (!path.isAbsolute(root)) {
+      problems.push("REACH_ROOTS entry is not an absolute path");
+      continue;
+    }
+    try {
+      const real = realpathSync(root);
+      if (!statSync(real).isDirectory()) throw new Error("not a directory");
+      if (anchors.includes(real)) problems.push("REACH_ROOTS has duplicate anchors");
+      else anchors.push(real);
+    } catch {
+      problems.push("REACH_ROOTS entry is not an existing directory");
+    }
+  }
+  return anchors;
+}
+
+/** Parses bootstrap text; `permissionProblem` is the result of the file-mode check, folded into the same report. */
+export function parseBootstrap(text: string, options: BootstrapOptions = {}, permissionProblem?: string): Bootstrap {
+  const problems: string[] = permissionProblem ? [permissionProblem] : [];
+  const values = parseLines(text, problems);
+  for (const key of BOOTSTRAP_KEYS) if (!values.has(key)) problems.push(`missing ${key}`);
+  const get = (key: (typeof BOOTSTRAP_KEYS)[number]) => values.get(key) ?? "";
+  if (values.has("REACH_SERVER_URL")) checkEndpoint(get("REACH_SERVER_URL"), options.allowInsecureWs === true, problems);
+  if (values.has("REACH_CLIENT_ID")) checkSchema("REACH_CLIENT_ID", ClientId, get("REACH_CLIENT_ID"), problems);
+  if (values.has("REACH_CLIENT_CREDENTIAL")) checkSchema("REACH_CLIENT_CREDENTIAL", Credential, get("REACH_CLIENT_CREDENTIAL"), problems);
+  const anchors = values.has("REACH_ROOTS") ? canonicalAnchors(get("REACH_ROOTS"), problems) : [];
+  if (problems.length > 0) throw new BootstrapError(problems);
+  return new Bootstrap(get("REACH_SERVER_URL"), get("REACH_CLIENT_ID"), get("REACH_CLIENT_CREDENTIAL"), anchors);
+}
+
+export function loadBootstrap(file: string, options: BootstrapOptions = {}): Bootstrap {
+  let permissionProblem: string | undefined;
+  let text: string;
+  try {
+    const stat = statSync(file);
+    if (!stat.isFile()) throw new Error("not a file");
+    if ((options.platform ?? process.platform) !== "win32" && (stat.mode & 0o077) !== 0) permissionProblem = "bootstrap file must not be accessible by group or others";
+    text = readFileSync(file, "utf8");
+  } catch {
+    throw new BootstrapError(["bootstrap file is missing or unreadable"]);
+  }
+  return parseBootstrap(text, options, permissionProblem);
+}
