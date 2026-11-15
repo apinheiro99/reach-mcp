@@ -2,7 +2,7 @@
 
 **Remote Environment Access & Context Hub.** REACH gives ChatGPT Web controlled access to explicitly authorized files and project environments through one MCP endpoint.
 
-> Status: bootstrap. This repository currently holds the project baseline only. Protocol and runtime features are not implemented yet.
+> Status: **pre-alpha / active development.** REACH is evolving from an earlier working prototype into a distributed Server + Client architecture. That implementation is still in progress and is not ready for general installation.
 
 ## Privacy disclosure
 
@@ -24,7 +24,7 @@ REACH Clients
 explicitly configured project roots
 ```
 
-Each Client decides what its host exposes. Server requests never widen what a Client's local policy allows. Details: [docs/architecture.md](docs/architecture.md).
+The Server is the operational configuration authority. Each Client executes requests on its host and enforces the security invariants; it also keeps local root anchors, the physical roots it will ever expose, and rejects any configuration or request that escapes them. Details: [docs/architecture.md](docs/architecture.md).
 
 ## What REACH is not
 
@@ -43,7 +43,7 @@ npm run typecheck
 npm run build
 ```
 
-Configuration uses placeholders in `.env.example` and `config/example.json`. Real values are never committed to this repository. See [docs/configuration.md](docs/configuration.md).
+Real configuration and secrets are never committed to this repository. See [docs/configuration.md](docs/configuration.md).
 
 ## License
 

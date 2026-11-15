@@ -8,12 +8,14 @@ File content requested through REACH may be transmitted to ChatGPT and OpenAI as
 
 - **ChatGPT to REACH Server:** reaches the Server over the OpenAI Secure MCP Tunnel using Streamable HTTP.
 - **REACH Server to REACH Client:** Clients connect outbound to the Server over an authenticated persistent channel. A Client does not accept inbound connections for REACH.
-- **Client to host:** each Client exposes only the project roots explicitly configured on its host. The Client's local policy is the final authority: if the Server asks for more than the policy allows, the stricter policy wins.
+- **Client to host:** the Server is the operational configuration authority, but each Client exposes only what falls inside the physical root anchors authorized locally on its host. The Client always applies the security invariants and refuses any root or policy it receives that escapes those anchors.
 
 ## What REACH protects
 
-- Access is limited to explicitly configured project roots; paths outside them are refused.
+- Access is limited to explicitly configured project roots, inside the Client's local root anchors; paths outside them are refused.
+- Clients are outbound-only: they open the connection to the Server and accept no inbound REACH connections.
 - Secret-bearing files are not exposed through ordinary reads.
+- There is no arbitrary shell execution.
 - No real secret is stored in this repository, and logs and CI output must not echo secrets.
 
 ## What REACH does not guarantee
