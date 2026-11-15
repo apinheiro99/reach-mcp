@@ -3,7 +3,7 @@
 // <root>/.lixeira/YYYY-MM-DD/. A full overwrite of an existing file is refused when normal read policy would refuse or
 // redact its current content, so a caller cannot round-trip redacted text over the original. Targeted edit stays allowed.
 import { randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import path from "node:path";
 import { FsError } from "./errors.ts";
 import { type FsLimits, resolveLimits } from "./limits.ts";
@@ -15,6 +15,8 @@ export const TRASH_DIR = ".lixeira";
 /** Trash folders are named YYYY-MM-DD (the local calendar day); only folders of exactly this shape are ever purged. */
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MS_PER_DAY = 86_400_000;
+/** Cross-filesystem copy reads and writes in bounded chunks: no whole-file buffer and no copy_file_range, which can stall on nested NFS mounts. */
+const COPY_CHUNK_BYTES = 64 * 1024;
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 const dayName = (ms: number): string => {
@@ -26,6 +28,89 @@ const dayNumber = (ms: number): number => {
   const d = new Date(ms);
   return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / MS_PER_DAY;
 };
+
+/** One regular file, copied in bounded chunks; mode and times are restored afterwards, as a rename would have kept them. */
+function copyFileChunked(from: string, to: string, st: Stats): void {
+  const src = openSync(from, "r");
+  try {
+    const dst = openSync(to, "wx");
+    try {
+      const buf = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
+      for (let n = readSync(src, buf, 0, buf.length, null); n > 0; n = readSync(src, buf, 0, buf.length, null)) {
+        for (let done = 0; done < n; ) done += writeSync(dst, buf, done, n - done);
+      }
+    } finally {
+      closeSync(dst);
+    }
+  } finally {
+    closeSync(src);
+  }
+  chmodSync(to, st.mode & 0o7777);
+  utimesSync(to, st.atime, st.mtime);
+}
+
+/** Copies a file or directory tree (hidden entries included). A symlink is recreated as a link, never followed; any other entry type is refused. */
+function copyTree(from: string, to: string): void {
+  const st = lstatSync(from);
+  if (st.isSymbolicLink()) {
+    symlinkSync(readlinkSync(from), to);
+  } else if (st.isDirectory()) {
+    mkdirSync(to);
+    for (const name of readdirSync(from)) copyTree(path.join(from, name), path.join(to, name));
+    // Mode and times last: a read-only directory must stay writable while its children are created.
+    chmodSync(to, st.mode & 0o7777);
+    utimesSync(to, st.atime, st.mtime);
+  } else if (st.isFile()) {
+    copyFileChunked(from, to, st);
+  } else {
+    throw new FsError("NOT_FILE", `cannot move across filesystems: ${path.basename(from)} is neither a file, a directory nor a symlink`);
+  }
+}
+
+/** Gives every directory under `from` owner write access, so its children can be unlinked. */
+function unlockDirectories(from: string): void {
+  const st = lstatSync(from);
+  if (!st.isDirectory()) return;
+  chmodSync(from, (st.mode & 0o7777) | 0o700);
+  for (const name of readdirSync(from)) unlockDirectories(path.join(from, name));
+}
+
+/** Removes the source once its copy is complete. A rename never cares about a read-only directory inside the entry, so neither may this. */
+function removeCopiedSource(from: string): void {
+  try {
+    rmSync(from, { recursive: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw err;
+    unlockDirectories(from);
+    rmSync(from, { recursive: true });
+  }
+}
+
+/**
+ * Moves an entry into the trash. rename first; only EXDEV (the trash is a different mount) falls back to copy-then-remove.
+ * Every other rename error propagates. The source is removed only after the whole copy succeeded, so a failed copy leaves the
+ * original intact and its partial copy is cleaned up.
+ */
+function moveIntoTrash(from: string, to: string): void {
+  try {
+    renameSync(from, to);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+  }
+  try {
+    copyTree(from, to);
+  } catch (err) {
+    try {
+      rmSync(to, { recursive: true, force: true });
+    } catch {
+      /* the partial copy stays in the trash; the copy error below is the one that matters */
+    }
+    throw err;
+  }
+  removeCopiedSource(from);
+}
 
 export type FsWriterOptions = {
   /** Absolute, existing write root. Every mutation stays inside it. */
@@ -198,7 +283,7 @@ export class FilesystemWriter {
     const ext = st.isFile() ? path.extname(dest) : "";
     const stem = dest.slice(0, dest.length - ext.length);
     for (let n = 2; lstatSync(dest, { throwIfNoEntry: false }); n++) dest = `${stem}-${n}${ext}`;
-    renameSync(abs, dest);
+    moveIntoTrash(abs, dest);
     return { path: rel, movedTo: `${TRASH_DIR}/${path.relative(path.join(this.root, TRASH_DIR), dest).split(path.sep).join("/")}` };
   }
 }

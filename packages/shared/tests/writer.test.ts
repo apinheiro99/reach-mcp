@@ -1,7 +1,8 @@
 // Controlled writes: atomic store, exact edit, delete-as-trash, purge and the protected-overwrite guard.
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -170,6 +171,132 @@ test("remove: moves into dated trash, never unlinks, collisions get -2/-3 suffix
   assert.equal(code(() => writer.remove("nope.txt")), "NOT_FOUND");
   assert.equal(code(() => writer.remove(`${TRASH_DIR}/2026-10-01/n.md`)), "DENIED", "the trash cannot be deleted or written directly");
   assert.equal(code(() => writer.remove(".")), "INVALID_ARGUMENT");
+});
+
+// --- Cross-filesystem remove (EXDEV): the trash is a different mount than the entry being removed. ---
+// A real second mount needs privileges, so fs.renameSync is replaced (and the ESM named export re-synced) to fail for moves into the trash.
+const CLOCK = new Date(2026, 9, 1, 12, 0, 0).getTime();
+function failTrashRename<T>(errno: string, body: () => T): T {
+  const original = fs.renameSync;
+  const stub = mock.method(fs, "renameSync", (from: string, to: string) => {
+    if (to.split(path.sep).includes(TRASH_DIR)) throw Object.assign(new Error(`${errno}: simulated`), { code: errno });
+    return original(from, to);
+  });
+  syncBuiltinESMExports();
+  try {
+    return body();
+  } finally {
+    stub.mock.restore();
+    syncBuiltinESMExports();
+  }
+}
+const exdev = <T>(body: () => T): T => failTrashRename("EXDEV", body);
+
+test("remove across filesystems: a file is copied byte for byte (larger than one chunk), the source disappears, mode is kept", () => {
+  const { area, writer } = setup({}, () => CLOCK);
+  const bytes = Buffer.from(Array.from({ length: 200_000 }, (_, i) => (i * 7) % 256));
+  writeFileSync(path.join(area, "big.bin"), bytes);
+  chmodSync(path.join(area, "big.bin"), 0o640);
+  const result = exdev(() => writer.remove("big.bin"));
+  assert.equal(result.movedTo, `${TRASH_DIR}/2026-10-01/big.bin`);
+  const moved = path.join(area, result.movedTo);
+  assert.ok(readFileSync(moved).equals(bytes));
+  assert.equal(statSync(moved).mode & 0o777, 0o640);
+  assert.equal(existsSync(path.join(area, "big.bin")), false);
+  writer.write("big.bin", "again");
+  assert.equal(exdev(() => writer.remove("big.bin")).movedTo, `${TRASH_DIR}/2026-10-01/big-2.bin`, "collision suffixes still apply");
+});
+
+test("remove across filesystems: a directory tree keeps hidden entries, empty directories and symlinks (never followed)", () => {
+  const { area, outside, writer } = setup({}, () => CLOCK);
+  const tree = path.join(area, "tree");
+  mkdirSync(path.join(tree, ".hidden-dir"), { recursive: true });
+  mkdirSync(path.join(tree, "empty"));
+  mkdirSync(path.join(tree, "sub"));
+  writeFileSync(path.join(tree, ".hidden-file"), "h");
+  writeFileSync(path.join(tree, ".hidden-dir", ".inner"), "i");
+  writeFileSync(path.join(tree, "sub", "a.txt"), "a");
+  symlinkSync(path.join(outside, "notes.txt"), path.join(tree, "link"));
+  chmodSync(path.join(tree, "sub"), 0o555);
+  try {
+    const result = exdev(() => writer.remove("tree"));
+    const moved = path.join(area, result.movedTo);
+    assert.equal(read(moved, ".hidden-file"), "h");
+    assert.equal(read(moved, ".hidden-dir", ".inner"), "i");
+    assert.equal(read(moved, "sub", "a.txt"), "a");
+    assert.ok(statSync(path.join(moved, "empty")).isDirectory());
+    assert.equal(statSync(path.join(moved, "sub")).mode & 0o777, 0o555);
+    assert.ok(lstatSync(path.join(moved, "link")).isSymbolicLink());
+    assert.equal(readlinkSync(path.join(moved, "link")), path.join(outside, "notes.txt"));
+    assert.equal(read(outside, "notes.txt"), "outside data\n", "the symlink target is untouched");
+    assert.equal(existsSync(tree), false);
+  } finally {
+    chmodSync(path.join(area, TRASH_DIR, "2026-10-01", "tree", "sub"), 0o755);
+  }
+});
+
+test("remove: a non-EXDEV rename error propagates, with no copy fallback and the source intact", () => {
+  const { area, writer } = setup({}, () => CLOCK);
+  writer.write("keep.txt", "keep");
+  assert.throws(() => failTrashRename("EACCES", () => writer.remove("keep.txt")), { code: "EACCES" });
+  assert.equal(read(area, "keep.txt"), "keep");
+  assert.deepEqual(readdirSync(path.join(area, TRASH_DIR, "2026-10-01")), []);
+});
+
+test("remove across filesystems: a copy that fails midway leaves the original intact, cleans the partial copy and reports the error", () => {
+  const { area, writer } = setup({}, () => CLOCK);
+  writer.write("tree/a.txt", "a");
+  writer.write("tree/b.txt", "b");
+  const original = fs.readSync;
+  let calls = 0;
+  const stub = mock.method(fs, "readSync", (...args: Parameters<typeof fs.readSync>) => {
+    if (++calls === 2) throw Object.assign(new Error("EIO: simulated"), { code: "EIO" });
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => exdev(() => writer.remove("tree")), { code: "EIO" });
+  } finally {
+    stub.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal(read(area, "tree/a.txt"), "a");
+  assert.equal(read(area, "tree/b.txt"), "b");
+  assert.deepEqual(readdirSync(path.join(area, TRASH_DIR, "2026-10-01")), [], "no partial copy is left in the trash");
+});
+
+test("remove across filesystems: an entry that is not a file, directory or symlink is refused before anything is removed", () => {
+  const { area, writer } = setup({}, () => CLOCK);
+  const socketDir = path.join(area, "dev");
+  mkdirSync(socketDir);
+  writeFileSync(path.join(socketDir, "ok.txt"), "ok");
+  const original = fs.lstatSync;
+  const stub = mock.method(fs, "lstatSync", (p: string, ...rest: unknown[]) => {
+    const st = (original as (...a: unknown[]) => fs.Stats)(p, ...rest);
+    return p.endsWith("ok.txt") ? Object.assign(Object.create(st), { isFile: () => false, isDirectory: () => false, isSymbolicLink: () => false }) : st;
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => exdev(() => writer.remove("dev")), { code: "NOT_FILE" });
+  } finally {
+    stub.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal(read(socketDir, "ok.txt"), "ok");
+  assert.deepEqual(readdirSync(path.join(area, TRASH_DIR, "2026-10-01")), []);
+});
+
+test("trash belongs to the physical writable root: two roots each trash only into their own .lixeira", () => {
+  const a = setup({}, () => CLOCK);
+  const b = setup({}, () => CLOCK);
+  a.writer.write("same.txt", "from A");
+  b.writer.write("same.txt", "from B");
+  assert.equal(a.writer.remove("same.txt").movedTo, `${TRASH_DIR}/2026-10-01/same.txt`);
+  assert.equal(exdev(() => b.writer.remove("same.txt")).movedTo, `${TRASH_DIR}/2026-10-01/same.txt`);
+  assert.equal(read(a.area, TRASH_DIR, "2026-10-01", "same.txt"), "from A");
+  assert.equal(read(b.area, TRASH_DIR, "2026-10-01", "same.txt"), "from B");
+  assert.deepEqual(readdirSync(a.area).sort(), [TRASH_DIR]);
+  assert.deepEqual(readdirSync(b.area).sort(), [TRASH_DIR]);
 });
 
 test("purge: counts calendar days from the folder name, keeps malformed and non-directory entries", () => {
