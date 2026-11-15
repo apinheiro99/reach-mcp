@@ -29,6 +29,7 @@
     "typescript-eslint": "^8.72.2"
   },
   "dependencies": {
-    "pdfjs-dist": "6.5.438"
+    "pdfjs-dist": "6.5.438",
+    "zod": "4.6.7"
   }
 }
