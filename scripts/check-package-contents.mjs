@@ -1,13 +1,19 @@
-// Package-content proof: `npm pack --dry-run` may list only dist/ plus npm's own metadata.
+// Package-content proof: `npm pack --dry-run` of every workspace package may list only src/ plus npm's own metadata.
 import { execFileSync } from "node:child_process";
 import process from "node:process";
 
-const out = execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" });
-const files = JSON.parse(out)[0].files.map((f) => f.path);
-const allowed = (p) => p.startsWith("dist/") || ["package.json", "README.md", "LICENSE"].includes(p);
-const bad = files.filter((p) => !allowed(p));
-if (bad.length > 0) {
-  for (const p of bad) console.error(`package-contents: unexpected file ${p}`);
-  process.exit(1);
+const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--workspaces"], { encoding: "utf8" });
+const allowed = (p) => p.startsWith("src/") || ["package.json", "README.md", "LICENSE"].includes(p);
+let total = 0;
+let failed = false;
+for (const pack of JSON.parse(out)) {
+  for (const file of pack.files.map((f) => f.path)) {
+    total += 1;
+    if (!allowed(file)) {
+      console.error(`package-contents: ${pack.name} has unexpected file ${file}`);
+      failed = true;
+    }
+  }
 }
-console.log(`package-contents: ${files.length} files, only intended public artifacts`);
+if (failed) process.exit(1);
+console.log(`package-contents: ${total} files in the workspace packages, only intended artifacts`);

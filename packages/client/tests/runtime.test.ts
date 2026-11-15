@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { BootstrapError } from "../src/bootstrap.ts";
 import { parseClientArgs, startClient } from "../src/runtime.ts";
-import { CliError } from "../../shared/src/cli.ts";
+import { CliError } from "@reach-mcp/shared/cli";
 
 const CREDENTIAL = "client-credential-" + "Mn40Xp";
 

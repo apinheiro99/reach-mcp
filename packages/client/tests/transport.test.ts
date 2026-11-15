@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
-import { ClientHello } from "../../shared/src/wire/index.ts";
+import { ClientHello } from "@reach-mcp/shared/wire";
 import { ClientDispatcher, ClientTransport, parseBootstrap, type FrameHandler, type TransportOptions } from "../src/index.ts";
 
 const CRED = "cred-marker-" + "Wt41pLm";

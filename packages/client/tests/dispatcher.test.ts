@@ -4,10 +4,10 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { FsError } from "../../shared/src/filesystem/index.ts";
+import { FsError } from "@reach-mcp/shared/filesystem";
 import { ClientDispatcher, buildRuntime, type ProjectRuntime } from "../src/index.ts";
-import { OperationResult, ResponseEnvelope, type Operation, type PolicySync } from "../../shared/src/wire/index.ts";
-import { textPdf } from "../../shared/tests/pdf-fixture.ts";
+import { OperationResult, ResponseEnvelope, type Operation, type PolicySync } from "@reach-mcp/shared/wire";
+import { textPdf } from "@reach-mcp/shared/testing/pdf-fixture";
 
 const base = realpathSync(mkdtempSync(path.join(tmpdir(), "reach-dispatch-")));
 const anchor = path.join(base, "anchors");

@@ -1,5 +1,5 @@
 // Client process entry: parse the command line, start the Client, stop it on SIGTERM or SIGINT. systemd owns restarts.
-import { CliError } from "../../shared/src/cli.ts";
+import { CliError } from "@reach-mcp/shared/cli";
 import { BootstrapError } from "./bootstrap.ts";
 import { CLIENT_USAGE, parseClientArgs, startClient } from "./runtime.ts";
 

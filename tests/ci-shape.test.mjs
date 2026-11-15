@@ -16,7 +16,7 @@ function block(name) {
   return lines.slice(start, end).join("\n");
 }
 
-const validationJobs = ["Public Release Check", "Lint", "Type Check", "Automated Tests", "Build Package"];
+const validationJobs = ["Public Release Check", "Lint", "Type Check", "Automated Tests", "Package Check"];
 
 test("validation jobs are blocking and never run for tag pipelines", () => {
   const rules = block(".branch-push-only");

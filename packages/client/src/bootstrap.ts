@@ -5,7 +5,7 @@
 // that check is skipped and the operator must protect the file with an ACL.
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { ClientId, Credential } from "../../shared/src/wire/index.ts";
+import { ClientId, Credential } from "@reach-mcp/shared/wire";
 
 export const BOOTSTRAP_KEYS = ["REACH_SERVER_URL", "REACH_CLIENT_ID", "REACH_CLIENT_CREDENTIAL", "REACH_ROOTS"] as const;
 

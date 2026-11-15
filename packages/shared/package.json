@@ -1,0 +1,29 @@
+{
+  "name": "@reach-mcp/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "REACH shared filesystem, wire, CLI and timer primitives. The one owner of security-critical code used by Server and Client.",
+  "exports": {
+    "./filesystem": "./src/filesystem/index.ts",
+    "./wire": "./src/wire/index.ts",
+    "./cli": "./src/cli.ts",
+    "./timers": "./src/timers.ts",
+    "./testing/pdf-fixture": "./tests/pdf-fixture.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test \"tests/*.test.ts\""
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.5.438",
+    "zod": "4.6.7"
+  }
+}
