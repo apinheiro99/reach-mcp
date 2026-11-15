@@ -24,12 +24,14 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.6",
+    "@types/ws": "8.18.2",
     "eslint": "^10.15.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.2"
   },
   "dependencies": {
     "pdfjs-dist": "6.5.438",
+    "ws": "8.23.0",
     "zod": "4.6.7"
   }
 }
