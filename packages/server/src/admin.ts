@@ -6,11 +6,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { ConfigError } from "./config.ts";
 import { ADMIN_PAGE } from "./admin-page.ts";
 import { buildHealth, type HealthDeps } from "./health.ts";
+import type { ProposalStore } from "./proposals.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
 const CREDENTIAL_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/credential$/;
+const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
+const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
-export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & { uptimeSeconds?: () => number };
+export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & { proposals: ProposalStore; uptimeSeconds?: () => number };
 
 const send = (res: ServerResponse, status: number, body?: unknown): void => {
   if (body === undefined) return void res.writeHead(status).end();
@@ -33,7 +36,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 export function createAdminServer(deps: AdminDeps): Server {
-  const { config, connections } = deps;
+  const { config, connections, proposals } = deps;
   const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
 
   /** Runs one config change; on success the Clients get the new policies exactly once, on a refusal nothing changed. */
@@ -77,6 +80,17 @@ export function createAdminServer(deps: AdminDeps): Server {
         return send(res, 400, { ok: false, problems: error instanceof ConfigError ? error.problems : ["unreadable request"] });
       }
       return change(res, () => config.applyEdit(edit));
+    }
+    if (pathname === "/admin/api/proposal") {
+      if (method !== "GET") return send(res, 405);
+      return send(res, 200, { proposal: proposals.pending() });
+    }
+    const decision = DECISION_ROUTE.exec(pathname);
+    if (decision) {
+      if (method !== "POST") return send(res, 405);
+      const id = decodeURIComponent(decision[1] as string);
+      const result = decision[2] === "approve" ? proposals.approve(id) : proposals.reject(id);
+      return send(res, DECISION_HTTP[result.status], { ok: result.status === "approved" || result.status === "rejected", ...result, config: config.editableView() });
     }
     const credential = CREDENTIAL_ROUTE.exec(pathname);
     if (credential) {

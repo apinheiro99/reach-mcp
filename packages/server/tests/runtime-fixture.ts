@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
-import { ClientConnectionRegistry, createHttpServer, hashCredential, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
+import { ClientConnectionRegistry, createHttpServer, hashCredential, ProposalStore, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
 
 export const MCP_MARKER = "mcp-marker-" + "Kd40";
 export const CLIENT_MARKER = "cred-marker-" + "Wn68";
@@ -27,7 +27,8 @@ export async function startRuntime(extra: Partial<ConnectionOptions> = {}) {
   const config = new ServerConfigStore(file);
   config.loadInitial();
   const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-1", isBuildCompatible: () => true, ...extra });
-  const server = createHttpServer({ config, connections, serverBuild: "srv-1" });
+  const proposals = new ProposalStore({ path: path.join(path.dirname(file), "proposal.json"), config, connections });
+  const server = createHttpServer({ config, connections, proposals, serverBuild: "srv-1" });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const port = (server.address() as AddressInfo).port;
   const sockets: WebSocket[] = [];
@@ -63,7 +64,7 @@ export async function startRuntime(extra: Partial<ConnectionOptions> = {}) {
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
   };
-  return { port, config, connections, connectClient, rpc, close };
+  return { port, config, connections, proposals, file, connectClient, rpc, close };
 }
 
 export const until = async (cond: () => boolean, what: string) => {

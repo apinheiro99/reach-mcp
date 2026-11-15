@@ -3,9 +3,9 @@
 // good configuration. The file format is an implementation detail. Only a SHA-256 digest of each Client credential is
 // stored. Physical roots belong to the remote Client host and are never checked against this machine's filesystem.
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
-import path from "node:path";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { writeFileAtomic } from "./atomic-file.ts";
 import { hashCredential } from "./auth.ts";
 import { ClientId, EffectiveProjectPolicy } from "../../shared/src/wire/index.ts";
 
@@ -43,6 +43,16 @@ const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
   clients: z.array(ClientEntry.omit({ credential_sha256: true })).max(500),
 });
+/** The shape of editableView(): Clients with their policies and a credential flag, never a digest. Strict, for readers of stored copies. */
+export const EditableView = z.strictObject({
+  configured: z.boolean(),
+  clients: z.array(ClientEntry.omit({ credential_sha256: true }).extend({ has_credential: z.boolean() })).max(500),
+});
+export type EditableView = z.infer<typeof EditableView>;
+
+/** What an AI proposal may carry: the human edit without any secret field. */
+export const ProposedEdit = AdminEdit.omit({ mcp_bearer: true });
+export type ProposedEdit = z.infer<typeof ProposedEdit>;
 
 /** What a caller may read of one Client: never the credential digest. */
 export type PublicClient = { client_id: string; display_name?: string; enabled: boolean; projects: EffectiveProjectPolicy[] };
@@ -108,8 +118,16 @@ export class ServerConfigStore {
     if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
     const mcp = parsed.data.mcp_bearer ? hashCredential(parsed.data.mcp_bearer) : this.#active?.mcp_bearer_sha256;
     if (!mcp) throw new ConfigError(["mcp_bearer: required for the first configuration"]);
-    const digests = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, c.credential_sha256]));
-    this.activateCandidate({ mcp_bearer_sha256: mcp, clients: parsed.data.clients.map((c) => ({ ...c, credential_sha256: digests.get(c.client_id) })) });
+    this.activateCandidate(this.#editCandidate(parsed.data.clients, mcp));
+  }
+
+  /** Dry run of an AI proposal against the active configuration: the normalized secret-free edit, or ConfigError. Nothing changes. */
+  validateEdit(input: unknown): ProposedEdit {
+    const parsed = ProposedEdit.safeParse(input);
+    if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
+    const candidate = ServerConfig.safeParse(this.#editCandidate(parsed.data.clients, this.#requireActive().mcp_bearer_sha256));
+    if (!candidate.success) throw new ConfigError(problemsOf(candidate.error));
+    return parsed.data;
   }
 
   /** Generates a Client credential, stores only its digest and returns the plaintext, which exists nowhere else. */
@@ -122,7 +140,7 @@ export class ServerConfigStore {
   }
 
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
-  editableView(): { configured: boolean; clients: EditableClient[] } {
+  editableView(): EditableView {
     if (!this.#active) return { configured: false, clients: [] };
     return structuredClone({ configured: true, clients: this.#active.clients.map(({ credential_sha256, ...client }) => ({ ...client, has_credential: credential_sha256 !== undefined })) });
   }
@@ -153,24 +171,15 @@ export class ServerConfigStore {
     return this.#enabledClient(clientId)?.credential_sha256 ?? null;
   }
 
+  #editCandidate(clients: ProposedEdit["clients"], mcp_bearer_sha256: string) {
+    const digests = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, c.credential_sha256]));
+    return { mcp_bearer_sha256, clients: clients.map((c) => ({ ...c, credential_sha256: digests.get(c.client_id) })) };
+  }
+
   #persist(config: ServerConfig): void {
-    const tmp = `${this.#path}.tmp`;
     try {
-      mkdirSync(path.dirname(this.#path), { recursive: true });
-      const fd = openSync(tmp, "w", 0o600);
-      try {
-        writeSync(fd, `${JSON.stringify(config, null, 2)}\n`);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(tmp, this.#path);
+      writeFileAtomic(this.#path, `${JSON.stringify(config, null, 2)}\n`);
     } catch {
-      try {
-        unlinkSync(tmp);
-      } catch {
-        /* nothing was written */
-      }
       throw new ConfigError(["could not persist the configuration"]);
     }
   }

@@ -4,10 +4,11 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ClientId, Operation, ProjectId, type ResponseEnvelope } from "../../shared/src/wire/index.ts";
-import type { ServerConfigStore } from "./config.ts";
+import { ProposedEdit, type ServerConfigStore } from "./config.ts";
 import type { ClientConnectionRegistry } from "./connections.ts";
+import type { ProposalStore } from "./proposals.ts";
 
-export type McpDeps = { config: ServerConfigStore; connections: ClientConnectionRegistry; serverBuild: string };
+export type McpDeps = { config: ServerConfigStore; connections: ClientConnectionRegistry; proposals: ProposalStore; serverBuild: string };
 
 type Op = Operation["op"];
 
@@ -54,7 +55,7 @@ function toToolResult(response: ResponseEnvelope): CallToolResult {
 }
 
 /** A fresh server per HTTP request: the stateless transport keeps no MCP session. */
-export function buildMcpServer({ config, connections, serverBuild }: McpDeps): McpServer {
+export function buildMcpServer({ config, connections, proposals, serverBuild }: McpDeps): McpServer {
   const server = new McpServer({ name: "reach", version: serverBuild });
 
   server.registerTool(
@@ -70,6 +71,28 @@ export function buildMcpServer({ config, connections, serverBuild }: McpDeps): M
         projects: c.projects.map((p) => ({ project_id: p.project_id, mode: p.mode })),
       }));
       return { content: [{ type: "text", text: JSON.stringify({ clients }) }], structuredContent: { clients } };
+    },
+  );
+
+  // Configuration is read and proposed here, never changed: approval and activation belong to a human in the admin UI.
+  server.registerTool(
+    "reach_config_get",
+    { description: "Read the current editable configuration (no secrets) and the pending proposal, if any, with its diff.", annotations: { ...READ, title: "Read REACH configuration" } },
+    (): CallToolResult => {
+      const result = { config: config.editableView(), pending: proposals.pending() };
+      return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
+    },
+  );
+  server.registerTool(
+    "reach_config_propose",
+    {
+      description: "Propose a complete replacement of the Clients, their projects and policies. It stays inactive until a human approves it in the admin UI; it cannot carry secrets and only one proposal can be pending.",
+      inputSchema: ProposedEdit,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false, title: "Propose REACH configuration" },
+    },
+    (args: unknown): CallToolResult => {
+      const result = proposals.propose(args);
+      return { ...(result.status === "pending" ? {} : { isError: true }), content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result };
     },
   );
 
