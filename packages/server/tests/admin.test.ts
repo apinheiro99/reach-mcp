@@ -124,12 +124,24 @@ test("admin proposal endpoints: diff, approve once, stale conflict, reject, unkn
   await rt.close();
 });
 
+test("admin autosave changes the log size and retention through the config owner; bad values change nothing", async () => {
+  const rt = await start(true);
+  const clients = rt.config.editableView().clients.map(({ client_id, enabled, projects }) => ({ client_id, enabled, projects }));
+  assert.equal((await rt.put({ logging: { max_bytes: 8192, retention_days: 3 }, clients })).status, 200);
+  const view = (await (await fetch(`${rt.a}/admin/api/config`)).json()) as { logging: unknown };
+  assert.deepEqual(view.logging, { max_bytes: 8192, retention_days: 3 });
+  assert.equal((await rt.put({ logging: { max_bytes: 1, retention_days: 3 }, clients })).status, 422);
+  assert.deepEqual(rt.config.loggingSettings(), { max_bytes: 8192, retention_days: 3 });
+  await rt.close();
+});
+
 test("the page is vanilla: debounced autosave, no Save button, no framework or remote script", async () => {
   const rt = await start();
   const html = await (await fetch(`${rt.a}/admin`)).text();
   assert.match(html, /DEBOUNCE_MS = \d+/);
   assert.match(html, /setTimeout\(save, DEBOUNCE_MS\)/);
   assert.ok(!/>\s*Save\s*</i.test(html), "no generic Save button");
+  assert.ok(html.includes('id="log-bytes"') && html.includes('id="log-days"'), "log size and retention fields exist");
   assert.ok(html.includes('"Approve"') && html.includes('"Reject"') && html.includes("/admin/api/proposal"), "approve and reject exist for a pending proposal");
   assert.ok(!/<script[^>]*\ssrc=|react|vue|svelte|angular|jquery/i.test(html));
   assert.equal((await fetch(`${rt.a}/`, { redirect: "manual" })).status, 302);

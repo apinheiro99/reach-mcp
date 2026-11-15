@@ -19,7 +19,9 @@ import {
   type WireError,
 } from "../../shared/src/wire/index.ts";
 import { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
+import { NO_AUDIT, type Audit } from "./audit.ts";
 import type { ServerConfigStore } from "./config.ts";
+import { NO_LOGGER, type Logger } from "./logging.ts";
 
 export type ConnectionOptions = {
   config: ServerConfigStore;
@@ -37,6 +39,9 @@ export type ConnectionOptions = {
   maxPendingRequests?: number;
   now?: () => number;
   schedule?: Schedule;
+  /** Operational log and audit trail; the registry emits its own lifecycle events directly. Default: none. */
+  logger?: Logger;
+  audit?: Audit;
 };
 
 type Session = { clientId: string; socket: WebSocket; build: string; connectedSince: number; lastSeen: number };
@@ -56,6 +61,8 @@ export class ClientConnectionRegistry {
   readonly #maxPending: number;
   readonly #now: () => number;
   readonly #schedule: Schedule;
+  readonly #logger: Logger;
+  readonly #audit: Audit;
   #cancelSweep: (() => void) | null = null;
   /** Outcomes of requests that were sent; the only request counters in the Server. */
   #completed = 0;
@@ -73,6 +80,8 @@ export class ClientConnectionRegistry {
     }
     this.#now = options.now ?? Date.now;
     this.#schedule = options.schedule ?? realSchedule;
+    this.#logger = options.logger ?? NO_LOGGER;
+    this.#audit = options.audit ?? NO_AUDIT;
   }
 
   /** Starts the periodic stale check; stop() ends it. */
@@ -140,7 +149,11 @@ export class ClientConnectionRegistry {
 
   /** Terminates every stale session. */
   sweep(): void {
-    for (const session of [...this.#sessions.values()]) if (this.#isStale(session)) session.socket.terminate();
+    for (const session of [...this.#sessions.values()]) {
+      if (!this.#isStale(session)) continue;
+      this.#logger.log("WARNING", "connections", `client stale client_id=${session.clientId}`);
+      session.socket.terminate();
+    }
   }
 
   /**
@@ -168,6 +181,7 @@ export class ClientConnectionRegistry {
         if (timedOut) this.#timedOut++;
         else if (response.ok) this.#completed++;
         else this.#failed++;
+        this.#recordOutcome(clientId, projectId, operation, response, timedOut);
         resolve(response);
       };
       const cancel = this.#schedule(() => {
@@ -177,6 +191,18 @@ export class ClientConnectionRegistry {
       this.#pending.set(requestId, { session, mutation, settle, cancel });
       if (!this.#send(session, envelope.data)) settle(failureResponse(requestId, this.#lost(mutation, "client is offline")));
     });
+  }
+
+  /** The one place a sent request is logged and, if it changes files, audited: exactly once, at its terminal outcome. */
+  #recordOutcome(clientId: string, projectId: string, operation: Operation, response: ResponseEnvelope, timedOut: boolean): void {
+    const where = `op=${operation.op} client_id=${clientId} project_id=${projectId}`;
+    const result = timedOut ? "timed_out" : response.ok ? "ok" : response.error.code;
+    if (timedOut) this.#logger.log("ERROR", "connections", `request timed out ${where}`, response.request_id);
+    else if (response.ok) this.#logger.log("INFO", "connections", `request completed ${where}`, response.request_id);
+    else this.#logger.log("WARNING", "connections", `request failed ${where} code=${response.error.code}`, response.request_id);
+    if (isMutation(operation.op)) {
+      this.#audit.record({ actor: "chatgpt", action: operation.op, client_id: clientId, project_id: projectId, ...("path" in operation ? { target: operation.path } : {}), request_id: response.request_id, result });
+    }
   }
 
   /** What a caller learns when no response arrived: a mutation may or may not have run, a read simply failed. */
@@ -195,6 +221,7 @@ export class ClientConnectionRegistry {
   }
 
   #reject(socket: WebSocket, error: WireError, serverBuild?: string): null {
+    this.#logger.log("WARNING", "connections", `client refused code=${error.code}`);
     socket.send(JSON.stringify({ kind: "reject", ...(serverBuild ? { server_build: serverBuild } : {}), error }));
     socket.close();
     return null;
@@ -231,6 +258,7 @@ export class ClientConnectionRegistry {
     const now = this.#now();
     const session: Session = { clientId, socket, build, connectedSince: now, lastSeen: now };
     this.#sessions.set(clientId, session);
+    this.#logger.log("INFO", "connections", `client connected client_id=${clientId}`);
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true });
     this.syncPolicy(clientId);
     return session;
@@ -255,6 +283,7 @@ export class ClientConnectionRegistry {
   #drop(session: Session): void {
     if (this.#sessions.get(session.clientId) !== session) return;
     this.#sessions.delete(session.clientId);
+    this.#logger.log("INFO", "connections", `client disconnected client_id=${session.clientId}`);
     for (const [id, pending] of [...this.#pending]) {
       if (pending.session === session) pending.settle(failureResponse(id, this.#lost(pending.mutation, "client disconnected")));
     }
