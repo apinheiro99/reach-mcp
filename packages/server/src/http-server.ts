@@ -1,5 +1,5 @@
 // The Server's one HTTP listener: authenticated stateless Streamable HTTP MCP on /mcp and the Client WebSocket upgrade on
-// /client. Every other path is a 404; there is no admin UI, health or MCP session here. TLS is the reverse proxy's job.
+// /client, plus the private /health. Every other path is a 404; the admin surface is a separate listener (admin.ts), and there is no MCP session here. TLS is the reverse proxy's job.
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { WebSocketServer } from "ws";
@@ -8,10 +8,12 @@ import type { ClientConnectionRegistry } from "./connections.ts";
 import type { ServerConfigStore } from "./config.ts";
 import { buildHealth } from "./health.ts";
 import { buildMcpServer } from "./mcp.ts";
+import type { ProposalStore } from "./proposals.ts";
 
 export type HttpServerDeps = {
   config: ServerConfigStore;
   connections: ClientConnectionRegistry;
+  proposals: ProposalStore;
   serverBuild: string;
   /** Injected build metadata; omitted means the health snapshot reports null. */
   repositoryCommit?: string;

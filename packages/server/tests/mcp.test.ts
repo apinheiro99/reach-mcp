@@ -19,12 +19,12 @@ test("the SDK answers initialize with the injected build as its version", async 
   await rt.close();
 });
 
-test("tools/list is exactly discovery plus the 13 shared operations; no shell, Git mutation or admin tool", async () => {
+test("tools/list is exactly discovery, two config tools and the 13 shared operations; no shell, Git mutation, approve or activate tool", async () => {
   const rt = await startRuntime();
   const tools = await listTools(rt);
-  assert.deepEqual(tools.map((t) => t.name).sort(), ["reach_discover", ...OPS].sort());
-  assert.ok(!tools.some((t) => /shell|exec|commit|push|admin|setup/i.test(t.name)));
-  for (const tool of tools.filter((t) => t.name !== "reach_discover")) {
+  assert.deepEqual(tools.map((t) => t.name).sort(), ["reach_discover", "reach_config_get", "reach_config_propose", ...OPS].sort());
+  assert.ok(!tools.some((t) => /shell|exec|commit|push|admin|setup|approve|reject|activate/i.test(t.name)));
+  for (const tool of tools.filter((t) => OPS.includes(t.name))) {
     assert.ok("client_id" in tool.inputSchema.properties && "project_id" in tool.inputSchema.properties, `${tool.name} is qualified`);
     assert.ok(tool.inputSchema.required?.includes("client_id") && tool.inputSchema.required.includes("project_id"));
     assert.ok(!("op" in tool.inputSchema.properties), "the op is the tool name, not an argument");
@@ -139,6 +139,6 @@ test("the MCP layer only adapts: no filesystem, Git, routing state or copied arg
   const { readFileSync } = await import("node:fs");
   const path = await import("node:path");
   const src = readFileSync(path.join(import.meta.dirname, "..", "src", "mcp.ts"), "utf8");
-  assert.ok(!/node:fs|node:child_process|new Map\(|new Set\(|pending|sessions/.test(src.replace("new Map(connections.status()", "")));
+  assert.ok(!/node:fs|node:child_process|new Map\(|new Set\(|pendingRequests|#pending\b|sessions/.test(src.replace("new Map(connections.status()", "")));
   assert.ok(!/z\.(string|number|boolean|array|enum|int)\(/.test(src), "argument types come from the shared Operation schemas");
 });

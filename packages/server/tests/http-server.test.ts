@@ -5,7 +5,7 @@ import path from "node:path";
 import { bearerCredential, hashCredential, sameDigest } from "../src/index.ts";
 import net from "node:net";
 import WebSocket from "ws";
-import { ClientConnectionRegistry, createHttpServer, ServerConfigStore } from "../src/index.ts";
+import { ClientConnectionRegistry, createHttpServer, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { CLIENT_MARKER, requestsOf, startRuntime, until, MCP_MARKER } from "./runtime-fixture.ts";
 
 test("auth owner: exactly one Bearer token is read; hashing and digest comparison are stable and constant-time shaped", () => {
@@ -109,7 +109,7 @@ test("a Client upgrade with two Authorization lines fails admission; a single li
 test("with no active configuration a well-formed bearer gets a controlled 503, and the listener keeps serving", async () => {
   const config = new ServerConfigStore("/nonexistent/config.json");
   const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-1", isBuildCompatible: () => true });
-  const server = createHttpServer({ config, connections, serverBuild: "srv-1" });
+  const server = createHttpServer({ config, connections, proposals: new ProposalStore({ path: "/nonexistent/p.json", config, connections }), serverBuild: "srv-1" });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const port = (server.address() as import("node:net").AddressInfo).port;
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
