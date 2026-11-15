@@ -11,6 +11,7 @@ export type FsErrorCode =
   | "UNSUPPORTED_FORMAT"
   | "DIMENSIONS_TOO_LARGE"
   | "INVALID_ARGUMENT"
+  | "NOT_UNIQUE"
   | "SYMLINK_REFUSED";
 
 export class FsError extends Error {
