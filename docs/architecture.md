@@ -66,7 +66,7 @@ The current Dev MCP is a working prototype and provides proven implementation pa
 - Zod;
 - ChatGPT-facing MCP using Streamable HTTP.
 
-Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. Every other path answers 404; there is no admin UI, health route or MCP session state on this listener. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
+Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. `GET /health` returns a minimal snapshot behind the same bearer (401 when missing or wrong, 503 with no body while no configuration is active): `status`, `server_build`, `repository_commit` (injected, otherwise null), `uptime_seconds`, `config_active`, every configured Client joined with its live session (`client_id`, `enabled`, `online`, `client_build` and `last_seen`, null while disconnected) and request totals (`in_flight`, `completed`, `failed`, `timed_out`); it never includes roots, credentials or paths. Every other path answers 404; there is no admin UI or MCP session state on this listener. Each MCP tool result carries the `request_id` that travelled on the wire to the Client. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
 
 REACH should remain Node/TypeScript unless a concrete blocker appears.
 

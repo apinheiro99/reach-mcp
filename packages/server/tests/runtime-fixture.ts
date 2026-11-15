@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
-import { ClientConnectionRegistry, createHttpServer, hashCredential, ServerConfigStore } from "../src/index.ts";
+import { ClientConnectionRegistry, createHttpServer, hashCredential, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
 
 export const MCP_MARKER = "mcp-marker-" + "Kd40";
 export const CLIENT_MARKER = "cred-marker-" + "Wn68";
@@ -12,7 +12,7 @@ export const PHYSICAL_ROOT = "/srv/private-web-root";
 
 type Frame = { kind: string; request_id?: string; operation?: { op: string; [k: string]: unknown }; policies?: unknown[] };
 
-export async function startRuntime() {
+export async function startRuntime(extra: Partial<ConnectionOptions> = {}) {
   const file = path.join(mkdtempSync(path.join(tmpdir(), "reach-runtime-")), "config.json");
   writeFileSync(
     file,
@@ -26,7 +26,7 @@ export async function startRuntime() {
   );
   const config = new ServerConfigStore(file);
   config.loadInitial();
-  const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-1", isBuildCompatible: () => true });
+  const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-1", isBuildCompatible: () => true, ...extra });
   const server = createHttpServer({ config, connections, serverBuild: "srv-1" });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const port = (server.address() as AddressInfo).port;
