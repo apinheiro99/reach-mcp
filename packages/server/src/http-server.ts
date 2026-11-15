@@ -1,0 +1,79 @@
+// The Server's one HTTP listener: authenticated stateless Streamable HTTP MCP on /mcp and the Client WebSocket upgrade on
+// /client. Every other path is a 404; there is no admin UI, health or MCP session here. TLS is the reverse proxy's job.
+import { createServer, type IncomingMessage, type Server } from "node:http";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { WebSocketServer } from "ws";
+import { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
+import type { ClientConnectionRegistry } from "./connections.ts";
+import type { ServerConfigStore } from "./config.ts";
+import { buildHealth } from "./health.ts";
+import { buildMcpServer } from "./mcp.ts";
+
+export type HttpServerDeps = {
+  config: ServerConfigStore;
+  connections: ClientConnectionRegistry;
+  serverBuild: string;
+  /** Injected build metadata; omitted means the health snapshot reports null. */
+  repositoryCommit?: string;
+  uptimeSeconds?: () => number;
+};
+
+const MCP_PATH = "/mcp";
+const HEALTH_PATH = "/health";
+const CLIENT_PATH = "/client";
+
+const pathOf = (req: IncomingMessage): string => new URL(req.url ?? "/", "http://localhost").pathname;
+
+/** The one bearer check of the data plane: 200 when allowed, 401 when refused, 503 when no configuration is active. */
+function authenticate(config: ServerConfigStore, req: IncomingMessage): 200 | 401 | 503 {
+  const bearer = bearerCredential(req.headers);
+  if (bearer === null) return 401;
+  let expected: string;
+  try {
+    expected = config.mcpBearerDigest();
+  } catch {
+    return 503;
+  }
+  return sameDigest(hashCredential(bearer), expected) ? 200 : 401;
+}
+
+export function createHttpServer(deps: HttpServerDeps): Server {
+  const clients = new WebSocketServer({ noServer: true });
+  const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
+  // Repeated Authorization lines are joined into one value, which the auth owner's exact parser then refuses.
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    const pathname = pathOf(req);
+    if (pathname === HEALTH_PATH) {
+      if (req.method !== "GET") return void res.writeHead(405).end();
+      const auth = deps.config.isActive() ? authenticate(deps.config, req) : 503; // fail closed: no health body without an active configuration
+      if (auth !== 200) return void res.writeHead(auth, auth === 401 ? { "WWW-Authenticate": "Bearer" } : {}).end();
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(buildHealth({ ...deps, uptimeSeconds })));
+      return;
+    }
+    if (pathname !== MCP_PATH) {
+      res.writeHead(404).end();
+      return;
+    }
+    const auth = authenticate(deps.config, req);
+    if (auth !== 200) {
+      res.writeHead(auth, auth === 401 ? { "WWW-Authenticate": "Bearer" } : {}).end(); // 503: no active configuration, and the SDK is never created
+      return;
+    }
+    const mcp = buildMcpServer(deps);
+    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("close", () => void transport.close().then(() => mcp.close()));
+    mcp.connect(transport).then(() => transport.handleRequest(req, res)).catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+  });
+  server.on("upgrade", (req, socket, head) => {
+    if (pathOf(req) !== CLIENT_PATH) {
+      socket.destroy();
+      return;
+    }
+    clients.handleUpgrade(req, socket, head, (ws) => deps.connections.accept(ws, req.headers));
+  });
+  server.on("close", () => clients.close());
+  return server;
+}

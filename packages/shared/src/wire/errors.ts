@@ -61,3 +61,6 @@ export function toWireError(err: unknown): WireError {
 export function incompatibleBuildError(clientBuild: string, serverBuild: string): WireError {
   return { code: "INCOMPATIBLE_BUILD", message: "client and server builds are not compatible", details: { client_build: clientBuild, server_build: serverBuild } };
 }
+
+/** What a caller learns when a mutation may or may not have run: never retried. The one canonical text for every component. */
+export const MUTATION_INDETERMINATE_ERROR: WireError = { code: "MUTATION_INDETERMINATE", message: "mutation outcome is unknown; it is not retried" };
