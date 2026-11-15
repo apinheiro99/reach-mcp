@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { FsError } from "../../shared/src/filesystem/index.ts";
 import { ClientDispatcher, buildRuntime, type ProjectRuntime } from "../src/index.ts";
 import { OperationResult, ResponseEnvelope, type Operation, type PolicySync } from "../../shared/src/wire/index.ts";
 import { textPdf } from "../../shared/tests/pdf-fixture.ts";
@@ -270,4 +271,38 @@ test("an operation error becomes a compact response without a stack or raw messa
 
 test("an invalid mutation timeout is refused", () => {
   for (const bad of [0, -1, Number.NaN]) assert.throws(() => new ClientDispatcher({ anchors: [anchor], mutationTimeoutMs: bad }), RangeError);
+});
+
+test("a queued mutation runs under the policy active when it starts: read_only, removal and a tighter glob all stop it", async () => {
+  for (const change of ["read_only", "removed", "tighter"] as const) {
+    const root = dir(`requeue-${change}`);
+    const g = gated();
+    const writes: string[] = [];
+    const d = new ClientDispatcher({
+      anchors: [anchor],
+      createRuntime: (policy) => {
+        const rt = g.runtime(policy.project_id);
+        const write = rt.writer!.write;
+        const allow = policy.writable_globs;
+        rt.writer!.write = (p: string) => {
+          if (allow && !allow.some((glob) => p.startsWith(glob.replace("/**", "/")))) throw new FsError("DENIED", "outside writable globs");
+          writes.push(p);
+          return write(p, "");
+        };
+        return rt;
+      },
+    });
+    d.applyPolicy(snapshot(pol("p", root)));
+    const running = d.handle(req("p", { op: "fs_write", path: "first", content: "x" }, "A"));
+    const queued = d.handle(req("p", { op: "fs_write", path: "docs/second", content: "x" }, "B"));
+    await tick();
+    assert.deepEqual(g.log, ["start p:write:first"], "B is queued behind A");
+    if (change === "read_only") d.applyPolicy(snapshot(pol("p", root, { mode: "read_only" })));
+    if (change === "removed") d.applyPolicy(snapshot());
+    if (change === "tighter") d.applyPolicy(snapshot(pol("p", root, { writable_globs: ["other/**"] })));
+    await g.open("p:write:first");
+    assert.equal(fail(await running), "OK", "the running mutation finishes under the runtime it started with");
+    assert.equal(fail(await queued), change === "removed" ? "NOT_FOUND" : "DENIED", change);
+    assert.deepEqual(writes, ["first"], "the queued writer was never called");
+  }
 });

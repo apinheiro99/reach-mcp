@@ -102,8 +102,7 @@ export class ClientDispatcher {
     const op = request.operation;
     try {
       if (!isMutation(op.op)) return this.#respond(id, await this.#execute(project.runtime, op));
-      if (project.policy.mode !== "read_write" || !project.runtime.writer) return failure(id, { code: "DENIED", message: "project is read-only" });
-      return await this.#mutate(id, request.project_id, project.runtime, op);
+      return await this.#mutate(id, request.project_id, op);
     } catch (err) {
       return failure(id, toWireError(err));
     }
@@ -115,9 +114,9 @@ export class ClientDispatcher {
   }
 
   /** Queues the real operation; the caller-facing deadline never touches the queue. */
-  #mutate(id: string, project: string, runtime: ProjectRuntime, op: Operation): Promise<ResponseEnvelope> {
+  #mutate(id: string, project: string, op: Operation): Promise<ResponseEnvelope> {
     const previous = this.#tails.get(project) ?? Promise.resolve();
-    const run = previous.then(() => this.#execute(runtime, op));
+    const run = previous.then(() => this.#executeMutation(project, op));
     const tail = run.then(
       () => undefined,
       () => undefined,
@@ -141,6 +140,14 @@ export class ClientDispatcher {
     });
   }
 
+  /** Runs when the mutation's turn starts, under the policy active right now, never the one seen when it was queued. */
+  async #executeMutation(projectId: string, op: Operation): Promise<OperationResult> {
+    const project = this.#projects.get(projectId);
+    if (!project) throw new FsError("NOT_FOUND", "unknown project");
+    if (project.policy.mode !== "read_write") throw new FsError("DENIED", "project is read-only");
+    return this.#execute(project.runtime, op);
+  }
+
   async #execute(runtime: ProjectRuntime, op: Operation): Promise<OperationResult> {
     const { reader, writer, git } = runtime;
     switch (op.op) {
@@ -154,6 +161,7 @@ export class ClientDispatcher {
       }
       case "fs_search": {
         const r = await reader.search({ patterns: op.patterns, mode: op.mode, caseSensitive: op.case_sensitive, path: op.path, include: op.include, exclude: op.exclude, contextLines: op.context_lines, limit: op.limit });
+        const { tooLarge, binary, secretContent: hidden } = r.filesSkipped;
         return {
           op: op.op,
           path: r.path,
@@ -162,7 +170,7 @@ export class ClientDispatcher {
           matches: r.matches,
           truncated: r.truncated,
           files_scanned: r.filesScanned,
-          files_skipped: { too_large: r.filesSkipped.tooLarge, binary: r.filesSkipped.binary, secret_content: r.filesSkipped.secretContent },
+          files_skipped: { too_large: tooLarge, binary, secret_content: hidden },
           stopped_by: r.stoppedBy,
         };
       }
