@@ -3,6 +3,10 @@
 import { z } from "zod";
 import { ProjectId, WirePath } from "./ids.ts";
 
+/** An explicit absolute host path in POSIX (/x), drive (C:\\x, C:/x) or UNC (\\\\host\\share) form; never cwd-relative.
+ * Lexical only: the Client canonicalises it on its own host. */
+export const AbsoluteHostPath = WirePath.regex(/^(\/|[A-Za-z]:[\\/]|\\\\)/, "must be an absolute host path");
+
 const limit = z.int().min(1);
 const globs = z.array(z.string().min(1).max(512)).max(200);
 
@@ -31,7 +35,7 @@ export const EffectiveLimits = z.strictObject({
 
 export const EffectiveProjectPolicy = z.strictObject({
   project_id: ProjectId,
-  physical_root: WirePath.min(1),
+  physical_root: AbsoluteHostPath,
   mode: z.enum(["read_only", "read_write"]),
   writable_globs: globs.optional(),
   deny_globs: globs.optional(),

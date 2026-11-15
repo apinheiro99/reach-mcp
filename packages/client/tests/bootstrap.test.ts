@@ -128,3 +128,16 @@ test("effective policy schema is strict: no unknown fields, invalid mode, limits
   }
   assert.equal(code(() => acceptEffectivePolicy([anchor], { ...policy(anchor), extra: 1 })), "ZodError");
 });
+
+test("physical_root must be an explicit absolute host path: relative roots never depend on the process cwd", () => {
+  for (const rel of ["proj", "./proj", "../proj", "proj/sub", "C:proj", ""]) assert.equal(EffectiveProjectPolicy.safeParse(policy(rel)).success, false, rel);
+  for (const abs of ["/srv/p", "C:\\Work\\p", "c:/work/p", "\\\\server\\share\\p"]) assert.equal(EffectiveProjectPolicy.safeParse(policy(abs)).success, true, abs);
+  const before = process.cwd();
+  process.chdir(anchor);
+  try {
+    assert.equal(code(() => acceptEffectivePolicy([anchor], policy("proj"))), "ZodError", "proj exists under the cwd and the anchor, yet is refused");
+    assert.equal(code(() => acceptEffectivePolicy([anchor], policy("./proj"))), "ZodError");
+  } finally {
+    process.chdir(before);
+  }
+});
