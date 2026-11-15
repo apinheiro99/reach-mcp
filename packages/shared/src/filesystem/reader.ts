@@ -260,7 +260,9 @@ export class FilesystemReader {
     });
     const context = Math.min(Math.max(opts.contextLines ?? 0, 0), 3);
     const total = Math.min(opts.limit ?? this.limits.maxSearchResults, this.limits.maxSearchResults);
-    const perPattern = Math.max(1, Math.floor(total / patterns.length));
+    // Fair share per pattern; when the limit is below the pattern count the first `total` patterns get one each, so the shares never sum past `total`.
+    const share = Math.floor(total / patterns.length);
+    const quota = patterns.map((_, p) => share || (p < total ? 1 : 0));
     const includes = (opts.include ?? []).map((g) => globToRegExp(g.includes("/") ? g : `**/${g}`));
     const excludes = (opts.exclude ?? []).map((g) => globToRegExp(g.includes("/") ? g : `**/${g}`));
 
@@ -274,23 +276,26 @@ export class FilesystemReader {
     let stoppedBy: "results" | "files" | "bytes" | null = null;
     const clip = (l: string) => (l.length > maxLineChars ? l.slice(0, maxLineChars) + "…" : l);
 
-    const scanFile = (fileRel: string, fileAbs: string, size: number): void => {
+    /** Scans one candidate. Returns the budget that forbids reading it, or null once it was handled. */
+    const scanFile = (fileRel: string, fileAbs: string, size: number): "files" | "bytes" | null => {
       if (size > this.limits.maxFileBytes) {
         skipped.tooLarge++;
-        return;
+        return null;
       }
+      if (filesScanned >= maxSearchFiles) return "files";
+      if (bytesScanned + size > maxSearchBytes) return "bytes";
+      filesScanned++;
+      bytesScanned += size;
       const buf = readFileSync(fileAbs);
       if (buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)) {
         skipped.binary++;
-        return;
+        return null;
       }
       const raw = buf.toString("utf8");
       if (hasPrivateKey(raw)) {
         skipped.secretContent++;
-        return;
+        return null;
       }
-      filesScanned++;
-      bytesScanned += buf.length;
       const lines = redactText(raw).text.split("\n");
       let inFile = 0;
       for (let i = 0; i < lines.length; i++) {
@@ -298,7 +303,7 @@ export class FilesystemReader {
         for (let p = 0; p < matchers.length; p++) {
           if (!(matchers[p] as RegExp).test(line)) continue;
           counts[p] = (counts[p] as number) + 1;
-          if ((counts[p] as number) > perPattern || inFile >= maxMatchesPerFile) continue;
+          if ((counts[p] as number) > (quota[p] as number) || inFile >= maxMatchesPerFile) continue;
           inFile++;
           matches.push({
             pattern: patterns[p] as string,
@@ -309,10 +314,11 @@ export class FilesystemReader {
           });
         }
       }
+      return null;
     };
 
     if (rootStat.isFile()) {
-      scanFile(rel, abs, rootStat.size);
+      stoppedBy = scanFile(rel, abs, rootStat.size);
     } else {
       const stack: [string, string][] = [[rel, abs]];
       walk: while (stack.length > 0) {
@@ -326,20 +332,12 @@ export class FilesystemReader {
           }
           if (includes.length > 0 && !includes.some((re) => re.test(entry.path))) continue;
           if (excludes.some((re) => re.test(entry.path))) continue;
-          if (filesScanned >= maxSearchFiles) {
-            stoppedBy = "files";
-            break walk;
-          }
-          if (bytesScanned >= maxSearchBytes) {
-            stoppedBy = "bytes";
-            break walk;
-          }
-          const fileAbs = path.join(dirAbs, name);
-          scanFile(entry.path, fileAbs, entry.size ?? 0);
+          stoppedBy = scanFile(entry.path, path.join(dirAbs, name), entry.size ?? 0);
+          if (stoppedBy) break walk;
         }
       }
     }
-    const capped = counts.some((c) => c > perPattern);
+    const capped = counts.some((c, p) => c > (quota[p] as number));
     return {
       path: rel || ".",
       mode,

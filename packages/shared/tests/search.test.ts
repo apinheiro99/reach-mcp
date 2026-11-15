@@ -1,7 +1,7 @@
 // Literal-by-default search, bounded regex, budgets and the no-oracle guarantees.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { FilesystemReader, REDACTED } from "../src/filesystem/index.ts";
 import { code, LIMITS, makeFixture } from "./fixture.ts";
@@ -111,4 +111,39 @@ test("search: no oracle for secret values and key-material files are skipped and
 test("search: node_modules is skipped and symlinks are not followed", () => {
   assert.equal(reader.search({ patterns: ["module.exports"] }).matches.length, 0);
   assert.deepEqual(reader.search({ patterns: ["greet"] }).matches.map((m) => m.path).sort(), ["src/app.ts"], "the link to app.ts is not scanned twice");
+});
+
+test("search: the result cap holds even when the limit is below the number of patterns", () => {
+  const out = reader.search({ patterns: ["export", "hello", "line"], limit: 2 });
+  assert.ok(out.matches.length <= 2, "never more matches than the limit");
+  assert.deepEqual(out.matches.map((m) => m.pattern).sort(), ["export", "hello"], "the first patterns get the shares, deterministically");
+  assert.equal(out.truncated, true);
+  assert.equal(out.stoppedBy, "results");
+});
+
+test("search: binary and key-material candidates consume the file budget", () => {
+  const { root: dir } = makeFixture();
+  mkdirSync(path.join(dir, "probe"));
+  const key = "-----BEGIN " + "RSA PRIVATE KEY" + "-----\nabc\n-----END " + "RSA PRIVATE KEY" + "-----\n";
+  writeFileSync(path.join(dir, "probe", "a1.bin"), Buffer.from([0, 1, 2]));
+  writeFileSync(path.join(dir, "probe", "a2.txt"), key);
+  writeFileSync(path.join(dir, "probe", "a3.txt"), "needle\n");
+  const r = new FilesystemReader({ root: dir, limits: { ...LIMITS, maxSearchFiles: 2 } });
+  const out = r.search({ patterns: ["needle"], path: "probe" });
+  assert.equal(out.stoppedBy, "files");
+  assert.equal(out.matches.length, 0, "the third candidate is never opened");
+  assert.equal(out.filesScanned, 2);
+  assert.equal(out.filesSkipped.binary + out.filesSkipped.secretContent, 2);
+});
+
+test("search: a candidate that would cross the byte budget is not read", () => {
+  const { root: dir } = makeFixture();
+  mkdirSync(path.join(dir, "probe"));
+  writeFileSync(path.join(dir, "probe", "a1.txt"), "needle one\n");
+  writeFileSync(path.join(dir, "probe", "a2.txt"), "needle two\n");
+  const r = new FilesystemReader({ root: dir, limits: { ...LIMITS, maxSearchBytes: 15 } });
+  const out = r.search({ patterns: ["needle"], path: "probe" });
+  assert.equal(out.stoppedBy, "bytes");
+  assert.deepEqual(out.matches.map((m) => m.path), ["probe/a1.txt"], "the second file would reach 22 bytes, so it stays closed");
+  assert.equal(out.filesScanned, 1);
 });
