@@ -130,8 +130,48 @@ test("a tampered proposal file cannot smuggle a secret through approval", async 
   const stored = JSON.parse(readFileSync(proposalFile(rt), "utf8"));
   stored.edit.mcp_bearer = "attacker-bearer-0123456789";
   writeFileSync(proposalFile(rt), JSON.stringify(stored));
-  assert.equal(rt.proposals.approve(id).status, "invalid");
+  assert.equal(rt.proposals.approve(id).status, "not_found", "a tampered file is no proposal");
   assert.equal(rt.config.mcpBearerDigest(), hashCredential(MCP_MARKER));
+  await rt.close();
+});
+
+test("a tampered proposal file fails closed: unknown or secret fields anywhere make it no proposal, with no leak and no mutation", async () => {
+  const rt = await startRuntime();
+  const id = (rt.proposals.propose(edit(rt)) as { proposal_id: string }).proposal_id;
+  const original = readFileSync(proposalFile(rt), "utf8");
+  const LEAK = "leak-marker-" + "Zq41";
+  const tampers: [string, (string | number)[], unknown][] = [
+    ["top-level unknown", ["extra"], LEAK],
+    ["base client digest", ["base", "clients", 0, "credential_sha256"], LEAK],
+    ["base client bearer", ["base", "clients", 0, "mcp_bearer"], LEAK],
+    ["base project unknown", ["base", "clients", 0, "projects", 0, "surprise"], LEAK],
+    ["base top-level unknown", ["base", "mcp_bearer_sha256"], LEAK],
+    ["edit bearer", ["edit", "mcp_bearer"], LEAK],
+    ["edit digest", ["edit", "clients", 0, "credential_sha256"], LEAK],
+    ["edit project unknown", ["edit", "clients", 0, "projects", 0, "surprise"], LEAK],
+    ["bad time", ["created_at"], "yesterday"],
+  ];
+  const setAt = (root: unknown, keys: (string | number)[], value: unknown) => {
+    const parent = keys.slice(0, -1).reduce((node, key) => (node as Record<string | number, unknown>)[key], root) as Record<string | number, unknown>;
+    parent[keys[keys.length - 1] as string | number] = value;
+  };
+  const sync = spySync(rt);
+  for (const [name, keys, value] of tampers) {
+    const stored = JSON.parse(original);
+    setAt(stored, keys, value);
+    writeFileSync(proposalFile(rt), JSON.stringify(stored));
+    assert.equal(rt.proposals.pending(), null, name);
+    assert.equal(rt.proposals.approve(id).status, "not_found", name);
+    assert.equal(rt.proposals.reject(id).status, "not_found", name);
+    const get = await rt.rpc("tools/call", { name: "reach_config_get", arguments: {} }, MCP_MARKER, 9);
+    assert.ok(!JSON.stringify(get.body).includes(LEAK), `${name}: no MCP leak`);
+  }
+  assert.equal(sync.n, 0);
+  assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_only", "config untouched");
+  assert.equal(rt.config.mcpBearerDigest(), hashCredential(MCP_MARKER));
+  assert.equal(rt.proposals.propose(edit(rt)).status, "pending", "a valid proposal replaces the unusable file");
+  writeFileSync(proposalFile(rt), original);
+  assert.equal(rt.proposals.pending()?.proposal_id, id, "the untampered file still loads");
   await rt.close();
 });
 
@@ -161,7 +201,7 @@ test("owner audit: MCP cannot activate; one edit schema owner; the proposal and 
   const src = path.join(import.meta.dirname, "..", "src");
   const read = (f: string) => readFileSync(path.join(src, f), "utf8");
   assert.ok(!/applyEdit|activateCandidate|syncAllPolicies|\.approve\(|\.reject\(/.test(read("mcp.ts")), "MCP delegates only proposing and reading");
-  assert.ok(!/from "zod"/.test(read("proposals.ts")) && !/from "zod"/.test(read("admin.ts")), "no second schema");
+  assert.ok(!/from "zod"/.test(read("admin.ts")) && !/ClientEntry|EffectiveProjectPolicy|physical_root/.test(read("proposals.ts")), "no copied Client or project schema");
   assert.equal((read("config.ts").match(/AdminEdit = z\./g) ?? []).length, 1);
   assert.ok(!/new Map|new Set/.test(read("admin.ts")) && !/let pending|const pending/.test(read("admin.ts") + read("mcp.ts")), "no proposal state outside ProposalStore");
   assert.ok(!/writeFileSync|renameSync|openSync/.test(read("proposals.ts") + read("config.ts")), "one atomic write primitive");

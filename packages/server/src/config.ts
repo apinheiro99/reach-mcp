@@ -43,6 +43,13 @@ const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
   clients: z.array(ClientEntry.omit({ credential_sha256: true })).max(500),
 });
+/** The shape of editableView(): Clients with their policies and a credential flag, never a digest. Strict, for readers of stored copies. */
+export const EditableView = z.strictObject({
+  configured: z.boolean(),
+  clients: z.array(ClientEntry.omit({ credential_sha256: true }).extend({ has_credential: z.boolean() })).max(500),
+});
+export type EditableView = z.infer<typeof EditableView>;
+
 /** What an AI proposal may carry: the human edit without any secret field. */
 export const ProposedEdit = AdminEdit.omit({ mcp_bearer: true });
 export type ProposedEdit = z.infer<typeof ProposedEdit>;
@@ -133,7 +140,7 @@ export class ServerConfigStore {
   }
 
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
-  editableView(): { configured: boolean; clients: EditableClient[] } {
+  editableView(): EditableView {
     if (!this.#active) return { configured: false, clients: [] };
     return structuredClone({ configured: true, clients: this.#active.clients.map(({ credential_sha256, ...client }) => ({ ...client, has_credential: credential_sha256 !== undefined })) });
   }

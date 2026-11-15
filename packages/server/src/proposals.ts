@@ -5,11 +5,13 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { writeFileAtomic } from "./atomic-file.ts";
-import { ConfigError, type ProposedEdit, type ServerConfigStore } from "./config.ts";
+import { z } from "zod";
+import { ConfigError, EditableView, ProposedEdit, type ServerConfigStore } from "./config.ts";
 import type { ClientConnectionRegistry } from "./connections.ts";
 
-type EditableView = ReturnType<ServerConfigStore["editableView"]>;
-type StoredProposal = { proposal_id: string; created_at: string; base: EditableView; edit: ProposedEdit };
+/** The persisted file, strict at every level: an unknown or secret field anywhere makes the whole proposal unusable. */
+const StoredProposal = z.strictObject({ proposal_id: z.string().min(1).max(128), created_at: z.iso.datetime(), base: EditableView, edit: ProposedEdit });
+type StoredProposal = z.infer<typeof StoredProposal>;
 export type DiffEntry = { path: string; before: string | null; after: string | null };
 export type ProposalSummary = { proposal_id: string; created_at: string; diff: DiffEntry[] };
 export type ProposeResult = { status: "pending"; proposal_id: string } | { status: "already_pending"; proposal_id: string } | { status: "invalid"; problems: readonly string[] };
@@ -102,9 +104,8 @@ export class ProposalStore {
 
   #read(): StoredProposal | null {
     try {
-      const value = JSON.parse(readFileSync(this.#deps.path, "utf8")) as Partial<StoredProposal>;
-      const ok = typeof value.proposal_id === "string" && typeof value.created_at === "string" && Array.isArray(value.base?.clients) && Array.isArray(value.edit?.clients);
-      return ok ? (value as StoredProposal) : null;
+      const parsed = StoredProposal.safeParse(JSON.parse(readFileSync(this.#deps.path, "utf8")));
+      return parsed.success ? parsed.data : null;
     } catch {
       return null;
     }
