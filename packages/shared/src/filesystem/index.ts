@@ -4,4 +4,5 @@ export { buildPathPolicy, globToRegExp, HOST_PLATFORM, isInsideRoot, normalizeRe
 export { hasPrivateKey, REDACTED, redactText } from "./secret-policy.ts";
 export { IMAGE_EXT, imageDimensions, sniffImage, type ImageMime } from "./image.ts";
 export { FilesystemWriter, TRASH_DIR, type FsWriterOptions, type RemoveResult, type WriteResult } from "./writer.ts";
+export { readPdf, type PdfPage, type PdfReadOptions, type PdfReadResult } from "./pdf.ts";
 export { FilesystemReader, type Entry, type FsReaderOptions, type SearchMatch, type SearchOptions } from "./reader.ts";
