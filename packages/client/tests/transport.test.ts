@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
 import { ClientHello } from "../../shared/src/wire/index.ts";
-import { ClientTransport, parseBootstrap, type TransportOptions } from "../src/index.ts";
+import { ClientDispatcher, ClientTransport, parseBootstrap, type FrameHandler, type TransportOptions } from "../src/index.ts";
 
 const CRED = "cred-marker-" + "Wt41pLm";
 const root = mkdtempSync(path.join(tmpdir(), "reach-transport-"));
@@ -334,4 +334,116 @@ test("invalid timing options are rejected deterministically", async () => {
     { heartbeat: { intervalMs: 10, staleMs: Infinity } },
   ]) assert.throws(() => new ClientTransport(b, opts(c, bad)), RangeError, JSON.stringify(bad));
   assert.doesNotThrow(() => new ClientTransport(b, { build: "b" }), "defaults are valid");
+});
+
+// ---- admitted traffic: policy snapshots, requests and correlated responses --------------------------------------
+
+const readyProject = path.join(root, "proj");
+mkdirSync(readyProject, { recursive: true });
+writeFileSync(path.join(readyProject, "a.txt"), "alpha\n");
+const policyFrame = (...policies: object[]) => ({ kind: "policy_sync", policies });
+const goodPolicy = { project_id: "p1", physical_root: readyProject, mode: "read_only" };
+const request = (id: string, operation: object, project_id = "p1") => ({ kind: "request", request_id: id, project_id, operation });
+const responsesOf = (seen: Seen) => seen.frames.slice(1) as { request_id: string; ok: boolean; result?: { op: string }; error?: { code: string } }[];
+
+/** A server that welcomes and then sends the given frames. */
+const welcomingServer = (frames: () => unknown[]) =>
+  server((s) => s.once("message", () => { welcome(s); for (const f of frames()) s.send(JSON.stringify(f)); }));
+
+test("admitted: policy_sync then requests execute and each response carries its own request_id and op", async () => {
+  const srv = await welcomingServer(() => [policyFrame(goodPolicy), request("a", { op: "fs_list" }), request("b", { op: "fs_read", path: "a.txt" }), request("c", { op: "fs_read", path: "missing.txt" }), request("d", { op: "fs_list" }, "unknown")]);
+  const dispatcher = new ClientDispatcher({ anchors: [root] });
+  const t = new ClientTransport(boot(srv.port), opts(clock(), { handler: dispatcher }));
+  t.start();
+  await until(() => srv.seen[0]?.frames.length === 5, "four responses");
+  const byId = Object.fromEntries(responsesOf(srv.seen[0]!).map((r) => [r.request_id, r]));
+  assert.equal(byId.a?.result?.op, "fs_list");
+  assert.equal(byId.b?.result?.op, "fs_read");
+  assert.equal(byId.c?.error?.code, "NOT_FOUND");
+  assert.equal(byId.d?.error?.code, "NOT_FOUND");
+  assert.equal(Object.keys(byId).length, 4, "exactly one response per request");
+  t.stop();
+  await srv.close();
+});
+
+test("admitted: slow and fast requests never cross their responses", async () => {
+  const gate = (() => { let release!: () => void; const promise = new Promise<void>((r) => (release = r)); return { promise, release }; })();
+  const handler: FrameHandler = {
+    applyPolicy: () => undefined,
+    handle: async (req) => {
+      if (req.request_id === "slow") await gate.promise;
+      return { kind: "response", request_id: req.request_id, ok: true, result: { op: "fs_write", path: req.request_id, bytes: 1 } };
+    },
+  };
+  const srv = await welcomingServer(() => [request("slow", { op: "fs_list" }), request("fast", { op: "fs_list" })]);
+  const t = new ClientTransport(boot(srv.port), opts(clock(), { handler }));
+  t.start();
+  await until(() => srv.seen[0]?.frames.length === 2, "fast response first");
+  assert.deepEqual(responsesOf(srv.seen[0]!).map((r) => r.request_id), ["fast"]);
+  gate.release();
+  await until(() => srv.seen[0]?.frames.length === 3, "slow response");
+  assert.deepEqual(responsesOf(srv.seen[0]!).map((r) => [r.request_id, (r.result as { path?: string }).path]), [["fast", "fast"], ["slow", "slow"]]);
+  t.stop();
+  await srv.close();
+});
+
+test("admitted: a refused snapshot drops the connection and keeps the last good snapshot; a malformed frame fails closed without echo", async () => {
+  const escape = { project_id: "bad", physical_root: path.dirname(root), mode: "read_only" };
+  const srv = await welcomingServer(() => [policyFrame(goodPolicy), policyFrame(goodPolicy, escape)]);
+  const dispatcher = new ClientDispatcher({ anchors: [root] });
+  const t = new ClientTransport(boot(srv.port), opts(clock(), { handler: dispatcher }));
+  t.start();
+  await until(() => t.snapshot().state === "backoff", "dropped after the refused snapshot");
+  assert.equal(t.snapshot().lastError?.message, "policy snapshot refused");
+  assert.deepEqual(dispatcher.projects(), ["p1"], "the previous snapshot is untouched");
+  t.stop();
+  await srv.close();
+
+  const leak = "payload-marker-" + "Hn27";
+  const bad = await welcomingServer(() => [{ kind: "request", request_id: leak, project_id: "p1", operation: { op: "shell_exec", cmd: leak } }]);
+  const t2 = new ClientTransport(boot(bad.port), opts(clock(), { handler: dispatcher }));
+  t2.start();
+  await until(() => t2.snapshot().state === "backoff", "malformed frame refused");
+  assert.ok(!JSON.stringify(t2.snapshot()).includes(leak) && !JSON.stringify(t2.snapshot()).includes(CRED));
+  assert.equal(bad.seen[0]!.frames.length, 1, "no response was sent for it");
+  t2.stop();
+  await bad.close();
+});
+
+test("admitted: a result finishing after the socket was replaced is never sent on the new connection", async () => {
+  const gate = (() => { let release!: () => void; const promise = new Promise<void>((r) => (release = r)); return { promise, release }; })();
+  let calls = 0;
+  const handler: FrameHandler = {
+    applyPolicy: () => undefined,
+    handle: async (req) => {
+      calls++;
+      await gate.promise;
+      return { kind: "response", request_id: req.request_id, ok: true, result: { op: "fs_write", path: "x", bytes: 1 } };
+    },
+  };
+  let connection = 0;
+  const srv = await server((s) => {
+    connection++;
+    const first = connection === 1;
+    s.once("message", () => {
+      welcome(s);
+      if (first) {
+        s.send(JSON.stringify(request("old", { op: "fs_list" })));
+        setTimeout(() => s.terminate(), 20);
+      }
+    });
+  });
+  const c = clock();
+  const t = new ClientTransport(boot(srv.port), opts(c, { handler }));
+  t.start();
+  await until(() => calls === 1, "request received");
+  await until(() => t.snapshot().state === "backoff", "first socket lost");
+  c.advance(c.pending()[0]!);
+  await until(() => t.snapshot().state === "connected" && srv.seen.length === 2, "reconnected");
+  gate.release();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(srv.seen[1]!.frames.length, 1, "only the hello travelled on the new connection");
+  assert.equal(calls, 1, "the request was not replayed after reconnecting");
+  t.stop();
+  await srv.close();
 });

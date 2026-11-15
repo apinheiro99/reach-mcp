@@ -4,15 +4,26 @@
 // hello, never in the URL, and no state, error or log value built here contains it.
 import WebSocket from "ws";
 import type { RawData } from "ws";
-import { ClientHello, HandshakeReply, parseWire, type WireError } from "../../shared/src/wire/index.ts";
+import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "../../shared/src/wire/index.ts";
 import type { Bootstrap } from "./bootstrap.ts";
+import { realSchedule, type Schedule } from "./timers.ts";
 
 export type TransportState = "stopped" | "connecting" | "handshaking" | "connected" | "backoff" | "terminal_error";
 
 /** Admission outcomes that need an operator or configuration change: retrying cannot help and must not displace anyone. */
 const TERMINAL_REJECTS: ReadonlySet<string> = new Set(["AUTH_FAILED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD"]);
 
+/** What the transport hands admitted traffic to; the dispatcher implements it. */
+export type FrameHandler = {
+  /** Throws when the snapshot is refused; the previous snapshot must then stay active. */
+  applyPolicy(frame: PolicySync): void;
+  /** Resolves with exactly one response for the request. */
+  handle(request: RequestEnvelope): Promise<ResponseEnvelope>;
+};
+
 export type TransportOptions = {
+  /** Receives policy snapshots and requests after the welcome; without one, any such frame fails closed. */
+  handler?: FrameHandler;
   /** Opaque build identifier of this Client, sent as-is in the hello. */
   build: string;
   /** Delays in ms; `jitter` is the fraction (0..1) a delay may shrink or grow. */
@@ -23,7 +34,7 @@ export type TransportOptions = {
   handshakeTimeoutMs?: number;
   /** Test seams: all default to the real clock, real timers, Math.random and a real ws socket. */
   now?: () => number;
-  schedule?: (fn: () => void, ms: number) => () => void;
+  schedule?: Schedule;
   random?: () => number;
   createSocket?: (url: string, headers: Record<string, string>) => WebSocket;
 };
@@ -39,11 +50,6 @@ function validateTiming(backoff: { initialMs: number; maxMs: number; jitter: num
   const ok = positive(backoff.initialMs) && positive(backoff.maxMs) && backoff.maxMs >= backoff.initialMs && backoff.jitter >= 0 && backoff.jitter <= 1 && positive(heartbeat.intervalMs) && positive(heartbeat.staleMs) && positive(handshakeMs);
   if (!ok) throw new RangeError("invalid transport timing options");
 }
-
-const realSchedule = (fn: () => void, ms: number): (() => void) => {
-  const timer = setTimeout(fn, ms);
-  return () => clearTimeout(timer);
-};
 
 const connectionLost: WireError = { code: "INTERNAL", message: "connection lost" };
 
@@ -61,8 +67,9 @@ export class ClientTransport {
   readonly #backoff: { initialMs: number; maxMs: number; jitter: number };
   readonly #heartbeat: { intervalMs: number; staleMs: number };
   readonly #handshakeTimeoutMs: number;
+  readonly #handler: FrameHandler | undefined;
   readonly #now: () => number;
-  readonly #schedule: (fn: () => void, ms: number) => () => void;
+  readonly #schedule: Schedule;
   readonly #random: () => number;
   readonly #createSocket: (url: string, headers: Record<string, string>) => WebSocket;
 
@@ -71,6 +78,7 @@ export class ClientTransport {
     this.#build = options.build;
     this.#backoff = options.backoff ?? DEFAULT_BACKOFF;
     this.#heartbeat = options.heartbeat ?? DEFAULT_HEARTBEAT;
+    this.#handler = options.handler;
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     validateTiming(this.#backoff, this.#heartbeat, this.#handshakeTimeoutMs);
     this.#now = options.now ?? Date.now;
@@ -129,14 +137,15 @@ export class ClientTransport {
 
   #onMessage(socket: WebSocket, data: RawData, isBinary: boolean): void {
     if (socket !== this.#socket) return;
-    if (this.#state !== "handshaking") return this.#failClosed(socket, "unexpected frame after the handshake");
     let frame: unknown;
     try {
       if (isBinary) throw new Error("binary");
       frame = JSON.parse(data.toString());
     } catch {
-      return this.#failClosed(socket, "malformed handshake frame");
+      return this.#failClosed(socket, "malformed frame");
     }
+    if (this.#state === "connected") return this.#onAdmittedFrame(socket, frame);
+    if (this.#state !== "handshaking") return;
     const reply = parseWire(HandshakeReply, frame);
     if (!reply.ok) return this.#failClosed(socket, "invalid handshake reply");
     this.#stopHandshake();
@@ -156,6 +165,29 @@ export class ClientTransport {
     } else {
       socket.terminate();
     }
+  }
+
+  /** After the welcome only a policy snapshot or a request is legal; anything else closes the socket. */
+  #onAdmittedFrame(socket: WebSocket, frame: unknown): void {
+    const message = this.#handler ? parseWire(PostWelcomeMessage, frame) : null;
+    if (!this.#handler || !message?.ok) return this.#failClosed(socket, "unexpected frame after the handshake");
+    if (message.data.kind === "policy_sync") {
+      try {
+        this.#handler.applyPolicy(message.data);
+      } catch {
+        // No acknowledgement frame exists, so a snapshot that cannot be applied would leave Server and Client silently
+        // apart: drop the connection (the last good snapshot stays active) and let the Server resend after reconnect.
+        this.#failClosed(socket, "policy snapshot refused");
+      }
+      return;
+    }
+    this.#handler.handle(message.data).then(
+      (response) => {
+        // A late result belongs to the connection that asked; it is never replayed on a newer one.
+        if (socket === this.#socket && this.#state === "connected") socket.send(JSON.stringify(response));
+      },
+      () => this.#failClosed(socket, "request handler failed"),
+    );
   }
 
   #onPong(socket: WebSocket): void {

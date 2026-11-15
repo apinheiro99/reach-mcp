@@ -5,6 +5,7 @@ import { z } from "zod";
 import { WireError } from "./errors.ts";
 import { BuildId, ClientId, Credential, ProjectId, RequestId } from "./ids.ts";
 import { Operation, OperationResult } from "./operations.ts";
+import { PolicySync } from "./policy.ts";
 
 export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, credential: Credential, client_build: BuildId });
 export type ClientHello = z.infer<typeof ClientHello>;
@@ -29,11 +30,17 @@ export const ResponseEnvelope = z.discriminatedUnion("ok", [
 ]);
 export type ResponseEnvelope = z.infer<typeof ResponseEnvelope>;
 
-export const ClientMessage = z.discriminatedUnion("kind", [ClientHello, RequestEnvelope]);
+/** Client -> Server: the hello, then one response per request. */
+export const ClientMessage = z.union([ClientHello, ...ResponseEnvelope.options]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
-export const ServerMessage = z.union([ServerWelcome, ServerReject, ...ResponseEnvelope.options]);
+/** Server -> Client: the handshake answer, the policy snapshot, and the requests the Client executes. */
+export const ServerMessage = z.union([ServerWelcome, ServerReject, PolicySync, RequestEnvelope]);
 export type ServerMessage = z.infer<typeof ServerMessage>;
+
+/** What the Server may send once the Client is admitted. */
+export const PostWelcomeMessage = z.union([PolicySync, RequestEnvelope]);
+export type PostWelcomeMessage = z.infer<typeof PostWelcomeMessage>;
 
 export type WireParse<T> = { ok: true; data: T } | { ok: false; error: WireError };
 
