@@ -20,7 +20,7 @@ import {
   WireFault,
 } from "../../shared/src/wire/index.ts";
 import { acceptEffectivePolicy } from "./root-anchors.ts";
-import { realSchedule, type Schedule } from "./timers.ts";
+import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
 
 type Async<T> = { [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => R | Promise<R> : T[K] };
 
