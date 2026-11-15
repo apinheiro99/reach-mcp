@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { buildHealth, createHttpServer, ClientConnectionRegistry, ServerConfigStore } from "../src/index.ts";
+import { buildHealth, createHttpServer, ClientConnectionRegistry, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { CLIENT_MARKER, MCP_MARKER, PHYSICAL_ROOT, startRuntime, until, requestsOf } from "./runtime-fixture.ts";
 
 const getHealth = (port: number, token: string | null = MCP_MARKER) => fetch(`http://127.0.0.1:${port}/health`, { headers: token === null ? {} : { Authorization: `Bearer ${token}` } });
@@ -44,7 +44,7 @@ test("/health uses the same bearer owner: missing or wrong is 401; only GET; oth
 test("inactive config: /health is a controlled 503 with no body, with or without a bearer", async () => {
   const config = new ServerConfigStore("/nonexistent/config.json");
   const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-9", isBuildCompatible: () => true });
-  const server = createHttpServer({ config, connections, serverBuild: "srv-9", repositoryCommit: "abc1234", uptimeSeconds: () => 42.9 });
+  const server = createHttpServer({ config, connections, proposals: new ProposalStore({ path: "/nonexistent/p.json", config, connections }), serverBuild: "srv-9", repositoryCommit: "abc1234", uptimeSeconds: () => 42.9 });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const port = (server.address() as import("node:net").AddressInfo).port;
   for (const token of [null, MCP_MARKER]) {

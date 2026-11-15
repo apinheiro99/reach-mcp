@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ClientConnectionRegistry, createAdminServer, createHttpServer, hashCredential, ServerConfigStore } from "../src/index.ts";
+import { ClientConnectionRegistry, createAdminServer, createHttpServer, hashCredential, ProposalStore, ServerConfigStore } from "../src/index.ts";
 
 const MCP_BEARER = "mcp-bearer-" + "Vt29Qw71";
 const PRIVATE_ROOT = "/srv/admin-private-root";
@@ -16,8 +16,9 @@ async function start(initialConfig = false) {
   let syncs = 0;
   const realSync = connections.syncAllPolicies.bind(connections);
   connections.syncAllPolicies = () => (syncs++, realSync());
-  const admin = createAdminServer({ config, connections, serverBuild: "srv-a", uptimeSeconds: () => 5 });
-  const data = createHttpServer({ config, connections, serverBuild: "srv-a" });
+  const proposals = new ProposalStore({ path: path.join(path.dirname(file), "proposal.json"), config, connections });
+  const admin = createAdminServer({ config, connections, proposals, serverBuild: "srv-a", uptimeSeconds: () => 5 });
+  const data = createHttpServer({ config, connections, proposals, serverBuild: "srv-a" });
   for (const s of [admin, data]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
   const url = (s: typeof admin) => `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
   const a = url(admin);
@@ -31,7 +32,7 @@ async function start(initialConfig = false) {
       await new Promise<void>((r) => s.close(() => r()));
     }
   };
-  return { a, d, file, config, put, close, syncs: () => syncs };
+  return { a, d, file, config, proposals, put, close, syncs: () => syncs };
 }
 
 test("setup mode: the admin surface works while the data plane stays closed, then the first config opens it", async () => {
@@ -98,12 +99,38 @@ test("the admin surface is its own listener: the data plane has no admin path an
   await rt.close();
 });
 
+test("admin proposal endpoints: diff, approve once, stale conflict, reject, unknown id", async () => {
+  const rt = await start(true);
+  const body = (path: string, method = "GET") => fetch(`${rt.a}${path}`, { method }).then(async (r) => ({ status: r.status, json: JSON.parse((await r.text()) || "{}") as Record<string, unknown> }));
+  const edit = (mode: string) => ({ clients: [{ client_id: "laptop", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode }] }] });
+  assert.deepEqual((await body("/admin/api/proposal")).json, { proposal: null });
+  const first = rt.proposals.propose(edit("read_write")) as { proposal_id: string };
+  const shown = (await body("/admin/api/proposal")).json.proposal as { proposal_id: string; diff: { path: string }[] };
+  assert.equal(shown.proposal_id, first.proposal_id);
+  assert.deepEqual(shown.diff.map((d) => d.path), ["clients[laptop].projects[web].mode"]);
+  const before = rt.syncs();
+  assert.equal((await body(`/admin/api/proposal/${first.proposal_id}/approve`, "POST")).status, 200);
+  assert.equal(rt.syncs(), before + 1, "exactly one sync for an approval");
+  assert.equal(rt.config.snapshot().clients[0]?.projects[0]?.mode, "read_write");
+  const second = rt.proposals.propose(edit("read_only")) as { proposal_id: string };
+  assert.equal((await rt.put(edit("read_write"))).status, 200);
+  rt.config.applyEdit({ clients: [{ client_id: "laptop", display_name: "changed", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode: "read_write" }] }] });
+  const stale = await body(`/admin/api/proposal/${second.proposal_id}/approve`, "POST");
+  assert.equal(stale.status, 409);
+  assert.equal(rt.syncs(), before + 1 + 1, "only the PUT synced; the stale approval did not");
+  assert.equal((await body(`/admin/api/proposal/${second.proposal_id}/reject`, "POST")).status, 200);
+  assert.equal((await body("/admin/api/proposal/nope/reject", "POST")).status, 404);
+  assert.equal((await body(`/admin/api/proposal/${second.proposal_id}/approve`)).status, 405);
+  await rt.close();
+});
+
 test("the page is vanilla: debounced autosave, no Save button, no framework or remote script", async () => {
   const rt = await start();
   const html = await (await fetch(`${rt.a}/admin`)).text();
   assert.match(html, /DEBOUNCE_MS = \d+/);
   assert.match(html, /setTimeout\(save, DEBOUNCE_MS\)/);
   assert.ok(!/>\s*Save\s*</i.test(html), "no generic Save button");
+  assert.ok(html.includes('"Approve"') && html.includes('"Reject"') && html.includes("/admin/api/proposal"), "approve and reject exist for a pending proposal");
   assert.ok(!/<script[^>]*\ssrc=|react|vue|svelte|angular|jquery/i.test(html));
   assert.equal((await fetch(`${rt.a}/`, { redirect: "manual" })).status, 302);
   await rt.close();

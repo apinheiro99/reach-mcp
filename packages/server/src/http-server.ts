@@ -8,10 +8,12 @@ import type { ClientConnectionRegistry } from "./connections.ts";
 import type { ServerConfigStore } from "./config.ts";
 import { buildHealth } from "./health.ts";
 import { buildMcpServer } from "./mcp.ts";
+import type { ProposalStore } from "./proposals.ts";
 
 export type HttpServerDeps = {
   config: ServerConfigStore;
   connections: ClientConnectionRegistry;
+  proposals: ProposalStore;
   serverBuild: string;
   /** Injected build metadata; omitted means the health snapshot reports null. */
   repositoryCommit?: string;

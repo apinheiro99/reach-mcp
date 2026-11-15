@@ -18,6 +18,7 @@ input,select{font:inherit;margin:.15rem .3rem .15rem 0}input[type=text],input[ty
 <fieldset><legend>MCP bearer</legend>
 <input id="bearer" type="password" autocomplete="new-password" placeholder="leave empty to keep the current one">
 <small>At least 16 characters, no spaces. Only its digest is stored and it is never shown again.</small></fieldset>
+<section id="proposal" hidden></section>
 <section id="clients"></section>
 <button id="add-client" type="button">Add Client</button>
 <script>
@@ -102,6 +103,26 @@ function renderClient(client) {
     ...client.projects.map((p) => renderProject(client, p)), addProject, remove);
 }
 
+async function loadProposal() {
+  const box = document.getElementById("proposal");
+  const { proposal } = (await api("GET", "/admin/api/proposal")).json;
+  box.hidden = !proposal;
+  if (!proposal) return box.replaceChildren();
+  const decide = (action) => async () => {
+    const r = await api("POST", "/admin/api/proposal/" + encodeURIComponent(proposal.proposal_id) + "/" + action);
+    if (r.ok) { say("Proposal " + r.json.status, "good"); await refresh(true); }
+    else say("Proposal " + r.json.status + (r.json.problems ? ": " + r.json.problems.join("; ") : ""), "bad");
+    await loadProposal();
+  };
+  const approve = el("button", { type: "button", textContent: "Approve" });
+  const reject = el("button", { type: "button", textContent: "Reject" });
+  approve.addEventListener("click", decide("approve"));
+  reject.addEventListener("click", decide("reject"));
+  box.replaceChildren(el("fieldset", {}, el("legend", { textContent: "Pending AI proposal " + proposal.proposal_id + " from " + proposal.created_at }),
+    ...proposal.diff.map((d) => el("div", {}, el("code", { textContent: d.path }), " " + (d.before ?? "(none)") + " → " + (d.after ?? "(none)"))),
+    approve, reject));
+}
+
 function render() { document.getElementById("clients").replaceChildren(...model.clients.map(renderClient)); }
 
 async function refresh(rebuild) {
@@ -116,6 +137,6 @@ async function refresh(rebuild) {
 
 document.getElementById("bearer").addEventListener("input", schedule);
 document.getElementById("add-client").addEventListener("click", () => { model.clients.push({ client_id: "", enabled: false, projects: [], has_credential: false }); render(); schedule(); });
-refresh(true).then(() => say("Ready"));
-setInterval(() => refresh(false), 5000);
+refresh(true).then(loadProposal).then(() => say("Ready"));
+setInterval(() => { refresh(false); loadProposal(); }, 5000);
 </script></body></html>`;
