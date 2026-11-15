@@ -3,6 +3,9 @@ dist/
 coverage/
 *.log
 logs/
+# DEV dogfood scratch area (the only writable path of the dogfood project) and the remove trash
+temp/
+.lixeira/
 *.tsbuildinfo
 
 # Real configuration and secrets never belong here (see reach-private)
