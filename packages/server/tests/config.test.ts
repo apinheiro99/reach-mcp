@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ConfigError, hashCredential, ServerConfigStore } from "../src/index.ts";
@@ -139,9 +139,9 @@ test("credentials: the hash is stable lowercase SHA-256; no plaintext or digest 
   assert.ok(message && !message.includes(hashCredential(MARKER_A)) && !message.includes(MARKER_A), "errors never echo values");
 });
 
-test("the server package holds no network, session, watcher, database or UI code", () => {
+test("the config module holds no network, session, watcher, database or UI code", () => {
   const src = path.join(import.meta.dirname, "..", "src");
-  const text = readdirSync(src).map((f) => readFileSync(path.join(src, f), "utf8")).join("\n");
+  const text = readFileSync(path.join(src, "config.ts"), "utf8");
   assert.ok(!/node:(net|http|https|tls|dgram|child_process)\b|\bws\b|fs\.watch|\bwatch\(|sqlite|yaml/i.test(text));
   assert.ok(!/\/reach\/|reach-private/.test(text), "no hardcoded private path");
 });

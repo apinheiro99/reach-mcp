@@ -8,7 +8,9 @@ import { createGitCompat, type GitInspector } from "../../legacy/git-compat/src/
 import { FilesystemReader, FilesystemWriter, FsError, HOST_PLATFORM, readPdf, type PathPlatform, type PdfReadResult } from "../../shared/src/filesystem/index.ts";
 import {
   EffectiveProjectPolicy,
+  failureResponse,
   isMutation,
+  MUTATION_INDETERMINATE_ERROR,
   parseWire,
   ResponseEnvelope,
   toWireError,
@@ -16,11 +18,10 @@ import {
   type OperationResult,
   type PolicySync,
   type RequestEnvelope,
-  type WireError,
   WireFault,
 } from "../../shared/src/wire/index.ts";
 import { acceptEffectivePolicy } from "./root-anchors.ts";
-import { realSchedule, type Schedule } from "./timers.ts";
+import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
 
 type Async<T> = { [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => R | Promise<R> : T[K] };
 
@@ -43,7 +44,6 @@ export type DispatcherOptions = {
 };
 
 const DEFAULT_MUTATION_TIMEOUT_MS = 30_000;
-const INDETERMINATE: WireError = { code: "MUTATION_INDETERMINATE", message: "mutation outcome is unknown; it is not retried" };
 
 /** The real primitives for one accepted policy. A read_only project never gets a writer. */
 export function buildRuntime(policy: EffectiveProjectPolicy): ProjectRuntime {
@@ -53,8 +53,6 @@ export function buildRuntime(policy: EffectiveProjectPolicy): ProjectRuntime {
   const git = existsSync(path.join(policy.physical_root, ".git")) ? createGitCompat({ enabled: true, root: policy.physical_root, extraDenyGlobs: policy.deny_globs }) : null;
   return { reader, writer, git, pdf: (input, options) => readPdf(reader, input, options) };
 }
-
-const failure = (requestId: string, error: WireError): ResponseEnvelope => ({ kind: "response", request_id: requestId, ok: false, error });
 
 export class ClientDispatcher {
   #projects = new Map<string, { policy: EffectiveProjectPolicy; runtime: ProjectRuntime }>();
@@ -98,19 +96,19 @@ export class ClientDispatcher {
   async handle(request: RequestEnvelope): Promise<ResponseEnvelope> {
     const id = request.request_id;
     const project = this.#projects.get(request.project_id);
-    if (!project) return failure(id, { code: "NOT_FOUND", message: "unknown project" });
+    if (!project) return failureResponse(id, { code: "NOT_FOUND", message: "unknown project" });
     const op = request.operation;
     try {
       if (!isMutation(op.op)) return this.#respond(id, await this.#execute(project.runtime, op));
       return await this.#mutate(id, request.project_id, op);
     } catch (err) {
-      return failure(id, toWireError(err));
+      return failureResponse(id, toWireError(err));
     }
   }
 
   #respond(id: string, result: OperationResult): ResponseEnvelope {
     const parsed = parseWire(ResponseEnvelope, { kind: "response", request_id: id, ok: true, result });
-    return parsed.ok ? parsed.data : failure(id, { code: "INTERNAL", message: "internal error" });
+    return parsed.ok ? parsed.data : failureResponse(id, { code: "INTERNAL", message: "internal error" });
   }
 
   /** Queues the real operation; the caller-facing deadline never touches the queue. */
@@ -126,7 +124,7 @@ export class ClientDispatcher {
       if (this.#tails.get(project) === tail) this.#tails.delete(project);
     });
     return new Promise<ResponseEnvelope>((resolve) => {
-      const cancel = this.#schedule(() => resolve(failure(id, INDETERMINATE)), this.#timeoutMs);
+      const cancel = this.#schedule(() => resolve(failureResponse(id, MUTATION_INDETERMINATE_ERROR)), this.#timeoutMs);
       run.then(
         (result) => {
           cancel();
@@ -134,7 +132,7 @@ export class ClientDispatcher {
         },
         (err: unknown) => {
           cancel();
-          resolve(failure(id, toWireError(err)));
+          resolve(failureResponse(id, toWireError(err)));
         },
       );
     });

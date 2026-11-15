@@ -6,7 +6,7 @@ import WebSocket from "ws";
 import type { RawData } from "ws";
 import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "../../shared/src/wire/index.ts";
 import type { Bootstrap } from "./bootstrap.ts";
-import { realSchedule, type Schedule } from "./timers.ts";
+import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
 
 export type TransportState = "stopped" | "connecting" | "handshaking" | "connected" | "backoff" | "terminal_error";
 

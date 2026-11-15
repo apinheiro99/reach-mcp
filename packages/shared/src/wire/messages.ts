@@ -31,6 +31,9 @@ export const ResponseEnvelope = z.discriminatedUnion("ok", [
 export type ResponseEnvelope = z.infer<typeof ResponseEnvelope>;
 
 /** Client -> Server: the hello, then one response per request. */
+/** The one constructor of an error response. */
+export const failureResponse = (requestId: string, error: WireError): ResponseEnvelope => ({ kind: "response", request_id: requestId, ok: false, error });
+
 export const ClientMessage = z.union([ClientHello, ...ResponseEnvelope.options]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
