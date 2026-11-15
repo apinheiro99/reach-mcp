@@ -265,3 +265,73 @@ test("no credential in any recorded error or state, and no inbound listener or s
   assert.ok(!/WebSocketServer|\.listen\(|createServer|DUPLICATE_CLIENT.*(close|terminate)/.test(source.replace(/TERMINAL_REJECTS[^;]*;/, "")), "client must hold no server or admission authority");
   assert.ok(!/console\./.test(source), "no logging in the client source");
 });
+
+test("handshake deadline: an auto-ponging peer that never answers cannot strand the client; pongs do not extend it", async () => {
+  const srv = await server(() => undefined);
+  const c = clock();
+  const t = new ClientTransport(boot(srv.port), opts(c, { handshakeTimeoutMs: 200, heartbeat: { intervalMs: 50, staleMs: 1000 } }));
+  t.start();
+  await until(() => t.snapshot().state === "handshaking", "handshaking");
+  for (let i = 0; i < 3; i++) {
+    const before = t.snapshot().lastHealthyAt;
+    c.advance(50);
+    await until(() => (t.snapshot().lastHealthyAt ?? 0) > (before ?? 0), "pong while handshaking");
+  }
+  assert.equal(t.snapshot().state, "handshaking", "still within the deadline");
+  c.advance(50);
+  await until(() => t.snapshot().state === "backoff", "handshake timed out");
+  assert.equal(t.snapshot().lastError?.message, "handshake timed out");
+  assert.equal(c.pending().length, 1, "exactly one retry timer; heartbeat and handshake timers are gone");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(c.pending().length, 1, "close after the timeout does not arm a second one");
+  t.stop();
+  await srv.close();
+});
+
+test("handshake deadline is cancelled by welcome, by a terminal reject and by stop", async () => {
+  const ok = await server((s) => s.once("message", () => welcome(s)));
+  const c1 = clock();
+  const t1 = new ClientTransport(boot(ok.port), opts(c1, { handshakeTimeoutMs: 200 }));
+  t1.start();
+  await until(() => t1.snapshot().state === "connected", "connected");
+  assert.deepEqual(c1.pending(), [50], "only the heartbeat remains");
+  c1.advance(500);
+  assert.equal(t1.snapshot().state, "connected");
+  t1.stop();
+  await ok.close();
+
+  const bad = await server((s) => s.once("message", () => reject("AUTH_FAILED")(s)));
+  const c2 = clock();
+  const t2 = new ClientTransport(boot(bad.port), opts(c2, { handshakeTimeoutMs: 200 }));
+  t2.start();
+  await until(() => t2.snapshot().state === "terminal_error", "terminal");
+  assert.deepEqual(c2.pending(), []);
+  t2.stop();
+  await bad.close();
+
+  const quiet = await server(() => undefined);
+  const c3 = clock();
+  const t3 = new ClientTransport(boot(quiet.port), opts(c3, { handshakeTimeoutMs: 200 }));
+  t3.start();
+  await until(() => t3.snapshot().state === "handshaking", "handshaking");
+  assert.equal(c3.pending().length, 2, "heartbeat and handshake armed");
+  t3.stop();
+  assert.deepEqual(c3.pending(), []);
+  await quiet.close();
+});
+
+test("invalid timing options are rejected deterministically", async () => {
+  const b = boot(1);
+  const c = clock();
+  for (const bad of [
+    { handshakeTimeoutMs: 0 },
+    { handshakeTimeoutMs: -5 },
+    { handshakeTimeoutMs: Number.NaN },
+    { backoff: { initialMs: 0, maxMs: 10, jitter: 0 } },
+    { backoff: { initialMs: 100, maxMs: 50, jitter: 0 } },
+    { backoff: { initialMs: 10, maxMs: 50, jitter: 2 } },
+    { heartbeat: { intervalMs: 0, staleMs: 10 } },
+    { heartbeat: { intervalMs: 10, staleMs: Infinity } },
+  ]) assert.throws(() => new ClientTransport(b, opts(c, bad)), RangeError, JSON.stringify(bad));
+  assert.doesNotThrow(() => new ClientTransport(b, { build: "b" }), "defaults are valid");
+});

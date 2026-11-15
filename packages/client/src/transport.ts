@@ -19,6 +19,8 @@ export type TransportOptions = {
   backoff?: { initialMs: number; maxMs: number; jitter: number };
   /** Ping every `intervalMs`; the connection is stale when nothing came back for `staleMs`. */
   heartbeat?: { intervalMs: number; staleMs: number };
+  /** Longest a connected socket may stay without a welcome or reject; pongs never extend it. */
+  handshakeTimeoutMs?: number;
   /** Test seams: all default to the real clock, real timers, Math.random and a real ws socket. */
   now?: () => number;
   schedule?: (fn: () => void, ms: number) => () => void;
@@ -28,6 +30,15 @@ export type TransportOptions = {
 
 const DEFAULT_BACKOFF = { initialMs: 1000, maxMs: 60_000, jitter: 0.2 };
 const DEFAULT_HEARTBEAT = { intervalMs: 15_000, staleMs: 45_000 };
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+
+const positive = (value: number): boolean => Number.isFinite(value) && value > 0;
+
+/** Refuses timing values that would schedule pathological timers. */
+function validateTiming(backoff: { initialMs: number; maxMs: number; jitter: number }, heartbeat: { intervalMs: number; staleMs: number }, handshakeMs: number): void {
+  const ok = positive(backoff.initialMs) && positive(backoff.maxMs) && backoff.maxMs >= backoff.initialMs && backoff.jitter >= 0 && backoff.jitter <= 1 && positive(heartbeat.intervalMs) && positive(heartbeat.staleMs) && positive(handshakeMs);
+  if (!ok) throw new RangeError("invalid transport timing options");
+}
 
 const realSchedule = (fn: () => void, ms: number): (() => void) => {
   const timer = setTimeout(fn, ms);
@@ -44,10 +55,12 @@ export class ClientTransport {
   #socket: WebSocket | null = null;
   #cancelRetry: (() => void) | null = null;
   #cancelHeartbeat: (() => void) | null = null;
+  #cancelHandshake: (() => void) | null = null;
   readonly #bootstrap: Bootstrap;
   readonly #build: string;
   readonly #backoff: { initialMs: number; maxMs: number; jitter: number };
   readonly #heartbeat: { intervalMs: number; staleMs: number };
+  readonly #handshakeTimeoutMs: number;
   readonly #now: () => number;
   readonly #schedule: (fn: () => void, ms: number) => () => void;
   readonly #random: () => number;
@@ -58,6 +71,8 @@ export class ClientTransport {
     this.#build = options.build;
     this.#backoff = options.backoff ?? DEFAULT_BACKOFF;
     this.#heartbeat = options.heartbeat ?? DEFAULT_HEARTBEAT;
+    this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    validateTiming(this.#backoff, this.#heartbeat, this.#handshakeTimeoutMs);
     this.#now = options.now ?? Date.now;
     this.#schedule = options.schedule ?? realSchedule;
     this.#random = options.random ?? Math.random;
@@ -78,8 +93,8 @@ export class ClientTransport {
   stop(): void {
     this.#cancelRetry?.();
     this.#cancelRetry = null;
-    this.#cancelHeartbeat?.();
-    this.#cancelHeartbeat = null;
+    this.#stopHeartbeat();
+    this.#stopHandshake();
     const socket = this.#socket;
     this.#socket = null;
     this.#state = "stopped";
@@ -104,6 +119,12 @@ export class ClientTransport {
     const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, credential: this.#bootstrap.credential(), client_build: this.#build });
     socket.send(JSON.stringify(hello));
     this.#armHeartbeat(socket);
+    this.#cancelHandshake = this.#schedule(() => {
+      this.#cancelHandshake = null;
+      if (socket !== this.#socket || this.#state !== "handshaking") return;
+      this.#lastError = { code: "INTERNAL", message: "handshake timed out" };
+      socket.terminate();
+    }, this.#handshakeTimeoutMs);
   }
 
   #onMessage(socket: WebSocket, data: RawData, isBinary: boolean): void {
@@ -118,6 +139,7 @@ export class ClientTransport {
     }
     const reply = parseWire(HandshakeReply, frame);
     if (!reply.ok) return this.#failClosed(socket, "invalid handshake reply");
+    this.#stopHandshake();
     if (reply.data.kind === "welcome") {
       this.#state = "connected";
       this.#attempts = 0;
@@ -150,6 +172,7 @@ export class ClientTransport {
     if (socket !== this.#socket) return;
     this.#socket = null;
     this.#stopHeartbeat();
+    this.#stopHandshake();
     if (!this.#lastError) this.#lastError = connectionLost;
     this.#scheduleReconnect();
   }
@@ -179,6 +202,11 @@ export class ClientTransport {
       socket.ping();
       this.#armHeartbeat(socket);
     }, this.#heartbeat.intervalMs);
+  }
+
+  #stopHandshake(): void {
+    this.#cancelHandshake?.();
+    this.#cancelHandshake = null;
   }
 
   #stopHeartbeat(): void {
