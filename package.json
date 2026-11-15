@@ -14,9 +14,9 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p packages/shared/tsconfig.json --noEmit && tsc -p packages/legacy/git-compat/tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "node --test \"tests/*.test.mjs\"",
+    "test": "node --test \"tests/*.test.mjs\" \"packages/shared/tests/*.test.ts\" \"packages/legacy/git-compat/tests/*.test.ts\"",
     "check:public-surface": "node scripts/public-surface.mjs",
     "check:package": "node scripts/check-package-contents.mjs",
     "validate": "npm run check:public-surface && npm run lint && npm run typecheck && npm test && npm run build && npm run check:package"
@@ -27,5 +27,8 @@
     "eslint": "^10.15.0",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.2"
+  },
+  "dependencies": {
+    "pdfjs-dist": "6.5.438"
   }
 }
