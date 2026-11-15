@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ConfigError, hashCredential, ServerConfigStore } from "../src/index.ts";
@@ -159,4 +159,79 @@ test("the MCP bearer digest is required and strict, stays out of the public snap
   writeFileSync(file, JSON.stringify({ clients: [] }));
   assert.throws(() => store.reload(), ConfigError);
   assert.equal(store.mcpBearerDigest(), valid().mcp_bearer_sha256, "a bad reload keeps the previous digest");
+});
+
+test("activateCandidate: the first activation creates the file, activates it, and a fresh store loads it", () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), "reach-activate-")), "nested", "config.json");
+  const store = new ServerConfigStore(file);
+  assert.equal(store.isActive(), false);
+  store.activateCandidate(valid());
+  assert.equal(store.isActive(), true);
+  const fresh = new ServerConfigStore(file);
+  fresh.loadInitial();
+  assert.deepEqual(fresh.snapshot(), store.snapshot());
+  assert.equal(statSync(file).mode & 0o077, 0, "the file is private to its owner");
+});
+
+test("activateCandidate: an invalid candidate changes neither the file nor the active snapshot", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  const before = readFileSync(file, "utf8");
+  const bad = { ...valid(), clients: [client("x", null, [])] };
+  assert.throws(() => store.activateCandidate(bad), ConfigError);
+  assert.equal(readFileSync(file, "utf8"), before);
+  assert.equal(store.snapshot().clients.length, 2);
+});
+
+test("activateCandidate: a failed write leaves the previous active snapshot intact and names no path", () => {
+  const own = mkdtempSync(path.join(tmpdir(), "reach-failwrite-"));
+  const file = path.join(own, "config.json");
+  writeFileSync(file, JSON.stringify(valid()));
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  rmSync(own, { recursive: true });
+  writeFileSync(own, "a file where the directory was"); // the write can no longer succeed
+  const other = { ...valid(), clients: [client("solo", MARKER_A, [project("p", "/srv/p")])] };
+  assert.throws(() => store.activateCandidate(other), (e: unknown) => e instanceof ConfigError && !e.message.includes(file));
+  assert.equal(store.snapshot().clients.length, 2, "no partial active change");
+});
+
+test("applyEdit: keeps stored digests by client_id, hashes a new bearer, and never returns a digest or the plaintext", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  const bearer = "new-bearer-" + "Qr72Hs9x";
+  const edit = { mcp_bearer: bearer, clients: store.snapshot().clients.map((c) => ({ ...c, display_name: "renamed" })) };
+  store.applyEdit(edit);
+  assert.equal(store.credentialDigestFor("laptop"), hashCredential(MARKER_A), "digest carried over");
+  assert.equal(store.mcpBearerDigest(), hashCredential(bearer));
+  const stored = readFileSync(file, "utf8");
+  assert.ok(!stored.includes(bearer), "the plaintext is never persisted");
+  const view = JSON.stringify(store.editableView());
+  assert.ok(!view.includes(hashCredential(MARKER_A)) && !view.includes("sha256"), "the editable view carries no digest");
+  assert.equal(store.editableView().clients[0]?.has_credential, true);
+  assert.throws(() => store.applyEdit({ clients: [] , extra: 1 }), ConfigError);
+});
+
+test("applyEdit: the first configuration needs a bearer, and validation errors never echo a submitted secret", () => {
+  const store = new ServerConfigStore(path.join(mkdtempSync(path.join(tmpdir(), "reach-first-")), "config.json"));
+  assert.throws(() => store.applyEdit({ clients: [] }), (e: unknown) => e instanceof ConfigError && e.problems[0]?.startsWith("mcp_bearer"));
+  const secret = "short secret";
+  assert.throws(() => store.applyEdit({ mcp_bearer: secret, clients: [] }), (e: unknown) => e instanceof ConfigError && !e.message.includes(secret));
+  assert.equal(store.isActive(), false);
+  store.applyEdit({ mcp_bearer: "first-bearer-" + "Lk90Zt", clients: [] });
+  assert.equal(store.isActive(), true);
+});
+
+test("issueCredential: returns a strong plaintext once and stores only its digest", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  const credential = store.issueCredential("desktop");
+  assert.ok(credential.length >= 40);
+  assert.equal(store.credentialDigestFor("desktop"), hashCredential(credential));
+  assert.ok(!readFileSync(file, "utf8").includes(credential));
+  assert.notEqual(store.issueCredential("desktop"), credential, "each call is a new credential");
+  assert.throws(() => store.issueCredential("nobody"), ConfigError);
 });

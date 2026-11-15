@@ -17,6 +17,8 @@ The Server is the configuration authority: projects, roots, access modes, allowl
 
 ## AI-assisted changes
 
+Implemented admin surface (`createAdminServer`, a second listener separate from the data plane and never a path on it; where it binds and who may reach it is a deployment decision). `GET /admin` is one vanilla HTML page with no framework or bundler; `GET /admin/api/state` (setup mode plus the health snapshot), `GET` and `PUT /admin/api/config`, and `POST /admin/api/clients/<id>/credential` are its whole API. Fields autosave after a short pause by sending the complete edit; there is no Save button. `ServerConfigStore` stays the single owner: it validates the candidate with the one schema, writes it atomically (temporary file, fsync, rename, mode 0600) and only then activates it, so an invalid or unwritable edit leaves the file and the active snapshot untouched. Policies are pushed to connected Clients once after each successful change. The page never receives credential digests; the MCP bearer is typed in plaintext only to replace it and is stored as a digest. Generating a Client credential is a discrete action: the plaintext is returned once and only its digest is stored. With no active configuration the admin surface still works (setup mode) while `/mcp` and `/client` stay refused.
+
 ChatGPT can inspect configuration and propose changes through typed MCP operations. Every AI/MCP-originated change is a proposal: it stays inactive, the Web UI shows the effective diff, and nothing activates until a human approves it. Autosave never bypasses this gate. Human edits in the Web UI keep using autosave.
 
 ## Clients

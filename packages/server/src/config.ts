@@ -2,8 +2,11 @@
 // complete candidate first and swaps it in only when everything validated, so an invalid file never replaces the last
 // good configuration. The file format is an implementation detail. Only a SHA-256 digest of each Client credential is
 // stored. Physical roots belong to the remote Client host and are never checked against this machine's filesystem.
-import { readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
+import { hashCredential } from "./auth.ts";
 import { ClientId, EffectiveProjectPolicy } from "../../shared/src/wire/index.ts";
 
 /** SHA-256 of a credential, lowercase hex. */
@@ -35,8 +38,16 @@ export const ServerConfig = z
   });
 export type ServerConfig = z.infer<typeof ServerConfig>;
 
+/** What a human edits through the admin UI: the Clients without digests, and a plaintext MCP bearer only when it changes. */
+const AdminEdit = z.strictObject({
+  mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
+  clients: z.array(ClientEntry.omit({ credential_sha256: true })).max(500),
+});
+
 /** What a caller may read of one Client: never the credential digest. */
 export type PublicClient = { client_id: string; display_name?: string; enabled: boolean; projects: EffectiveProjectPolicy[] };
+/** The editable view of one Client: whether a credential exists, never the credential or its digest. */
+export type EditableClient = PublicClient & { has_credential: boolean };
 
 /** Problems name a path and a rule, never a value from the file. */
 export class ConfigError extends Error {
@@ -48,6 +59,8 @@ export class ConfigError extends Error {
   }
 }
 
+const problemsOf = (error: z.ZodError): string[] => error.issues.slice(0, 10).map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`);
+
 function parseConfig(text: string): ServerConfig {
   let json: unknown;
   try {
@@ -57,7 +70,7 @@ function parseConfig(text: string): ServerConfig {
   }
   const parsed = ServerConfig.safeParse(json);
   if (parsed.success) return parsed.data;
-  throw new ConfigError(parsed.error.issues.slice(0, 10).map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`));
+  throw new ConfigError(problemsOf(parsed.error));
 }
 
 export class ServerConfigStore {
@@ -76,6 +89,42 @@ export class ServerConfigStore {
   /** Replaces the whole snapshot or throws and keeps the current one untouched. */
   reload(): void {
     this.#active = this.#candidate();
+  }
+
+  /**
+   * The one write path: validates a complete candidate with the schema, persists it atomically (temporary file, fsync,
+   * rename) and only then makes it the active snapshot. On any failure the file and the active snapshot are untouched.
+   */
+  activateCandidate(input: unknown): void {
+    const parsed = ServerConfig.safeParse(input);
+    if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
+    this.#persist(parsed.data);
+    this.#active = parsed.data;
+  }
+
+  /** A human edit of the Clients and, optionally, a new MCP bearer: stored digests are carried over by client_id. */
+  applyEdit(input: unknown): void {
+    const parsed = AdminEdit.safeParse(input);
+    if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
+    const mcp = parsed.data.mcp_bearer ? hashCredential(parsed.data.mcp_bearer) : this.#active?.mcp_bearer_sha256;
+    if (!mcp) throw new ConfigError(["mcp_bearer: required for the first configuration"]);
+    const digests = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, c.credential_sha256]));
+    this.activateCandidate({ mcp_bearer_sha256: mcp, clients: parsed.data.clients.map((c) => ({ ...c, credential_sha256: digests.get(c.client_id) })) });
+  }
+
+  /** Generates a Client credential, stores only its digest and returns the plaintext, which exists nowhere else. */
+  issueCredential(clientId: string): string {
+    const active = this.#requireActive();
+    if (!active.clients.some((c) => c.client_id === clientId)) throw new ConfigError(["client_id: unknown client"]);
+    const credential = randomBytes(32).toString("base64url");
+    this.activateCandidate({ ...active, clients: active.clients.map((c) => (c.client_id === clientId ? { ...c, credential_sha256: hashCredential(credential) } : c)) });
+    return credential;
+  }
+
+  /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
+  editableView(): { configured: boolean; clients: EditableClient[] } {
+    if (!this.#active) return { configured: false, clients: [] };
+    return structuredClone({ configured: true, clients: this.#active.clients.map(({ credential_sha256, ...client }) => ({ ...client, has_credential: credential_sha256 !== undefined })) });
   }
 
   isActive(): boolean {
@@ -102,6 +151,28 @@ export class ServerConfigStore {
   /** The stored digest of an enabled Client, for the admission check; null for an unknown or disabled one. */
   credentialDigestFor(clientId: string): string | null {
     return this.#enabledClient(clientId)?.credential_sha256 ?? null;
+  }
+
+  #persist(config: ServerConfig): void {
+    const tmp = `${this.#path}.tmp`;
+    try {
+      mkdirSync(path.dirname(this.#path), { recursive: true });
+      const fd = openSync(tmp, "w", 0o600);
+      try {
+        writeSync(fd, `${JSON.stringify(config, null, 2)}\n`);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      renameSync(tmp, this.#path);
+    } catch {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        /* nothing was written */
+      }
+      throw new ConfigError(["could not persist the configuration"]);
+    }
   }
 
   #enabledClient(clientId: string) {
