@@ -306,3 +306,27 @@ test("a queued mutation runs under the policy active when it starts: read_only, 
     assert.deepEqual(writes, ["first"], "the queued writer was never called");
   }
 });
+
+test("one Client, several Effective Project Configurations: both are active at once, requests reach the right root, and an out-of-anchor snapshot changes nothing", async () => {
+  const web = dir("multi-web");
+  const api = dir("multi-api");
+  writeFileSync(path.join(web, "who.txt"), "web\n");
+  writeFileSync(path.join(api, "who.txt"), "api\n");
+  const d = new ClientDispatcher({ anchors: [anchor] });
+  const two = snapshot(pol("web", web), pol("api", api, { mode: "read_only" }));
+  d.applyPolicy(two);
+  assert.deepEqual(d.projects(), ["web", "api"], "both logical projects are active in the one dispatcher");
+  const who = async (project: string) => {
+    const r = await d.handle(req(project, { op: "fs_read", path: "who.txt" }));
+    return r.ok && r.result.op === "fs_read" ? r.result.content : fail(r);
+  };
+  assert.match(String(await who("web")), /web/);
+  assert.match(String(await who("api")), /api/);
+  assert.equal(fail(await d.handle(req("api", { op: "fs_write", path: "x.txt", content: "no" }))), "DENIED", "each project keeps its own mode");
+  assert.equal(fail(await d.handle(req("web", { op: "fs_write", path: "x.txt", content: "yes" }))), "OK");
+  assert.throws(() => readFileSync(path.join(api, "x.txt")), "a write for one project never lands in the other");
+  assert.throws(() => d.applyPolicy(snapshot(pol("web", web), pol("api", api), pol("third", outside))));
+  assert.deepEqual(d.projects(), ["web", "api"], "the third project outside the local anchors rejects the whole snapshot");
+  assert.match(String(await who("web")), /web/, "the previous valid snapshot stays active and working");
+  assert.equal(fail(await d.handle(req("third", { op: "fs_list" }))), "NOT_FOUND");
+});
