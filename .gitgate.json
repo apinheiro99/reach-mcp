@@ -2,6 +2,7 @@
   "version": 1,
   "integration_branch": "main",
   "remote": "origin",
+  "mirror_remotes": ["github"],
   "levels": ["sprint", "story", "task"],
   "branch_prefix": { "sprint": "feature/sprint-", "story": "feature/story-", "task": "feature/task-" },
   "publish_on": ["story-done"],
