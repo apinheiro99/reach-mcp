@@ -24,10 +24,19 @@ test("validation jobs are blocking and never run for tag pipelines", () => {
   assert.match(rules, /\$CI_PIPELINE_SOURCE == "push"'/);
   for (const job of validationJobs) {
     const b = block(job);
-    assert.match(b, /extends: \.branch-push-only/, `${job} must reuse the branch-push rules`);
+    assert.match(b, /- \.branch-push-only/, `${job} must reuse the branch-push rules`);
+    assert.match(b, /- \.validation-summary/, `${job} must publish the always-on summary artifact`);
+    assert.match(b, /node scripts\/validation-summary\.mjs "/, `${job} must run through the summary wrapper`);
     assert.doesNotMatch(b, /allow_failure/, `${job} must stay blocking`);
     assert.match(b, /stage: validate/);
   }
+});
+
+test("the shared summary template publishes ci-summary on success and failure", () => {
+  const b = block(".validation-summary");
+  assert.match(b, /when: always/);
+  assert.match(b, /expire_in: 14 days/);
+  assert.match(b, /- ci-summary\//);
 });
 
 test("green tag job: branch push on_success only, tag pipeline never", () => {

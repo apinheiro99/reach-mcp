@@ -11,7 +11,7 @@ import process from "node:process";
 
 const SCRIPT = path.join(import.meta.dirname, "..", "deploy", "client", "install-linux.sh");
 const PS1 = path.join(import.meta.dirname, "..", "deploy", "client", "install-windows.ps1");
-const SECRET = "client-credential-" + "Xk93Pq41";
+const LEAK_MARKER = "client-credential-" + "Xk93Pq41";
 const base = mkdtempSync(path.join(tmpdir(), "reach-install-"));
 
 /** A stand-in for reach-client-linux-x64.tgz: the same top directory and launcher name, a launcher that proves it ran. */
@@ -84,7 +84,7 @@ test("Linux: unsafe or incomplete input exits 2 before touching the disk", () =>
   for (const args of cases) {
     const r = run(args);
     assert.equal(r.status, 2, `${JSON.stringify(args)}: ${r.stderr}`);
-    assert.ok(!r.stderr.includes(SECRET));
+    assert.ok(!r.stderr.includes(LEAK_MARKER));
   }
   assert.ok(!existsSync(d.install) && !existsSync(d.units), "nothing was created");
 });
