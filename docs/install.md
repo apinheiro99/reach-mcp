@@ -2,11 +2,11 @@
 
 ## Current state
 
-REACH is in development (pre-alpha). It is not ready for general installation, and the repository may be public before it is. Nothing here is a supported public installation path yet. The conditions for calling a release usable are the usable-release gate in [architecture.md](architecture.md).
+REACH is still pre-alpha, but the repository now produces installable release artifacts. Public production deployment is not yet declared generally available; Story #10 still owns the production Server image/Compose/CD path.
 
 ## Build from source (development)
 
-This remains valid for development. Requirements: Node.js 24 or newer, npm, Git.
+Requirements: Node.js 24 or newer, npm and Git.
 
 ```sh
 git clone <repository-url> reach-mcp
@@ -15,20 +15,71 @@ npm install
 npm run validate
 ```
 
-`npm install` is reproducible: it uses `package-lock.json`. The toolchain, source layout and how to rebuild the dev environment are in [development-environment.md](development-environment.md).
+Development uses the npm workspace source tree. A source checkout is not the Client installation contract.
 
-`git clone` is acceptable for development, but it is not necessarily the final installation contract.
+## Release artifacts
 
-## Planned distribution
+One release build uses one opaque build id for Server and Client:
 
-- **Server:** a containerized deployment from a built image. Production does not need Git metadata or a working checkout.
-- **Client:** a Node/TypeScript artifact with a simple install flow for Linux and Windows (systemd on Linux, a native Windows service or scheduled start on Windows). A native `.exe` or ELF is not required for the MVP.
+```sh
+npm run release -- --build-id <build-id> --out <release-dir>
+node scripts/release.mjs verify --out <release-dir>
+```
 
-These do not exist yet, and no public install commands are published until they do.
+The release directory contains:
+
+```text
+artifacts/
+  manifest.json
+  reach-client-linux-x64.tgz
+  reach-client-win32-x64.zip
+server/
+  reach-server-linux-x64.tgz
+```
+
+`manifest.json` records the repository commit, the shared Server/Client build id, exact compatibility, and the SHA-256/size of every final artifact. Manifest schema v1 requires exactly those three runtime artifacts.
+
+## Client installation
+
+A REACH Client is installed once per machine, not once per project. The bootstrap file is separate from the installed binaries and remains the operator-owned protected file containing endpoint, Client identity, credential and local physical root anchors.
+
+### Linux
+
+Default install directory: `/opt/reach-mcp-client`.
+
+```sh
+deploy/client/install-linux.sh \
+  --archive <release-dir>/artifacts/reach-client-linux-x64.tgz \
+  --bootstrap <absolute-protected-bootstrap-file> \
+  --build <build-id> \
+  --user <service-user> \
+  --enable
+```
+
+`--install-dir` explicitly overrides the default. The installer stages/replaces the runtime and generates a systemd unit that runs the installed `reach-client.mjs`. `--allow-insecure-ws` exists only as an explicit DEV/test option.
+
+### Windows
+
+Default install directory: `C:\\Program Files\\REACH\\Client`.
+
+```powershell
+.\deploy\client\install-windows.ps1 \
+  -Archive <release-dir>\artifacts\reach-client-win32-x64.zip \
+  -Bootstrap <absolute-protected-bootstrap-file> \
+  -Build <build-id>
+```
+
+`-InstallDir` explicitly overrides the default. The installer registers one machine-level Scheduled Task that starts Node with the installed `reach-client.mjs`. Native Windows execution of this installer remains to be proven on a Windows host; the current repository validation proves its structure and release layout only.
+
+## Server distribution
+
+The Server release artifact is already self-contained and does not require Git/workspace links. Story #10 owns wrapping that runtime in the production non-root Docker image/Compose deployment, controlled CD, rollback and Secure MCP Tunnel exposure.
+
+The Server admin listener is a separate exposure boundary. Authenticated release-manifest/Client-artifact retrieval exists there; it is not an MCP tool and must not be exposed through the public MCP tunnel by default.
 
 ## Upgrade
 
-Upgrade is always explicit: deploy the new artifact, restart, verify health. REACH never upgrades itself.
+Upgrade is always explicit: obtain/build the intended release, verify it, replace the installed/deployed artifact, restart, and verify health. REACH never upgrades itself silently.
 
 ## Configuration
 

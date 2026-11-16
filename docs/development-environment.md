@@ -19,9 +19,9 @@ One umbrella root, mirroring the GitLab group structure:
   reach-private/   private configuration and recovery (never published)
 ```
 
-Keep one persistent copy of the source and do not duplicate the repositories inside a container's local filesystem. `reach-mcp-client/` exists only on machines where the Client is installed; see [architecture.md](architecture.md) (runtime layout).
+Keep one persistent copy of the source and do not duplicate repositories inside a container's local filesystem. Installed Client binaries are separate from the source checkout; see [architecture.md](architecture.md) and [install.md](install.md).
 
-The target source layout is `packages/server`, `packages/client` and `packages/shared` in this single repository. The repository still holds the bootstrap tree (`src/`) until the implementation tasks introduce the packages.
+The repository is a native npm workspace with explicit package ownership under `packages/server`, `packages/client`, `packages/shared` and isolated `packages/legacy/git-compat`. The obsolete root bootstrap `src/` ownership has been removed.
 
 ## Current DEV environment
 
@@ -33,7 +33,7 @@ The reference environment is a Debian 13 Incus container managed with systemd:
 
 ## DEV runtime (Server and Client)
 
-The two processes run straight from the source tree with Node's built-in TypeScript support, so there is no second build output: `packages/server/src/main.ts` and `packages/client/src/main.ts`. Each is composed in one place (`runtime.ts` next to it); systemd owns restarts and nothing in REACH supervises itself.
+The DEV Server still runs directly from the source workspace with Node's built-in TypeScript support. The DEV Client now follows the machine-install contract: it runs the installed release artifact at `/opt/reach-mcp-client/reach-client.mjs`. Each process is composed in its existing runtime owner; systemd owns restarts and nothing in REACH supervises itself.
 
 Server flags (runtime values only; projects, Clients, credentials, policies and logging settings come from the config file): `--config <file>`, `--proposal <file>`, `--logs <dir>`, `--data-port <n>`, `--admin-port <n>`, `--build <id>`, and optionally `--data-host` and `--admin-host` (both default to `127.0.0.1`) and `--repository-commit <id>`. Unknown, duplicate, missing or valueless flags and invalid ports exit with code 2 and a usage line that never repeats a value. With no usable config file the Server starts in setup mode: the admin listener works, and `/mcp`, `/health` and `/client` stay refused until the first configuration is saved there. The process prints one line, `reach-server listening data=<port> admin=<port>`, and stops cleanly on SIGTERM or SIGINT.
 
@@ -41,11 +41,11 @@ Client flags: `--bootstrap <file>`, `--build <id>` and the explicit DEV switch `
 
 DEV units live in `deploy/dev/` (`reach-mcp-server.service`, `reach-mcp-client.service`). They run as the container's unprivileged `dev` user with `Restart=on-failure`, bind both Server listeners to loopback (the admin page has no login of its own, so reach it through an SSH tunnel) and use only these paths:
 
-- `/reach/reach-private/server/config.json` and `/reach/reach-private/server/proposal.json`: the Server configuration and the pending proposal;
-- `/reach/reach-private/client/bootstrap.env`: the Client bootstrap;
-- `/reach/reach-mcp/logs`: `reach.log` and `audit.log` with their rotated files (the directory is created on first write and is git-ignored).
+- `/reach/reach-private/runtime/server/config.json` and `/reach/reach-private/runtime/server/proposal.json`: the Server configuration and pending proposal;
+- `/reach/reach-private/runtime/client/bootstrap.env`: the Client bootstrap;
+- `/reach/reach-mcp/logs`: `reach.log` and `audit.log` with their rotated files.
 
-To install on the DEV container, with the repository built and `npm install` done: copy both unit files to `/etc/systemd/system/`, run `systemctl daemon-reload`, then `systemctl enable --now reach-mcp-server`. Open the admin page through the tunnel, create the first configuration and a Client credential, write that Client's bootstrap file under `reach-private`, then `systemctl enable --now reach-mcp-client`. Production Docker, tunnel and CD are separate work.
+Before starting the DEV Client, build/obtain the matching Client release artifact and install it with `deploy/client/install-linux.sh` into the machine-level install path. Then copy the repository unit files to `/etc/systemd/system/`, reload systemd and enable/start the services as required. The unit carries only the bootstrap path and build id; the credential stays inside the protected bootstrap file. Production Docker, tunnel and CD remain separate Story #10 work.
 
 Production Server deployment is containerized and is a separate concern, see [install.md](install.md).
 
@@ -68,7 +68,7 @@ Recreating a container changes its SSH host key; remove the old entry from `know
 
 ## CI and result tags
 
-Every branch push runs five blocking validation jobs (Public Release Check, Lint, Type Check, Automated Tests, Build Package). A final `tag` stage then records the aggregate result as a Git tag on the tested commit, `vYYYY.MM.NNNNNN` for green and `vYYYY.MM.NNNNNN-fail` for red. The tagging belongs to REACH itself: the `tag` stage computes the tag from the pipeline and pushes it with plain `git`, so the repository validates, tags and builds without any external project, and it can be moved to another GitLab unchanged. A tag pipeline never reruns validation or tagging.
+Every branch push runs six blocking validation jobs (Public Release Check, Lint, Type Check, Automated Tests, Package Check and Release Check). Release Check builds and verifies the canonical Server/Linux-Client/Windows-Client release. A final `tag` stage then records the aggregate result as a Git tag on the tested commit, `vYYYY.MM.NNNNNN` for green and `vYYYY.MM.NNNNNN-fail` for red. The tagging belongs to REACH itself: the `tag` stage computes the tag from the pipeline and pushes it with plain `git`, so the repository validates, tags and builds without any external project, and it can be moved to another GitLab unchanged. A tag pipeline never reruns validation or tagging.
 
 The tag stage needs one GitLab-side setting and no stored credential: the project setting that allows `CI_JOB_TOKEN` to push to this same repository.
 

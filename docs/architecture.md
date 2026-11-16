@@ -713,51 +713,28 @@ Timed-out mutation operations are **not automatically replayed** because executi
 
 ## 9. Runtime layout
 
-Canonical umbrella root:
-
-```text
-/reach/
-  reach-mcp/
-  reach-private/
-  reach-mcp-client/   # only on machines where the Client is installed
-```
+The source repository, private operator material and installed Client runtime are separate concerns. The Product Owner's DEV environment currently uses the `/reach` umbrella for source/private material, but those paths are environment-specific rather than public product defaults.
 
 ### Server
 
-`/reach/reach-mcp` contains the built product/runtime.
-
-Production containers do not require Git metadata or a working Git checkout.
-
-Logs live under:
-
-```text
-/reach/reach-mcp/logs
-```
+Production runs from a built Server artifact/image and does not require Git metadata or a working source checkout. Server configuration/proposals and operational logs are explicit deployment inputs/mounts; no generic state directory is required.
 
 ### Private configuration
 
-`/reach/reach-private` contains private configuration, real credentials, keys/certificates and environment-specific recovery/provisioning material.
-
-This private area is never a public GitHub publication candidate.
+Private configuration, credentials, keys/certificates and environment-specific recovery/provisioning material are operator-owned and never part of a public artifact. In the Product Owner environment, live Server/Client private runtime files are grouped under `reach-private/runtime/server` and `reach-private/runtime/client`, while provisioning remains separate under `reach-private/provisioning`. That private layout is not a product default.
 
 ### Client
 
-`/reach/reach-mcp-client` is the separate **installed Client artifact/runtime location**. Its source code lives in the same `reach-mcp` repository under `packages/client`, sharing security-critical code through `packages/shared`.
+The Client is installed **once per machine**, never once per logical project. Canonical install defaults are:
 
-A machine may run Server, Client or both.
+- Linux: `/opt/reach-mcp-client`;
+- Windows: `C:\\Program Files\\REACH\\Client`.
+
+Both are explicitly overridable by the operator. The bootstrap file is separate from the install directory and is the only local owner of endpoint, Client identity, credential and physical root anchors. A machine may run Server, Client or both.
 
 ### Persistence
 
-Persistence is recommended but optional.
-
-Operators may mount persistent volumes over:
-
-- `/reach/reach-private`;
-- `/reach/reach-mcp/logs`.
-
-If not mounted, REACH creates/uses local directories inside the container/filesystem. Recreating that environment may lose configuration/logs; that is an explicit operator choice.
-
-No generic extra `/reach/runtime` or `state` directory exists unless a real future requirement justifies it.
+Persistence is explicit and deployment-owned. Server private configuration and logs may be mounted/persisted by the deployment; the Client bootstrap remains a protected operator file. REACH does not invent a generic `runtime`/state volume as a product abstraction.
 
 ---
 
@@ -953,7 +930,7 @@ The product must not silently mutate itself to a new version.
 
 ## 17. Client packaging and platform support
 
-REACH uses **one source repository** with separate packages/artifacts:
+REACH uses **one npm workspace source repository** with explicit package ownership:
 
 ```text
 reach-mcp/
@@ -961,29 +938,21 @@ reach-mcp/
     server/
     client/
     shared/
+    legacy/git-compat/
 ```
 
-The Server and Client are distributed as independent artifacts, but security-critical filesystem primitives and shared wire schemas live once in `packages/shared` to avoid drift.
+Server and Client are distributed as independent runtime artifacts, while security-critical filesystem primitives and shared wire schemas remain single-owned in `packages/shared`.
 
-This is the target layout. The repository still holds the bootstrap tree (`src/`) until the implementation tasks introduce the packages.
+One release build produces, from the same opaque build identity and repository commit:
 
-Client must support:
+- a Linux x64 Server runtime artifact;
+- a Linux x64 Client `.tgz`;
+- a Windows x64 Client `.zip`;
+- one release manifest carrying final-byte SHA-256 hashes/sizes and the exact compatibility declaration.
 
-- Linux;
-- Windows.
+Client installation is machine-level. Linux uses the installed release artifact plus systemd; Windows uses the installed release artifact plus a native Scheduled Task/startup mechanism. No native `.exe`/ELF compilation is required for MVP. Direct `git clone` remains valid for development only and is not the installation contract.
 
-For MVP, no native `.exe`/ELF compilation is required.
-
-Preferred distribution:
-
-- Node/TypeScript build/package;
-- platform-appropriate bootstrap/install scripts.
-
-Direct `git clone` is valid for development but is not the required public installation contract.
-
-Linux may use systemd where appropriate. Windows must use a native Windows service/scheduled-start mechanism; systemd is never a Windows requirement.
-
-The installer/bootstrap should remain simple, repeatable and should not become a package manager.
+The installer/bootstrap remains simple and explicit: binaries are installed to the machine-level install directory, while bootstrap/secrets/root anchors remain in a separate operator-owned protected file. REACH never silently updates itself.
 
 ### Windows filesystem safety
 
@@ -1009,13 +978,13 @@ Do **not** introduce:
 - SemVer as a second versioning system;
 - an independent protocol-version number for MVP.
 
-At connection time, Server and Client report their actual running build/repository version for observability and troubleshooting.
+At connection time, Server and Client report their actual running opaque build identifier for observability and troubleshooting.
 
-The Server performs a simple compatibility gate using the build versions it knows are compatible. An incompatible Client is rejected with an explicit upgrade/downgrade error.
+For manifest schema v1 and the runtime gate, compatibility is deliberately exact: `client_build == server_build`. The release manifest records the same build id for release, Server and Client and declares `compatibility.strategy = "exact"` with exactly that Client build accepted. An incompatible Client is rejected explicitly.
 
-No independent protocol number, negotiation framework or second version taxonomy is introduced.
+No independent protocol number, negotiation framework, SemVer layer or version-range parser is introduced.
 
-Installation tooling may resolve the latest available release only when the operator explicitly requests install/update to latest.
+Installation/update is always an explicit operator action. Tooling may resolve or download a release only when the operator explicitly requests it; there is no silent self-update.
 
 ---
 
