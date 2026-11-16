@@ -160,6 +160,7 @@ ci-tag-red:
     - job: "Build Release"
       artifacts: true
   script:
+    - npm ci
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p "$REACH_ROOT/config" "$REACH_ROOT/logs" deploy-evidence
     - node deploy/prod/deploy.mjs deploy --release release --state "$REACH_ROOT/state" --config "$REACH_ROOT/config/server.json" --proposal "$REACH_ROOT/config/proposal.json" --logs "$REACH_ROOT/logs" --evidence deploy-evidence/evidence.json
@@ -175,6 +176,7 @@ ci-tag-red:
   extends: .deploy-job
   needs: []
   script:
+    - npm ci
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p "$REACH_ROOT/logs" deploy-evidence
     - node deploy/prod/deploy.mjs rollback --state "$REACH_ROOT/state" --logs "$REACH_ROOT/logs" --evidence deploy-evidence/evidence.json
