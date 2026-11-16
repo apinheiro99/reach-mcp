@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { hashCredential } from "./auth.ts";
-import { ClientId, EffectiveProjectPolicy } from "../../shared/src/wire/index.ts";
+import { ClientId, EffectiveProjectPolicy } from "@reach-mcp/shared/wire";
 
 /** SHA-256 of a credential, lowercase hex. */
 const Digest = z.string().regex(/^[0-9a-f]{64}$/, "must be 64 lowercase hex characters");

@@ -4,9 +4,9 @@
 // hello, never in the URL, and no state, error or log value built here contains it.
 import WebSocket from "ws";
 import type { RawData } from "ws";
-import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "../../shared/src/wire/index.ts";
+import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "@reach-mcp/shared/wire";
 import type { Bootstrap } from "./bootstrap.ts";
-import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
+import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 
 export type TransportState = "stopped" | "connecting" | "handshaking" | "connected" | "backoff" | "terminal_error";
 

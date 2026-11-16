@@ -4,8 +4,8 @@
 // keeps its place in the queue until it really settles. Nothing is ever replayed.
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { createGitCompat, type GitInspector } from "../../legacy/git-compat/src/index.ts";
-import { FilesystemReader, FilesystemWriter, FsError, HOST_PLATFORM, readPdf, type PathPlatform, type PdfReadResult } from "../../shared/src/filesystem/index.ts";
+import { createGitCompat, type GitInspector } from "@reach-mcp/git-compat";
+import { FilesystemReader, FilesystemWriter, FsError, HOST_PLATFORM, readPdf, type PathPlatform, type PdfReadResult } from "@reach-mcp/shared/filesystem";
 import {
   EffectiveProjectPolicy,
   failureResponse,
@@ -19,9 +19,9 @@ import {
   type PolicySync,
   type RequestEnvelope,
   WireFault,
-} from "../../shared/src/wire/index.ts";
+} from "@reach-mcp/shared/wire";
 import { acceptEffectivePolicy } from "./root-anchors.ts";
-import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
+import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 
 type Async<T> = { [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => R | Promise<R> : T[K] };
 

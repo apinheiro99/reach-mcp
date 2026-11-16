@@ -4,8 +4,9 @@
 // or invalid config simply leaves the Server inactive so the separate admin listener can serve setup mode.
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { parseFlags, parsePort } from "../../shared/src/cli.ts";
+import { parseFlags, parsePort } from "@reach-mcp/shared/cli";
 import { createAdminServer } from "./admin.ts";
+import { DirectoryArtifactSource } from "./artifacts.ts";
 import { AuditWriter } from "./audit.ts";
 import { ConfigError, ServerConfigStore } from "./config.ts";
 import { ClientConnectionRegistry } from "./connections.ts";
@@ -24,12 +25,14 @@ export type ServerArgs = {
   adminPort: number;
   build: string;
   repositoryCommit?: string;
+  /** Optional directory holding the release manifest and Client artifacts that the admin release routes serve. */
+  artifacts?: string;
 };
 
 const LOOPBACK = "127.0.0.1";
 
 export const SERVER_USAGE =
-  "usage: server --config <file> --proposal <file> --logs <dir> --data-port <n> --admin-port <n> --build <id> [--data-host <addr>] [--admin-host <addr>] [--repository-commit <id>]";
+  "usage: server --config <file> --proposal <file> --logs <dir> --data-port <n> --admin-port <n> --build <id> [--data-host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>]";
 
 export function parseServerArgs(argv: readonly string[]): ServerArgs {
   const flags = parseFlags(argv, {
@@ -42,6 +45,7 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     "admin-port": { required: true },
     build: { required: true },
     "repository-commit": {},
+    artifacts: {},
   });
   const text = (name: string) => flags[name] as string;
   return {
@@ -54,6 +58,7 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     adminPort: parsePort("admin-port", text("admin-port")),
     build: text("build"),
     ...(flags["repository-commit"] === undefined ? {} : { repositoryCommit: text("repository-commit") }),
+    ...(flags.artifacts === undefined ? {} : { artifacts: text("artifacts") }),
   };
 }
 
@@ -86,7 +91,7 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
   const data = createHttpServer(common);
-  const admin = createAdminServer({ ...common, logger, audit });
+  const admin = createAdminServer({ ...common, logger, audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
   const stop = async () => {
     connections.stop();
     await Promise.all([close(data), close(admin)]);

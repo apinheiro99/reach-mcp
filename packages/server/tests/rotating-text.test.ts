@@ -133,6 +133,6 @@ test("one rotation implementation serves both writers; no logging framework or g
   assert.equal((read("rotating-text.ts").match(/renameSync\(/g) ?? []).length, 1);
   const all = readdirSync(src).map(read).join("\n");
   assert.ok(!/console\.(log|error|warn)|EventEmitter|winston|pino|prom-client|opentelemetry/.test(all), "no console logger, event bus or framework");
-  const pkg = readFileSync(path.join(import.meta.dirname, "..", "..", "..", "package.json"), "utf8");
+  const pkg = readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8");
   assert.ok(!/winston|pino|bunyan|prom-client|opentelemetry/.test(pkg));
 });

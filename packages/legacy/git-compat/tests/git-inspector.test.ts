@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createGitCompat, DEFAULT_GIT_LIMITS, GitInspector, type GitLimits } from "../src/index.ts";
-import { FsError } from "../../../shared/src/filesystem/index.ts";
+import { FsError } from "@reach-mcp/shared/filesystem";
 
 const here = import.meta.dirname;
 
@@ -237,7 +237,8 @@ test("disable and removal boundary: disabled gives no inspector and core never i
     assert.ok(!/git-compat|packages\/legacy/.test(text), `${file} must not reference the legacy module`);
     assert.ok(!/node:child_process/.test(text), `${file} must not start subprocesses`);
   }
-  // the legacy package only reaches into shared through its public index
+  // the legacy package only reaches into shared through its public filesystem entry, never through a relative path
   const own = readFileSync(path.join(here, "../src/git-inspector.ts"), "utf8");
-  assert.deepEqual([...own.matchAll(/from "(\.\.\/[^"]+)"/g)].map((m) => m[1]), ["../../../shared/src/filesystem/index.ts"]);
+  assert.deepEqual([...own.matchAll(/from "(@reach-mcp\/[^"]+)"/g)].map((m) => m[1]), ["@reach-mcp/shared/filesystem"]);
+  assert.deepEqual([...own.matchAll(/from "(\.\.[^"]*)"/g)].map((m) => m[1]), []);
 });

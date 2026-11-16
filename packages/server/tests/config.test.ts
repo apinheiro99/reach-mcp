@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ConfigError, hashCredential, ServerConfigStore } from "../src/index.ts";
-import { PolicySync } from "../../shared/src/wire/index.ts";
+import { PolicySync } from "@reach-mcp/shared/wire";
 
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-config-"));
 const MARKER_A = "cred-marker-" + "Aq83Lm";

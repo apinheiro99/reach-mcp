@@ -1,4 +1,5 @@
-# REACH MCP Client on the DEV container. The endpoint, Client id, credential and root anchors live only in the bootstrap
+# REACH MCP Client on the DEV container, run from the installed release artifact (deploy/client/install-linux.sh), not from a source
+# checkout. The endpoint, Client id, credential and root anchors live only in the bootstrap
 # file below (mode 0600), never in this unit. --allow-insecure-ws is the explicit DEV switch for a ws:// loopback endpoint.
 [Unit]
 Description=REACH MCP Client (DEV)
@@ -8,8 +9,7 @@ Wants=reach-mcp-server.service
 [Service]
 Type=simple
 User=dev
-WorkingDirectory=/reach/reach-mcp
-ExecStart=/usr/local/bin/node packages/client/src/main.ts --bootstrap /reach/reach-private/client/bootstrap.env --build dev --allow-insecure-ws
+ExecStart=/usr/local/bin/node /opt/reach-mcp-client/reach-client.mjs --bootstrap /reach/reach-private/runtime/client/bootstrap.env --build dev --allow-insecure-ws
 Restart=on-failure
 RestartSec=2
 

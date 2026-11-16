@@ -1,5 +1,5 @@
 // Server process entry: parse the command line, start the Server, stop it on SIGTERM or SIGINT. systemd owns restarts.
-import { CliError } from "../../shared/src/cli.ts";
+import { CliError } from "@reach-mcp/shared/cli";
 import { parseServerArgs, SERVER_USAGE, startServer } from "./runtime.ts";
 
 let args;

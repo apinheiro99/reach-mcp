@@ -10,7 +10,7 @@ Wants=network-online.target
 Type=simple
 User=dev
 WorkingDirectory=/reach/reach-mcp
-ExecStart=/usr/local/bin/node packages/server/src/main.ts --config /reach/reach-private/server/config.json --proposal /reach/reach-private/server/proposal.json --logs /reach/reach-mcp/logs --data-host 127.0.0.1 --data-port 8787 --admin-host 127.0.0.1 --admin-port 8788 --build dev
+ExecStart=/usr/local/bin/node packages/server/src/main.ts --config /reach/reach-private/runtime/server/config.json --proposal /reach/reach-private/runtime/server/proposal.json --logs /reach/reach-mcp/logs --data-host 127.0.0.1 --data-port 8787 --admin-host 127.0.0.1 --admin-port 8788 --build dev
 Restart=on-failure
 RestartSec=2
 

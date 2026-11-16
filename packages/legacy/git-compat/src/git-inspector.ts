@@ -6,7 +6,7 @@
 // validated revision, lexically validated pathspecs after `--`, and bounded integers. Path policy and redaction
 // are the shared owners' (path-policy, secret-policy); nothing is duplicated here.
 import { execFile } from "node:child_process";
-import { buildPathPolicy, FsError, HOST_PLATFORM, normalizeRelativePath, redactText, type PathPlatform, type PathPolicy } from "../../../shared/src/filesystem/index.ts";
+import { buildPathPolicy, FsError, HOST_PLATFORM, normalizeRelativePath, redactText, type PathPlatform, type PathPolicy } from "@reach-mcp/shared/filesystem";
 
 const REV_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._/~^@{}:-]{0,99}$/;
 /** maxBuffer is a multiple of the returned ceiling, so overflow can be told apart from routine output. */

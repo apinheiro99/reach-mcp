@@ -1,8 +1,8 @@
 // Host-level blast-radius boundary: a Server effective policy is accepted only when its physical root, resolved to
 // its real location, is an anchor or inside one. Containment is the shared path-aware helper, never a string prefix.
 import { realpathSync, statSync } from "node:fs";
-import { FsError, HOST_PLATFORM, isInsideRoot, type PathPlatform } from "../../shared/src/filesystem/index.ts";
-import { EffectiveProjectPolicy } from "../../shared/src/wire/index.ts";
+import { FsError, HOST_PLATFORM, isInsideRoot, type PathPlatform } from "@reach-mcp/shared/filesystem";
+import { EffectiveProjectPolicy } from "@reach-mcp/shared/wire";
 
 /** Returns the policy with `physical_root` replaced by its canonical path, or throws OUTSIDE_ROOT / NOT_DIRECTORY. */
 export function acceptEffectivePolicy(anchors: readonly string[], policy: unknown, platform: PathPlatform = HOST_PLATFORM): EffectiveProjectPolicy {

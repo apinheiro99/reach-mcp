@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import WebSocket from "ws";
-import { realSchedule, type Schedule } from "../../shared/src/timers.ts";
+import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 import {
   ClientHello,
   failureResponse,
@@ -17,7 +17,7 @@ import {
   ResponseEnvelope,
   type Operation,
   type WireError,
-} from "../../shared/src/wire/index.ts";
+} from "@reach-mcp/shared/wire";
 import { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import type { ServerConfigStore } from "./config.ts";
