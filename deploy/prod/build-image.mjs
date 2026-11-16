@@ -11,18 +11,21 @@ import process from "node:process";
 import { SERVED_DIR, SERVER_DIR, MANIFEST_NAME, verifyRelease } from "../../scripts/release/manifest.mjs";
 
 const HERE = import.meta.dirname;
-const SERVER_ARCHIVE = "reach-server-linux-x64.tgz";
+// The one name this helper owns: the Server archive inside the ephemeral Docker context, never a release contract.
+const CONTEXT_RUNTIME = "runtime.tgz";
 
 /** Verify the release, then fill `context` with exactly what the Dockerfile copies. Returns the manifest's release identity. */
 export function stageContext(releaseDir, context) {
   const problems = verifyRelease(releaseDir);
   if (problems.length > 0) throw new Error(`release is not verified, no image is built:\n${problems.join("\n")}`);
-  const { release } = JSON.parse(readFileSync(path.join(releaseDir, SERVED_DIR, MANIFEST_NAME), "utf8"));
+  const manifest = JSON.parse(readFileSync(path.join(releaseDir, SERVED_DIR, MANIFEST_NAME), "utf8"));
+  const servers = manifest.artifacts.filter((a) => a.role === "server" && a.platform === "linux-x64");
+  if (servers.length !== 1) throw new Error(`release is not verified, no image is built:\nthe manifest must declare exactly one linux-x64 server artifact, found ${servers.length}`);
   mkdirSync(path.join(context, SERVER_DIR));
-  cpSync(path.join(releaseDir, SERVER_DIR, SERVER_ARCHIVE), path.join(context, SERVER_DIR, SERVER_ARCHIVE));
+  cpSync(path.join(releaseDir, SERVER_DIR, servers[0].name), path.join(context, SERVER_DIR, CONTEXT_RUNTIME));
   cpSync(path.join(releaseDir, SERVED_DIR), path.join(context, SERVED_DIR), { recursive: true });
   for (const file of ["Dockerfile", "entrypoint.mjs", "healthcheck.mjs"]) cpSync(path.join(HERE, file), path.join(context, file));
-  return release;
+  return manifest.release;
 }
 
 export function buildImage({ releaseDir, tag, docker = "docker" }) {

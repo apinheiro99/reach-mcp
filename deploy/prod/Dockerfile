@@ -7,7 +7,7 @@ ARG REACH_REPOSITORY_COMMIT
 LABEL org.opencontainers.image.title="REACH MCP Server" \
       org.opencontainers.image.version="${REACH_BUILD_ID}" \
       org.opencontainers.image.revision="${REACH_REPOSITORY_COMMIT}"
-COPY server/reach-server-linux-x64.tgz /tmp/reach-server.tgz
+COPY server/runtime.tgz /tmp/reach-server.tgz
 RUN mkdir -p /opt/reach/server /var/log/reach \
  && tar -xzf /tmp/reach-server.tgz -C /opt/reach/server --strip-components=1 --no-same-owner \
  && rm /tmp/reach-server.tgz \

@@ -3,7 +3,7 @@
 import { Buffer } from "node:buffer";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -47,7 +47,7 @@ test("the Dockerfile only wraps release bytes: no install/build/test, no source 
   const df = code("Dockerfile");
   assert.doesNotMatch(df, /npm (ci|install|run)|\bgit\b|apt-get|curl|wget|COPY \.|COPY \.\.|ADD /i);
   assert.match(df, /^USER node$/m);
-  assert.match(df, /COPY server\/reach-server-linux-x64\.tgz/);
+  assert.match(df, /COPY server\/runtime\.tgz/);
   assert.match(df, /COPY artifacts\/ \/opt\/reach\/artifacts\//);
   assert.match(df, /org\.opencontainers\.image\.version="\$\{REACH_BUILD_ID\}"/);
   assert.match(df, /org\.opencontainers\.image\.revision="\$\{REACH_REPOSITORY_COMMIT\}"/);
@@ -96,11 +96,29 @@ test("a verified release is staged to exactly the Dockerfile inputs, and docker 
   assert.deepEqual(identity, { build_id: BUILD_ID, repository_commit: COMMIT });
   const call = readFileSync(log, "utf8");
   assert.match(call, new RegExp(`build --build-arg REACH_BUILD_ID=${BUILD_ID} --build-arg REACH_REPOSITORY_COMMIT=${COMMIT} -t reach-server:test `));
-  for (const wanted of ["Dockerfile", "entrypoint.mjs", "healthcheck.mjs", "reach-server-linux-x64.tgz", "manifest.json", "reach-client-linux-x64.tgz", "reach-client-win32-x64.zip"]) assert.ok(call.includes(wanted), wanted);
+  for (const wanted of ["Dockerfile", "entrypoint.mjs", "healthcheck.mjs", "runtime.tgz", "manifest.json", "reach-client-linux-x64.tgz", "reach-client-win32-x64.zip"]) assert.ok(call.includes(wanted), wanted);
   assert.ok(!existsSync(readFileSync(`${log}.ctx`, "utf8").trim()), "the temporary context is removed");
   const context = mkdtempSync(path.join(base, "ctx-"));
   stageContext(dir, context);
   assert.deepEqual(readdirSync(context).sort(), ["Dockerfile", "artifacts", "entrypoint.mjs", "healthcheck.mjs", "server"]);
+});
+
+test("the Server archive is the one the manifest declares, staged under a neutral name; deploy/prod hardcodes no release filename", () => {
+  const dir = release("declared");
+  const context = mkdtempSync(path.join(base, "ctx-"));
+  stageContext(dir, context);
+  assert.deepEqual(readFileSync(path.join(context, "server", "runtime.tgz")), readFileSync(path.join(dir, "server", "reach-server-linux-x64.tgz")));
+  assert.deepEqual(readdirSync(path.join(context, "server")), ["runtime.tgz"]);
+  for (const name of ["Dockerfile", "build-image.mjs", "entrypoint.mjs", "healthcheck.mjs", "compose.yaml"]) assert.doesNotMatch(text(name), /reach-(server|client)-(linux|win32)/, name);
+  const renamed = release("renamed");
+  const m = JSON.parse(readFileSync(path.join(renamed, "artifacts", "manifest.json"), "utf8"));
+  const rec = m.artifacts.find((a) => a.role === "server");
+  renameSync(path.join(renamed, "server", rec.name), path.join(renamed, "server", "other-name.tgz"));
+  rec.name = "other-name.tgz";
+  writeFileSync(path.join(renamed, "artifacts", "manifest.json"), JSON.stringify(m));
+  const ctx2 = mkdtempSync(path.join(base, "ctx-"));
+  stageContext(renamed, ctx2);
+  assert.ok(existsSync(path.join(ctx2, "server", "runtime.tgz")), "a renamed declared artifact is still found through the manifest");
 });
 
 test("a corrupted, missing or undeclared release stops before Docker is called", () => {
