@@ -4,7 +4,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -135,7 +135,16 @@ test("can it fail: a corrupted, truncated, missing or undeclared artifact makes 
   const extra = copy("c-extra");
   writeFileSync(path.join(extra, "artifacts", "stray.bin"), "x");
   assert.match(verifyRelease(extra).join(), /not declared/);
-  assert.ok(!existsSync(path.join(flipped, "nothing")));
+  for (const dropped of [names.windows, names.linux, names.server]) {
+    const mutilated = copy(`c-drop-${dropped}`);
+    const manifestFile = path.join(mutilated, "artifacts", "manifest.json");
+    const edited = JSON.parse(readFileSync(manifestFile, "utf8"));
+    edited.artifacts = edited.artifacts.filter((a) => a.name !== dropped);
+    writeFileSync(manifestFile, JSON.stringify(edited));
+    rmSync(path.join(mutilated, dropped === names.server ? "server" : "artifacts", dropped));
+    assert.deepEqual(verifyRelease(mutilated).filter((p) => !/is missing$/.test(p)), [], `${dropped}: only the completeness problem, files and manifest agree`);
+    assert.match(verifyRelease(mutilated).join(), /required .* is missing/, `${dropped}: a consistently mutilated release is rejected`);
+  }
   const cli = spawnSync(process.execPath, ["scripts/release.mjs", "verify", "--out", flipped], { encoding: "utf8", cwd: path.join(import.meta.dirname, "..", "..") });
   assert.equal(cli.status, 2);
   assert.match(cli.stderr, /verification failed/);

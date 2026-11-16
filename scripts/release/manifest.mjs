@@ -10,7 +10,13 @@ export const MANIFEST_NAME = "manifest.json";
 /** Release layout: the Client archives and the manifest are what the Server serves; the Server runtime sits beside it. */
 export const SERVED_DIR = "artifacts";
 export const SERVER_DIR = "server";
-const ROLES = new Set(["server", "client"]);
+/** The canonical schema-v1 release composition: exactly one artifact per role and platform. The builder derives its targets from this. */
+export const REQUIRED_ARTIFACTS = [
+  { role: "server", platform: "linux-x64", os: "linux" },
+  { role: "client", platform: "linux-x64", os: "linux" },
+  { role: "client", platform: "win32-x64", os: "win32" },
+];
+const ROLES = new Set(REQUIRED_ARTIFACTS.map((r) => r.role));
 const SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 
@@ -66,6 +72,7 @@ export function validateManifest(m) {
     return problems;
   }
   const names = new Set();
+  const pairs = new Map();
   m.artifacts.forEach((a, i) => {
     const at = `artifacts[${i}]`;
     if (!ROLES.has(a?.role)) problems.push(`${at}.role must be server or client`);
@@ -73,9 +80,17 @@ export function validateManifest(m) {
     if (typeof a?.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(a.name) || a.name === MANIFEST_NAME) problems.push(`${at}.name is not a servable artifact name`);
     else if (names.has(a.name)) problems.push(`${at}.name is duplicated`);
     else names.add(a.name);
+    const pair = `${a?.role}/${a?.platform}`;
+    pairs.set(pair, (pairs.get(pair) ?? 0) + 1);
     if (!SHA256.test(a?.sha256 ?? "")) problems.push(`${at}.sha256 must be 64 lowercase hex`);
     if (!Number.isSafeInteger(a?.size_bytes) || a.size_bytes <= 0) problems.push(`${at}.size_bytes must be a positive integer`);
   });
+  const required = new Set(REQUIRED_ARTIFACTS.map((r) => `${r.role}/${r.platform}`));
+  for (const pair of required) if (!pairs.has(pair)) problems.push(`artifacts: required ${pair} is missing`);
+  for (const [pair, count] of pairs) {
+    if (!required.has(pair)) problems.push(`artifacts: ${pair} is not part of manifest schema v1`);
+    else if (count > 1) problems.push(`artifacts: ${pair} appears ${count} times`);
+  }
   return problems;
 }
 

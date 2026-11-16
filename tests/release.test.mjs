@@ -41,10 +41,11 @@ test("a symlink is refused: an archive can never depend on one", () => {
 
 test("manifest v1: one build id, exact compatibility, hashes from the final bytes; every incoherence is reported", () => {
   const bytes = Buffer.from("archive bytes");
-  const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records: [{ role: "client", platform: "linux-x64", name: "reach-client-linux-x64.tgz", bytes }] });
+  const records = [["server", "linux-x64", "reach-server-linux-x64.tgz"], ["client", "linux-x64", "reach-client-linux-x64.tgz"], ["client", "win32-x64", "reach-client-win32-x64.zip"]].map(([role, platform, name]) => ({ role, platform, name, bytes }));
+  const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records });
   assert.deepEqual(validateManifest(m), []);
   assert.deepEqual([m.release.build_id, m.server.build_id, m.client.build_id, m.compatibility], ["rel-1", "rel-1", "rel-1", { strategy: "exact", accepted_client_builds: ["rel-1"] }]);
-  assert.deepEqual(m.artifacts[0], { role: "client", platform: "linux-x64", name: "reach-client-linux-x64.tgz", sha256: sha256(bytes), size_bytes: bytes.length });
+  assert.deepEqual(m.artifacts[0], { role: "server", platform: "linux-x64", name: "reach-server-linux-x64.tgz", sha256: sha256(bytes), size_bytes: bytes.length });
   const bad = (edit) => validateManifest(edit(JSON.parse(JSON.stringify(m))));
   assert.match(bad((x) => ((x.client.build_id = "other"), x)).join(), /same single build id/);
   assert.match(bad((x) => ((x.compatibility.accepted_client_builds = ["rel-1", "x"]), x)).join(), /accepted_client_builds/);
@@ -54,6 +55,20 @@ test("manifest v1: one build id, exact compatibility, hashes from the final byte
   assert.match(bad((x) => ((x.artifacts[0].name = "../x"), x)).join(), /servable/);
   assert.match(bad((x) => ((x.schema_version = 2), x)).join(), /schema_version/);
   assert.match(bad((x) => ((x.artifacts = []), x)).join(), /non-empty/);
+});
+
+test("manifest v1 requires exactly server/linux-x64, client/linux-x64 and client/win32-x64: missing, duplicate and extra pairs are rejected", () => {
+  const bytes = Buffer.from("x");
+  const rec = (role, platform, name) => ({ role, platform, name, bytes });
+  const all = [rec("server", "linux-x64", "s.tgz"), rec("client", "linux-x64", "c1.tgz"), rec("client", "win32-x64", "c2.zip")];
+  const check = (records) => validateManifest(buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records }));
+  assert.deepEqual(check(all), []);
+  assert.match(check(all.filter((r) => r.platform !== "win32-x64")).join(), /required client\/win32-x64 is missing/);
+  assert.match(check(all.filter((r) => !(r.role === "client" && r.platform === "linux-x64"))).join(), /required client\/linux-x64 is missing/);
+  assert.match(check(all.filter((r) => r.role !== "server")).join(), /required server\/linux-x64 is missing/);
+  assert.match(check([...all, rec("client", "win32-x64", "other-name.zip")]).join(), /client\/win32-x64 appears 2 times/);
+  assert.match(check([...all, rec("client", "darwin-arm64", "c3.tgz")]).join(), /client\/darwin-arm64 is not part of manifest schema v1/);
+  assert.match(check([...all, rec("tool", "linux-x64", "t.tgz")]).join(), /role must be server or client/);
 });
 
 test("the builder refuses a missing or invalid build id, a bad commit and a non-empty output directory before building anything", () => {

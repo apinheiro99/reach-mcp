@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { collectEntries, tgz, zip } from "./release/archive.mjs";
-import { artifactDir, buildManifest, MANIFEST_NAME, parseBuildId, parseCommit, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
+import { artifactDir, buildManifest, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 /** package name -> source directory. The closure of each role is derived from its package.json dependencies. */
@@ -21,11 +21,8 @@ const PACKAGES = {
   "@reach-mcp/client": "packages/client",
   "@reach-mcp/server": "packages/server",
 };
-const TARGETS = [
-  { role: "client", platform: "linux-x64", os: "linux", archive: tgz, name: "reach-client-linux-x64.tgz" },
-  { role: "client", platform: "win32-x64", os: "win32", archive: zip, name: "reach-client-win32-x64.zip" },
-  { role: "server", platform: "linux-x64", os: "linux", archive: tgz, name: "reach-server-linux-x64.tgz" },
-];
+/** The canonical role/platform set comes from the manifest owner; only the archive format and file name are decided here. */
+const TARGETS = REQUIRED_ARTIFACTS.map((t) => (t.os === "win32" ? { ...t, archive: zip, name: `reach-${t.role}-${t.platform}.zip` } : { ...t, archive: tgz, name: `reach-${t.role}-${t.platform}.tgz` }));
 
 const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
 const manifestOf = (name) => readJson(path.join(REPO, PACKAGES[name], "package.json"));
