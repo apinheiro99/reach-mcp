@@ -7,7 +7,7 @@
 // config, proposal (paths only, never contents), deployed_at. A candidate becomes `current` only after the Server answers healthy,
 // reports exactly the candidate's build id and commit, and the smoke checks pass; the switch is one atomic rename.
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -88,11 +88,25 @@ const defaultDeps = () => ({
   now: () => new Date().toISOString(),
 });
 
+/** Docker turns a missing bind-mount source into a root-owned directory and the Server then silently starts in setup mode: refuse that before anything runs. */
+function assertInputFiles(opts) {
+  const wrongKind = (file, kind) => {
+    try {
+      return !statSync(file)[kind]();
+    } catch {
+      return true;
+    }
+  };
+  const bad = [["config", opts.config, "isFile"], ["proposal", opts.proposal, "isFile"], ["tunnel-binary", opts.tunnelBinary, "isFile"], ["tunnel-dir", opts.tunnelDir, "isDirectory"]].filter(([, file, kind]) => wrongKind(file, kind));
+  if (bad.length > 0) throw new Error(`deployment input is missing or of the wrong kind (${bad.map(([name]) => name).join(", ")}): provision it before deploying`);
+}
+
 /** Compose is the only runtime definition; the deployment only chooses the image and the external inputs. */
 function apply(deps, opts, d) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
     REACH_IMAGE: d.image, REACH_CONFIG_FILE: d.config, REACH_PROPOSAL_FILE: d.proposal, REACH_LOG_DIR: opts.logs,
     REACH_DATA_PORT: String(opts.dataPort), REACH_ADMIN_PORT: String(opts.adminPort),
+    REACH_TUNNEL_BINARY: opts.tunnelBinary, REACH_TUNNEL_DIR: opts.tunnelDir,
   });
 }
 
@@ -113,10 +127,9 @@ async function verify(deps, opts, d) {
   checks.push({ name: "health", ok: health !== null });
   const identity = health !== null && health.server_build === d.build_id && health.repository_commit === d.repository_commit;
   checks.push({ name: "running-identity", ok: identity, ...(health === null ? {} : { running_build: health.server_build, running_commit: health.repository_commit }) });
-  const smoke = await deps
-    .http(`http://127.0.0.1:${opts.dataPort}/health`) // bearer-protected: any non-5xx answer proves the data plane is up
-    .then((res) => res.status > 0 && res.status < 500, () => false);
-  checks.push({ name: "smoke-data-plane", ok: smoke });
+  // The data-plane /health is bearer-protected: 401 proves an active configuration is enforcing it; 503 means no active configuration (setup mode).
+  const smoke = await deps.http(`http://127.0.0.1:${opts.dataPort}/health`).then((res) => res.status, () => 0);
+  checks.push({ name: "smoke-data-plane", ok: smoke > 0 && smoke < 500, data_plane_status: smoke });
   return { ok: checks.every((c) => c.ok), checks };
 }
 
@@ -151,6 +164,7 @@ export async function deploy(opts, deps = defaultDeps()) {
     const report = { command: "deploy", started_at, candidate: brief(candidate), previous_known_good: brief(previousGood) };
     let outcome;
     try {
+      assertInputFiles(opts);
       buildImage({ releaseDir: opts.release, tag: image, docker: opts.docker });
       apply(deps, opts, candidate);
       outcome = await verify(deps, opts, candidate);
@@ -196,12 +210,13 @@ export function parseArgs(argv) {
     return flags[name];
   };
   const opts = {
-    state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach-server", imageRepo: flags["image-repo"] ?? "reach-server",
+    state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach", imageRepo: flags["image-repo"] ?? "reach-server",
     dataPort: Number(flags["data-port"] ?? 8787), adminPort: Number(flags["admin-port"] ?? 8788),
     retries: Number(flags.retries ?? 30), intervalMs: Number(flags["interval-ms"] ?? 2000), ...(flags.evidence === undefined ? {} : { evidence: path.resolve(flags.evidence) }),
   };
-  if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), config: path.resolve(need("config")), proposal: path.resolve(need("proposal")), logs: path.resolve(need("logs")) };
-  if (command === "rollback") return { command, ...opts, logs: path.resolve(need("logs")) };
+  const tunnel = () => ({ tunnelBinary: path.resolve(need("tunnel-binary")), tunnelDir: path.resolve(need("tunnel-dir")) });
+  if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), config: path.resolve(need("config")), proposal: path.resolve(need("proposal")), logs: path.resolve(need("logs")), ...tunnel() };
+  if (command === "rollback") return { command, ...opts, logs: path.resolve(need("logs")), ...tunnel() };
   if (command === "status") return { command, ...opts };
   throw new Error("usage: deploy.mjs deploy|rollback|status --state <dir> ...");
 }

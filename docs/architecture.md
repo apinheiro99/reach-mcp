@@ -177,7 +177,7 @@ flowchart TB
         HITL["Pending Proposal + HITL Approval"]
         LOG["Operational Log"]
         AUDIT["Audit Log"]
-        PRIV["/reach/reach-private"]
+        PRIV["Deployment-owned persistent configuration"]
     end
 
     subgraph CLIENTA["🟢 REACH Client — Host A"]
@@ -717,7 +717,7 @@ The source repository, private operator material and installed Client runtime ar
 
 ### Server
 
-Production runs from a built Server artifact/image and does not require Git metadata or a working source checkout. Server configuration/proposals and operational logs are explicit deployment inputs/mounts; no generic state directory is required.
+Production runs from a built Server artifact/image and does not require Git metadata or a working source checkout. Server configuration, proposal state, operational logs and tunnel material are explicit deployment inputs/mounts derived from an operator-selected persistent root; no source repository path is part of the product contract.
 
 ### Private configuration
 
@@ -734,7 +734,7 @@ Both are explicitly overridable by the operator. The bootstrap file is separate 
 
 ### Persistence
 
-Persistence is explicit and deployment-owned. Server private configuration and logs may be mounted/persisted by the deployment; the Client bootstrap remains a protected operator file. REACH does not invent a generic `runtime`/state volume as a product abstraction.
+Persistence is explicit and deployment-owned. Production accepts an operator-selected persistent root as an installation input, then mounts only the concrete files/directories each service needs. The root may be empty on first boot (setup mode) or pre-seeded from operator backup/recovery material. The Client bootstrap remains a separate protected operator file. REACH does not require any particular storage backend or private repository.
 
 ---
 
@@ -1116,9 +1116,9 @@ Public repository/history must contain no real secrets, credentials, private key
 
 ---
 
-## 24. Private repository boundary
+## 24. Private operator recovery boundary
 
-`reach-private` is private, GitLab-only recovery/configuration material for the Product Owner environment.
+The public product has no dependency on an operator's private repository. An operator may maintain separate private recovery/configuration material and use it to seed or restore the deployment-owned persistent root.
 
 It may contain:
 
@@ -1135,7 +1135,7 @@ Do not force Vault/KMS/SOPS or another secret subsystem unless later requested.
 
 Rules:
 
-- never mirror `reach-private` to public GitHub;
+- never publish operator-private recovery/configuration material to public GitHub;
 - public `reach-mcp` must not contain real secrets;
 - normal GPT/Claude workflows should not print secret values;
 - logs/CI must not echo secrets.

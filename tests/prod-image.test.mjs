@@ -70,16 +70,31 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
 });
 
 test("Compose runs a built image and mounts exactly config file, proposal file and log dir, with separate loopback ports and a restart policy", () => {
-  const yaml = text("compose.yaml").replace(/^\s*#.*$/gm, "");
+  const yaml = text("compose.yaml").replace(/^\s*#.*$/gm, "").split(/^\s{2}reach-tunnel:$/m)[0];
   assert.doesNotMatch(yaml, /^\s*build:/m, "Compose never builds from source");
   assert.match(yaml, /image: \$\{REACH_IMAGE:\?/);
   assert.match(yaml, /restart: unless-stopped/);
+  assert.match(yaml, /container_name: \$\{REACH_CONTAINER_NAME:-reach-server\}/, "the container has the clean name reach-server by default");
   const volumes = [...yaml.matchAll(/^\s+- (\$\{REACH_[A-Z_]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split(":").pop());
   assert.deepEqual(volumes, ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach"]);
   assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 3, "no other mount");
   assert.doesNotMatch(yaml, /docker\.sock|privileged|network_mode: host|volumes:\s*\n\s*\w+:|\s- \/:|\s- \/\w+:\/\w+/);
   const ports = [...yaml.matchAll(/^\s+- "(\$\{REACH_(DATA|ADMIN)_BIND:-127\.0\.0\.1\}:\$\{REACH_\2_PORT:-\d+\}:(\d+))"$/gm)].map((m) => [m[2], m[3]]);
   assert.deepEqual(ports, [["DATA", "8787"], ["ADMIN", "8788"]], "data and admin are separate mappings, loopback by default");
+});
+
+test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is read-only mounted, unpublished and independent of the Server", () => {
+  const full = text("compose.yaml").replace(/^\s*#.*$/gm, "");
+  assert.deepEqual([...full.matchAll(/^\s{2}([a-z-]+):$/gm)].map((m) => m[1]).filter((name) => name !== "services"), ["reach-server", "reach-tunnel"]);
+  const tunnel = full.split(/^\s{2}reach-tunnel:$/m)[1];
+  assert.match(tunnel, /container_name: \$\{REACH_TUNNEL_CONTAINER_NAME:-reach-tunnel\}/);
+  assert.match(tunnel, /restart: unless-stopped/);
+  assert.match(tunnel, /user: "1000:1000"/);
+  assert.match(tunnel, /until node -e .*reach-server:8787\/health.*exec \/usr\/local\/bin\/tunnel-client run --config \/run\/reach-tunnel\/tunnel-client\.yaml/, "the Tunnel waits for the Server before it starts");
+  assert.deepEqual([...tunnel.matchAll(/^\s+- (\$\{REACH_TUNNEL_[A-Z]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split("}:").pop()), ["/usr/local/bin/tunnel-client:ro", "/run/reach-tunnel:ro"]);
+  assert.match(tunnel, /^\s+- \/etc\/ssl\/certs\/ca-certificates\.crt:\/etc\/ssl\/certs\/ca-certificates\.crt:ro$/m, "the Tunnel trusts the host CA bundle read-only");
+  assert.doesNotMatch(tunnel, /^\s+ports:|depends_on|8788|REACH_ADMIN|network_mode|privileged|docker\.sock/m, "the Tunnel publishes nothing, never names the admin listener and does not gate the Server");
+  assert.doesNotMatch(full, /sk-|tunnel_[0-9a-f]{8}|api[_-]?key:|Bearer /i, "no credential or tunnel identity in the public file");
 });
 
 test("the healthcheck probes the admin state endpoint without a credential and the image declares it", () => {

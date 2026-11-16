@@ -79,25 +79,31 @@ test("CI has no dependency on any external project", () => {
   assert.doesNotMatch(ci, /gitgate/i);
 });
 
-test("production delivery: the release job needs every validation job, deploy needs the release, and deploy is manual on the default branch only", () => {
+test("production delivery: the release job needs every validation job, deploy needs the release, and deploy runs automatically after it on the default branch and the governed Task branch", () => {
   const release = block("Build Release");
   for (const job of validationJobs) assert.match(release, new RegExp(`- "${job}"`), `Build Release must need ${job}`);
   assert.match(release, /stage: release/);
   assert.match(release, /--build-id "\$CI_COMMIT_SHORT_SHA" --repository-commit "\$CI_COMMIT_SHA"/);
   const deployJob = block("Deploy Production");
   assert.match(deployJob, /- job: "Build Release"\n\s+artifacts: true/);
-  assert.match(deployJob, /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
+  assert.match(deployJob, /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n/);
+  assert.doesNotMatch(deployJob, /when: manual/, "Deploy Production runs by itself once validation and Build Release pass");
   assert.match(deployJob, /\$CI_COMMIT_TAG'\n\s+when: never/);
+  assert.match(deployJob, /\$CI_COMMIT_BRANCH == "feature\/task-37-prod-runner-local-ci"'/, "the Task branch runs the deploy");
+  assert.doesNotMatch(ci, /feature\/(\*|task-\*)|=~/, "the branch exception is one exact branch, never a wildcard");
+  assert.match(block(".default-branch-push"), /feature\/task-37-prod-runner-local-ci/, "Build Release is also available on the governed Task branch");
   assert.doesNotMatch(deployJob, /allow_failure: false/, "an unrun manual deploy must not block the pipeline");
   assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
   assert.ok(ci.indexOf("  - validate\n") < ci.indexOf("  - release\n") && ci.indexOf("  - release\n") < ci.indexOf("  - deploy\n"), "stage order: validate, release, deploy");
 });
 
-test("production delivery: logic lives in the controller, deploy jobs serialize, always keep evidence and carry no target values", () => {
+test("production delivery: jobs run on the docker-prod runner, call the controller locally, serialize, keep evidence and need no SSH or target variables", () => {
   const shared = block(".deploy-job");
   assert.match(shared, /resource_group: production/);
   assert.match(shared, /artifacts:\n\s+when: always[\s\S]*- deploy-evidence\//);
-  for (const job of ["Deploy Production", "Rollback Production"]) assert.match(block(job), /script:\n\s+- bash deploy\/prod\/remote-deploy\.sh (deploy release|rollback)\n/, `${job} only calls the transport script`);
-  assert.doesNotMatch(ci, /DEPLOY_[A-Z_]+:\s*\S/, "no DEPLOY_* variable has a value in the repository");
+  assert.match(shared, /tags:\n\s+- docker-prod/, "deploy and rollback run only on the docker-prod runner");
+  assert.match(block("Deploy Production"), /node deploy\/prod\/deploy\.mjs deploy --release release /, "deploy calls the controller locally with the Build Release artifacts");
+  assert.match(block("Rollback Production"), /node deploy\/prod\/deploy\.mjs rollback /, "rollback calls the controller locally");
+  assert.doesNotMatch(ci, /DEPLOY_[A-Z_]+|remote-deploy|SSH_KEY|known_hosts/, "no SSH transport or DEPLOY_* target variable in the production path");
   assert.doesNotMatch(ci, /docker (build|compose|push|run)|ssh |scp /, "no deployment logic in the YAML");
 });

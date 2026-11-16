@@ -2,7 +2,7 @@
 
 ## Current state
 
-REACH is still pre-alpha, but the repository now produces installable release artifacts. Public production deployment is not yet declared generally available; Story #10 still owns the production Server image/Compose/CD path.
+REACH is still pre-alpha, but the repository now produces installable release artifacts. Public production deployment is not yet declared generally available, but the repository now contains the validated production Server image/Compose/CD reference path.
 
 ## Build from source (development)
 
@@ -73,7 +73,7 @@ Default install directory: `C:\\Program Files\\REACH\\Client`.
 
 ## Server distribution
 
-The Server release artifact is already self-contained and does not require Git/workspace links. Story #10 owns wrapping that runtime in the production non-root Docker image/Compose deployment, controlled CD, rollback and Secure MCP Tunnel exposure.
+The Server release artifact is self-contained and does not require Git/workspace links. The production reference deployment is one Compose project (`reach`) with separate `reach-server` and `reach-tunnel` services, controlled CD and explicit rollback. See [production-deployment.md](production-deployment.md).
 
 The Server admin listener is a separate exposure boundary. Authenticated release-manifest/Client-artifact retrieval exists there; it is not an MCP tool and must not be exposed through the public MCP tunnel by default.
 

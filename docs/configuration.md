@@ -2,14 +2,14 @@
 
 How REACH is configured and operated. The reasons behind these rules are in [architecture.md](architecture.md); this page covers the practice. Development setup is in [development-environment.md](development-environment.md), installation in [install.md](install.md).
 
-Real configuration, credentials and keys are never committed to the public repository. They live in `reach-private`.
+Real configuration, credentials and keys are never committed to the public repository. Production receives them through deployment-owned persistent paths; the backing storage location is an operator decision.
 
 ## Server
 
 The Server is the configuration authority: projects, roots, access modes, allowlists, deny rules, limits and Clients are all defined there.
 
 - **Web UI first.** The Web UI is the main way to configure the Server. No hand-written production `.env` is required.
-- **File-backed.** The Web UI persists configuration to a simple, inspectable file in `reach-private` (YAML or JSON; the exact format is an implementation detail). No database.
+- **File-backed.** The Web UI persists configuration to a simple, inspectable file under the deployment-provided persistent root (YAML or JSON; the exact format is an implementation detail). No database.
 - **Autosave.** Changing an ordinary field, select or toggle saves automatically after a short debounce and validation. There is no generic Save button.
 - **Safe activation.** Changes activate atomically; an invalid configuration never replaces the last-known-good one.
 - **Action buttons** exist only for real actions: approve or reject an AI proposal, rotate or revoke a credential, and destructive operations.
@@ -49,7 +49,7 @@ Rotation: generate a new credential, update the Client, verify it reconnects, th
 
 Operational logs and the audit trail rotate at midnight or at a maximum size, with 5 days of retention by default; retention and size are configurable in the Web UI.
 
-Log and private-configuration paths are deployment inputs, not public hardcoded product paths. Production deployment should persist the explicit Server config/proposal and log locations it supplies. The Client bootstrap is a separate protected operator file and is never part of the installed Client artifact.
+Log and private-configuration paths are deployment inputs, not public hardcoded product paths. Production deployment should persist the explicit Server config/proposal and log locations it supplies. An empty persistent root is a valid first-run condition and enters setup mode; an operator may also pre-seed that root from private backup/recovery material. The Client bootstrap is a separate protected operator file and is never part of the installed Client artifact.
 
 ## Rules
 
