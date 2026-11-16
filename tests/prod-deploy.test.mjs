@@ -14,6 +14,13 @@ import { buildManifest, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.m
 const base = mkdtempSync(path.join(tmpdir(), "reach-deploy-"));
 const BEARER = "deploy-bearer-" + "Qw83Zk17";
 let counter = 0;
+// The deployment inputs must be real regular files (the controller refuses anything else before touching Docker).
+const inputFile = (name) => {
+  const file = path.join(base, name);
+  writeFileSync(file, "{}\n");
+  return file;
+};
+const [C1, P1, C2, P2] = ["c1.json", "p1.json", "c2.json", "p2.json"].map(inputFile);
 
 /** A valid canonical release for one build id. */
 function release(buildId, commit) {
@@ -66,7 +73,7 @@ const make = (id) => {
 };
 
 const opts = (w, rel, state, extra = {}) => ({
-  release: rel, state, config: "/srv/cfg/config.json", proposal: "/srv/cfg/proposal.json", logs: "/srv/logs", docker: w.docker, project: "reach-server", imageRepo: "reach-server",
+  release: rel, state, config: C1, proposal: P1, logs: "/srv/logs", docker: w.docker, project: "reach-server", imageRepo: "reach-server",
   dataPort: 8787, adminPort: 8788, retries: 2, intervalMs: 0, ...extra,
 });
 const stateDir = () => path.join(base, `state-${counter++}`);
@@ -82,17 +89,17 @@ test("first deploy builds the canonical image, starts it and promotes it only af
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.current.repository_commit, s.current.image], ["b1", r.commit, "reach-server:b1"]);
   assert.equal(s.previous, null);
-  assert.deepEqual([s.current.config, s.current.proposal], ["/srv/cfg/config.json", "/srv/cfg/proposal.json"]);
+  assert.deepEqual([s.current.config, s.current.proposal], [C1, P1]);
 });
 
 test("a second deploy keeps the first as the previous known-good", async () => {
   const w = world();
   const state = stateDir();
   await deploy(opts(w, make("b1").dir, state), w.deps);
-  await deploy(opts(w, make("b2").dir, state, { config: "/srv/cfg2/config.json" }), w.deps);
+  await deploy(opts(w, make("b2").dir, state, { config: C2 }), w.deps);
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.previous.build_id], ["b2", "b1"]);
-  assert.equal(s.previous.config, "/srv/cfg/config.json", "the previous deployment keeps its own config reference");
+  assert.equal(s.previous.config, C1, "the previous deployment keeps its own config reference");
 });
 
 test("a candidate that fails health restores the previous image with its config and proposal, exits non-zero and leaves state untouched", async () => {
@@ -100,10 +107,10 @@ test("a candidate that fails health restores the previous image with its config 
   const state = stateDir();
   await deploy(opts(w, make("b1").dir, state), w.deps);
   w.log.length = 0;
-  const { exit, evidence } = await deploy(opts(w, make("b2").dir, state, { config: "/srv/cfg2/config.json", proposal: "/srv/cfg2/proposal.json" }), w.deps);
+  const { exit, evidence } = await deploy(opts(w, make("b2").dir, state, { config: C2, proposal: P2 }), w.deps);
   assert.equal(exit, 1);
   assert.deepEqual([evidence.result, evidence.rollback], ["candidate-failed", "restored"]);
-  assert.deepEqual(w.log.map((l) => [l.image, l.config, l.proposal]), [["reach-server:b2", "/srv/cfg2/config.json", "/srv/cfg2/proposal.json"], ["reach-server:b1", "/srv/cfg/config.json", "/srv/cfg/proposal.json"]]);
+  assert.deepEqual(w.log.map((l) => [l.image, l.config, l.proposal]), [["reach-server:b2", C2, P2], ["reach-server:b1", C1, P1]]);
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.previous], ["b1", null], "the failed candidate never became known-good");
 });
@@ -151,7 +158,7 @@ test("explicit rollback restores the previous deployment and swaps current and p
   const { exit, evidence } = await rollback(opts(w, "", state), w.deps);
   assert.equal(exit, 0);
   assert.equal(evidence.result, "restored");
-  assert.deepEqual(w.log.map((l) => [l.image, l.config]), [["reach-server:b1", "/srv/cfg/config.json"]]);
+  assert.deepEqual(w.log.map((l) => [l.image, l.config]), [["reach-server:b1", C1]]);
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.previous.build_id], ["b1", "b2"]);
 });
@@ -280,4 +287,25 @@ test("a valid two-record state is accepted and a missing state file is still a f
   const fresh = stateDir();
   assert.deepEqual(status({ state: fresh }), { schema_version: 1, current: null, previous: null });
   assert.equal((await deploy(opts(w, make("b1").dir, fresh), w.deps)).exit, 0);
+});
+
+test("a missing or non-file deployment input is refused before anything is built or started", async () => {
+  const w = world();
+  for (const extra of [{ config: path.join(base, "absent.json") }, { proposal: base }]) {
+    const state = stateDir();
+    const { exit, evidence } = await deploy(opts(w, make("b7").dir, state, extra), w.deps);
+    assert.equal(exit, 1);
+    assert.match(evidence.checks[0].error, /not a regular file/);
+    assert.equal(w.log.length, 0, "compose never ran");
+    assert.equal(status({ state }).current, null);
+  }
+});
+
+test("a data plane that answers 503 (no active configuration) fails the smoke check and reports the status", async () => {
+  const w = world();
+  const http = w.deps.http;
+  w.deps.http = async (url) => (url.endsWith("/health") ? { status: 503, body: "" } : http(url));
+  const { exit, evidence } = await deploy(opts(w, make("b8").dir, stateDir()), w.deps);
+  assert.equal(exit, 1);
+  assert.deepEqual(evidence.checks.find((c) => c.name === "smoke-data-plane"), { name: "smoke-data-plane", ok: false, data_plane_status: 503 });
 });

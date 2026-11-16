@@ -79,16 +79,17 @@ test("CI has no dependency on any external project", () => {
   assert.doesNotMatch(ci, /gitgate/i);
 });
 
-test("production delivery: the release job needs every validation job, deploy needs the release, and deploy is manual on the default branch only", () => {
+test("production delivery: the release job needs every validation job, deploy needs the release, and deploy runs automatically after it on the default branch and the governed Task branch", () => {
   const release = block("Build Release");
   for (const job of validationJobs) assert.match(release, new RegExp(`- "${job}"`), `Build Release must need ${job}`);
   assert.match(release, /stage: release/);
   assert.match(release, /--build-id "\$CI_COMMIT_SHORT_SHA" --repository-commit "\$CI_COMMIT_SHA"/);
   const deployJob = block("Deploy Production");
   assert.match(deployJob, /- job: "Build Release"\n\s+artifacts: true/);
-  assert.match(deployJob, /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
+  assert.match(deployJob, /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n/);
+  assert.doesNotMatch(deployJob, /when: manual/, "Deploy Production runs by itself once validation and Build Release pass");
   assert.match(deployJob, /\$CI_COMMIT_TAG'\n\s+when: never/);
-  assert.match(deployJob, /\$CI_COMMIT_BRANCH == "feature\/task-37-prod-runner-local-ci"'\n\s+when: manual/, "the Task branch may run the manual deploy");
+  assert.match(deployJob, /\$CI_COMMIT_BRANCH == "feature\/task-37-prod-runner-local-ci"'/, "the Task branch runs the deploy");
   assert.doesNotMatch(ci, /feature\/(\*|task-\*)|=~/, "the branch exception is one exact branch, never a wildcard");
   assert.match(block(".default-branch-push"), /feature\/task-37-prod-runner-local-ci/, "Build Release is also available on the governed Task branch");
   assert.doesNotMatch(deployJob, /allow_failure: false/, "an unrun manual deploy must not block the pipeline");

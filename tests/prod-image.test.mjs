@@ -74,6 +74,7 @@ test("Compose runs a built image and mounts exactly config file, proposal file a
   assert.doesNotMatch(yaml, /^\s*build:/m, "Compose never builds from source");
   assert.match(yaml, /image: \$\{REACH_IMAGE:\?/);
   assert.match(yaml, /restart: unless-stopped/);
+  assert.match(yaml, /container_name: \$\{REACH_CONTAINER_NAME:-reach-server\}/, "the container has the clean name reach-server by default");
   const volumes = [...yaml.matchAll(/^\s+- (\$\{REACH_[A-Z_]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split(":").pop());
   assert.deepEqual(volumes, ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach"]);
   assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 3, "no other mount");

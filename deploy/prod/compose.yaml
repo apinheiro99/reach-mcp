@@ -3,9 +3,11 @@
 #   REACH_CONFIG_FILE    a file the container user (uid 1000) can read and write: the Server stores its configuration there
 #   REACH_PROPOSAL_FILE  a file the container user can read and write
 #   REACH_LOG_DIR        a directory the container user can write
+# The container is named reach-server (override with REACH_CONTAINER_NAME); the Compose project name stays the controller's.
 # Data (MCP) and admin are separate listeners and separate mappings; both default to host loopback only.
 services:
   reach-server:
+    container_name: ${REACH_CONTAINER_NAME:-reach-server}
     image: ${REACH_IMAGE:?set REACH_IMAGE to the tag produced by build-image.mjs}
     restart: unless-stopped
     volumes:

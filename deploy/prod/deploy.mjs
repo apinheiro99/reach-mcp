@@ -7,7 +7,7 @@
 // config, proposal (paths only, never contents), deployed_at. A candidate becomes `current` only after the Server answers healthy,
 // reports exactly the candidate's build id and commit, and the smoke checks pass; the switch is one atomic rename.
 import { execFileSync } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -88,6 +88,18 @@ const defaultDeps = () => ({
   now: () => new Date().toISOString(),
 });
 
+/** Docker turns a missing bind-mount source into a root-owned directory and the Server then silently starts in setup mode: refuse that before anything runs. */
+function assertInputFiles(opts) {
+  const bad = [["config", opts.config], ["proposal", opts.proposal]].filter(([, file]) => {
+    try {
+      return !statSync(file).isFile();
+    } catch {
+      return true;
+    }
+  });
+  if (bad.length > 0) throw new Error(`deployment input is not a regular file (${bad.map(([name]) => name).join(", ")}): provision it before deploying`);
+}
+
 /** Compose is the only runtime definition; the deployment only chooses the image and the external inputs. */
 function apply(deps, opts, d) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
@@ -113,10 +125,9 @@ async function verify(deps, opts, d) {
   checks.push({ name: "health", ok: health !== null });
   const identity = health !== null && health.server_build === d.build_id && health.repository_commit === d.repository_commit;
   checks.push({ name: "running-identity", ok: identity, ...(health === null ? {} : { running_build: health.server_build, running_commit: health.repository_commit }) });
-  const smoke = await deps
-    .http(`http://127.0.0.1:${opts.dataPort}/health`) // bearer-protected: any non-5xx answer proves the data plane is up
-    .then((res) => res.status > 0 && res.status < 500, () => false);
-  checks.push({ name: "smoke-data-plane", ok: smoke });
+  // The data-plane /health is bearer-protected: 401 proves an active configuration is enforcing it; 503 means no active configuration (setup mode).
+  const smoke = await deps.http(`http://127.0.0.1:${opts.dataPort}/health`).then((res) => res.status, () => 0);
+  checks.push({ name: "smoke-data-plane", ok: smoke > 0 && smoke < 500, data_plane_status: smoke });
   return { ok: checks.every((c) => c.ok), checks };
 }
 
@@ -151,6 +162,7 @@ export async function deploy(opts, deps = defaultDeps()) {
     const report = { command: "deploy", started_at, candidate: brief(candidate), previous_known_good: brief(previousGood) };
     let outcome;
     try {
+      assertInputFiles(opts);
       buildImage({ releaseDir: opts.release, tag: image, docker: opts.docker });
       apply(deps, opts, candidate);
       outcome = await verify(deps, opts, candidate);

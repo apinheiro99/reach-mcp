@@ -3,7 +3,7 @@
 # The tag stage is self-contained and records the aggregate result directly in this repository.
 # Tag contract: vYYYY.MM.NNNNNN[-fail].
 # GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
-# Production delivery: the release is built only from a passing default-branch pipeline and deployed by a manual job; the logic lives in
+# Production delivery: the release is built only from a passing default-branch pipeline and deployed automatically after it; rollback stays manual; the logic lives in
 # deploy/prod/deploy.mjs, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
 image: node:24-bookworm
 
@@ -168,9 +168,7 @@ ci-tag-red:
     - if: '$CI_COMMIT_TAG'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-      when: manual
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "feature/task-37-prod-runner-local-ci"'
-      when: manual
 
 "Rollback Production":
   extends: .deploy-job
