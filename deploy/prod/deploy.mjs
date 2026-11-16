@@ -41,7 +41,7 @@ const readState = (dir) => {
     raw = readFileSync(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") return { schema_version: STATE_SCHEMA, current: null, previous: null };
-    throw new Error(`deployment state ${file} cannot be read (${error.code ?? error.message}): refusing to continue`);
+    throw new Error(`deployment state ${file} cannot be read (${error.code ?? error.message}): refusing to continue`, { cause: error });
   }
   let state;
   try {
