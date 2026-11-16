@@ -90,6 +90,7 @@ test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is rea
   assert.match(tunnel, /container_name: \$\{REACH_TUNNEL_CONTAINER_NAME:-reach-tunnel\}/);
   assert.match(tunnel, /restart: unless-stopped/);
   assert.match(tunnel, /user: "1000:1000"/);
+  assert.match(tunnel, /until node -e .*reach-server:8787\/health.*exec \/usr\/local\/bin\/tunnel-client run --config \/run\/reach-tunnel\/tunnel-client\.yaml/, "the Tunnel waits for the Server before it starts");
   assert.deepEqual([...tunnel.matchAll(/^\s+- (\$\{REACH_TUNNEL_[A-Z]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split("}:").pop()), ["/usr/local/bin/tunnel-client:ro", "/run/reach-tunnel:ro"]);
   assert.match(tunnel, /^\s+- \/etc\/ssl\/certs\/ca-certificates\.crt:\/etc\/ssl\/certs\/ca-certificates\.crt:ro$/m, "the Tunnel trusts the host CA bundle read-only");
   assert.doesNotMatch(tunnel, /^\s+ports:|depends_on|8788|REACH_ADMIN|network_mode|privileged|docker\.sock/m, "the Tunnel publishes nothing, never names the admin listener and does not gate the Server");

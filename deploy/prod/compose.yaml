@@ -29,7 +29,12 @@ services:
     image: ${REACH_TUNNEL_BASE_IMAGE:-node:24-bookworm-slim}
     restart: unless-stopped
     user: "1000:1000"
-    command: ["/usr/local/bin/tunnel-client", "run", "--config", "/run/reach-tunnel/tunnel-client.yaml"]
+    # Wait until the Server answers before starting: the tunnel checks the target once at startup and would stay not-ready if it started first
+    # (Docker restarts containers after a reboot without any ordering). The Server never waits for the tunnel.
+    command:
+      - sh
+      - -c
+      - "until node -e 'fetch(\"http://reach-server:8787/health\").then(() => process.exit(0), () => process.exit(1))'; do sleep 2; done; exec /usr/local/bin/tunnel-client run --config /run/reach-tunnel/tunnel-client.yaml"
     volumes:
       - ${REACH_TUNNEL_BINARY:?absolute path of the tunnel-client binary}:/usr/local/bin/tunnel-client:ro
       - ${REACH_TUNNEL_DIR:?absolute path of the tunnel config and credentials directory}:/run/reach-tunnel:ro
