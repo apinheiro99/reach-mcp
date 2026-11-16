@@ -20,6 +20,9 @@ const inputFile = (name) => {
   writeFileSync(file, "{}\n");
   return file;
 };
+const TB = inputFile("tunnel-client");
+const TD = path.join(base, "tunnel");
+mkdirSync(TD, { recursive: true });
 const [C1, P1, C2, P2] = ["c1.json", "p1.json", "c2.json", "p2.json"].map(inputFile);
 
 /** A valid canonical release for one build id. */
@@ -73,7 +76,7 @@ const make = (id) => {
 };
 
 const opts = (w, rel, state, extra = {}) => ({
-  release: rel, state, config: C1, proposal: P1, logs: "/srv/logs", docker: w.docker, project: "reach-server", imageRepo: "reach-server",
+  release: rel, state, config: C1, proposal: P1, logs: "/srv/logs", docker: w.docker, tunnelBinary: TB, tunnelDir: TD, project: "reach", imageRepo: "reach-server",
   dataPort: 8787, adminPort: 8788, retries: 2, intervalMs: 0, ...extra,
 });
 const stateDir = () => path.join(base, `state-${counter++}`);
@@ -208,10 +211,11 @@ test("a custom evidence path is honoured and the state file is replaced atomical
 test("the command line requires the operator's target inputs and has no defaults for them", () => {
   assert.throws(() => parseArgs(["deploy", "--state", "/s"]), /missing --release/);
   assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p"]), /missing --logs/);
+  assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l"]), /missing --tunnel-binary/);
   assert.throws(() => parseArgs(["frobnicate", "--state", "/s"]), /usage/);
-  const a = parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l"]);
-  assert.deepEqual([a.dataPort, a.adminPort, a.docker], [8787, 8788, "docker"]);
-  assert.equal(parseArgs(["rollback", "--state", "/s", "--logs", "/l"]).command, "rollback");
+  const a = parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"]);
+  assert.deepEqual([a.dataPort, a.adminPort, a.docker, a.project], [8787, 8788, "docker", "reach"]);
+  assert.equal(parseArgs(["rollback", "--state", "/s", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"]).command, "rollback");
 });
 
 test("the deployment sources define no private target and run no background updater", () => {
@@ -291,11 +295,11 @@ test("a valid two-record state is accepted and a missing state file is still a f
 
 test("a missing or non-file deployment input is refused before anything is built or started", async () => {
   const w = world();
-  for (const extra of [{ config: path.join(base, "absent.json") }, { proposal: base }]) {
+  for (const extra of [{ config: path.join(base, "absent.json") }, { proposal: base }, { tunnelBinary: path.join(base, "absent-tunnel") }, { tunnelDir: C1 }]) {
     const state = stateDir();
     const { exit, evidence } = await deploy(opts(w, make("b7").dir, state, extra), w.deps);
     assert.equal(exit, 1);
-    assert.match(evidence.checks[0].error, /not a regular file/);
+    assert.match(evidence.checks[0].error, /missing or of the wrong kind/);
     assert.equal(w.log.length, 0, "compose never ran");
     assert.equal(status({ state }).current, null);
   }

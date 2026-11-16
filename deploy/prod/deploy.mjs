@@ -90,14 +90,15 @@ const defaultDeps = () => ({
 
 /** Docker turns a missing bind-mount source into a root-owned directory and the Server then silently starts in setup mode: refuse that before anything runs. */
 function assertInputFiles(opts) {
-  const bad = [["config", opts.config], ["proposal", opts.proposal]].filter(([, file]) => {
+  const wrongKind = (file, kind) => {
     try {
-      return !statSync(file).isFile();
+      return !statSync(file)[kind]();
     } catch {
       return true;
     }
-  });
-  if (bad.length > 0) throw new Error(`deployment input is not a regular file (${bad.map(([name]) => name).join(", ")}): provision it before deploying`);
+  };
+  const bad = [["config", opts.config, "isFile"], ["proposal", opts.proposal, "isFile"], ["tunnel-binary", opts.tunnelBinary, "isFile"], ["tunnel-dir", opts.tunnelDir, "isDirectory"]].filter(([, file, kind]) => wrongKind(file, kind));
+  if (bad.length > 0) throw new Error(`deployment input is missing or of the wrong kind (${bad.map(([name]) => name).join(", ")}): provision it before deploying`);
 }
 
 /** Compose is the only runtime definition; the deployment only chooses the image and the external inputs. */
@@ -105,6 +106,7 @@ function apply(deps, opts, d) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
     REACH_IMAGE: d.image, REACH_CONFIG_FILE: d.config, REACH_PROPOSAL_FILE: d.proposal, REACH_LOG_DIR: opts.logs,
     REACH_DATA_PORT: String(opts.dataPort), REACH_ADMIN_PORT: String(opts.adminPort),
+    REACH_TUNNEL_BINARY: opts.tunnelBinary, REACH_TUNNEL_DIR: opts.tunnelDir,
   });
 }
 
@@ -208,12 +210,13 @@ export function parseArgs(argv) {
     return flags[name];
   };
   const opts = {
-    state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach-server", imageRepo: flags["image-repo"] ?? "reach-server",
+    state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach", imageRepo: flags["image-repo"] ?? "reach-server",
     dataPort: Number(flags["data-port"] ?? 8787), adminPort: Number(flags["admin-port"] ?? 8788),
     retries: Number(flags.retries ?? 30), intervalMs: Number(flags["interval-ms"] ?? 2000), ...(flags.evidence === undefined ? {} : { evidence: path.resolve(flags.evidence) }),
   };
-  if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), config: path.resolve(need("config")), proposal: path.resolve(need("proposal")), logs: path.resolve(need("logs")) };
-  if (command === "rollback") return { command, ...opts, logs: path.resolve(need("logs")) };
+  const tunnel = () => ({ tunnelBinary: path.resolve(need("tunnel-binary")), tunnelDir: path.resolve(need("tunnel-dir")) });
+  if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), config: path.resolve(need("config")), proposal: path.resolve(need("proposal")), logs: path.resolve(need("logs")), ...tunnel() };
+  if (command === "rollback") return { command, ...opts, logs: path.resolve(need("logs")), ...tunnel() };
   if (command === "status") return { command, ...opts };
   throw new Error("usage: deploy.mjs deploy|rollback|status --state <dir> ...");
 }

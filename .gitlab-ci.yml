@@ -163,7 +163,7 @@ ci-tag-red:
     - npm ci
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p "$REACH_ROOT/config" "$REACH_ROOT/logs" deploy-evidence
-    - node deploy/prod/deploy.mjs deploy --release release --state "$REACH_ROOT/state" --config "$REACH_ROOT/config/server.json" --proposal "$REACH_ROOT/config/proposal.json" --logs "$REACH_ROOT/logs" --evidence deploy-evidence/evidence.json
+    - node deploy/prod/deploy.mjs deploy --release release --state "$REACH_ROOT/state" --config "$REACH_ROOT/config/server.json" --proposal "$REACH_ROOT/config/proposal.json" --logs "$REACH_ROOT/logs" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --evidence deploy-evidence/evidence.json
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -177,7 +177,7 @@ ci-tag-red:
     - npm ci
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p "$REACH_ROOT/logs" deploy-evidence
-    - node deploy/prod/deploy.mjs rollback --state "$REACH_ROOT/state" --logs "$REACH_ROOT/logs" --evidence deploy-evidence/evidence.json
+    - node deploy/prod/deploy.mjs rollback --state "$REACH_ROOT/state" --logs "$REACH_ROOT/logs" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --evidence deploy-evidence/evidence.json
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
