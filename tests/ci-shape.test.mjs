@@ -78,3 +78,26 @@ test("CI has no dependency on any external project", () => {
   assert.doesNotMatch(ci, /GITGATE_PROJECT_PATH/);
   assert.doesNotMatch(ci, /gitgate/i);
 });
+
+test("production delivery: the release job needs every validation job, deploy needs the release, and deploy is manual on the default branch only", () => {
+  const release = block("Build Release");
+  for (const job of validationJobs) assert.match(release, new RegExp(`- "${job}"`), `Build Release must need ${job}`);
+  assert.match(release, /stage: release/);
+  assert.match(release, /--build-id "\$CI_COMMIT_SHORT_SHA" --repository-commit "\$CI_COMMIT_SHA"/);
+  const deployJob = block("Deploy Production");
+  assert.match(deployJob, /- job: "Build Release"\n\s+artifacts: true/);
+  assert.match(deployJob, /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
+  assert.match(deployJob, /\$CI_COMMIT_TAG'\n\s+when: never/);
+  assert.doesNotMatch(deployJob, /allow_failure: false/, "an unrun manual deploy must not block the pipeline");
+  assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
+  assert.ok(ci.indexOf("  - validate\n") < ci.indexOf("  - release\n") && ci.indexOf("  - release\n") < ci.indexOf("  - deploy\n"), "stage order: validate, release, deploy");
+});
+
+test("production delivery: logic lives in the controller, deploy jobs serialize, always keep evidence and carry no target values", () => {
+  const shared = block(".deploy-job");
+  assert.match(shared, /resource_group: production/);
+  assert.match(shared, /artifacts:\n\s+when: always[\s\S]*- deploy-evidence\//);
+  for (const job of ["Deploy Production", "Rollback Production"]) assert.match(block(job), /script:\n\s+- bash deploy\/prod\/remote-deploy\.sh (deploy release|rollback)\n/, `${job} only calls the transport script`);
+  assert.doesNotMatch(ci, /DEPLOY_[A-Z_]+:\s*\S/, "no DEPLOY_* variable has a value in the repository");
+  assert.doesNotMatch(ci, /docker (build|compose|push|run)|ssh |scp /, "no deployment logic in the YAML");
+});
