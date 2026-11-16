@@ -83,6 +83,23 @@ test("extracted artifacts run their own entrypoints without module-resolution fa
   }
 });
 
+test("the real Linux Client archive installs with deploy/client/install-linux.sh into a temporary prefix and runs from there, away from any repository", () => {
+  const prefix = mkdtempSync(path.join(base, "prefix-"));
+  const install = path.join(prefix, "opt", "reach-mcp-client");
+  const units = path.join(prefix, "units");
+  const bootstrap = path.join(prefix, "private", "bootstrap.env");
+  const script = path.join(import.meta.dirname, "..", "..", "deploy", "client", "install-linux.sh");
+  const done = spawnSync("bash", [script, "--archive", path.join(out, "artifacts", names.linux), "--bootstrap", bootstrap, "--build", BUILD_ID, "--install-dir", install, "--unit-dir", units, "--node", process.execPath], { encoding: "utf8" });
+  assert.equal(done.status, 0, done.stderr);
+  const unit = readFileSync(path.join(units, "reach-mcp-client.service"), "utf8");
+  assert.ok(unit.includes(`ExecStart="${process.execPath}" "${install}/reach-client.mjs" --bootstrap "${bootstrap}" --build ${BUILD_ID}\n`) && !/packages\/|allow-insecure-ws/.test(unit), unit);
+  const run = spawnSync(process.execPath, [path.join(install, "reach-client.mjs")], { cwd: prefix, encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(run.status, 2, run.stderr);
+  assert.ok(run.stderr.includes("usage: client") && !/ERR_MODULE_NOT_FOUND|Cannot find (module|package)/.test(run.stderr), run.stderr);
+  const missing = spawnSync(process.execPath, [path.join(install, "reach-client.mjs"), "--bootstrap", bootstrap, "--build", BUILD_ID], { cwd: prefix, encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(missing.status, 2, "a missing bootstrap file is a clean refusal from the installed Client");
+});
+
 test("a real Server from the extracted runtime serves the produced manifest and both Client archives; the bytes equal the manifest hashes", async () => {
   const dir = path.join(extract("server"), "reach-server");
   const state = path.join(base, "state");
