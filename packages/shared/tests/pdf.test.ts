@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { FilesystemReader, readPdf, REDACTED, type FsLimits } from "../src/filesystem/index.ts";
-import { encryptedPdf, textPdf } from "./pdf-fixture.ts";
+import { encryptedPdf, textPdf } from "../src/testing/pdf-fixture.ts";
 
 // Secret-shaped samples are assembled from parts so this file never holds a literal one.
 const SECRET_LINE = "DB_PASS" + "WORD=s3cr3t-value-here";

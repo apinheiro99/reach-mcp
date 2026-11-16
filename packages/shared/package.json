@@ -13,7 +13,7 @@
     "./wire": "./src/wire/index.ts",
     "./cli": "./src/cli.ts",
     "./timers": "./src/timers.ts",
-    "./testing/pdf-fixture": "./tests/pdf-fixture.ts"
+    "./testing/pdf-fixture": "./src/testing/pdf-fixture.ts"
   },
   "files": [
     "src"
