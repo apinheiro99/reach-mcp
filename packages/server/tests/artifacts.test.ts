@@ -26,6 +26,9 @@ async function start(options: { artifacts?: boolean; active?: boolean } = {}) {
   writeFileSync(path.join(dir, "secret.txt"), "outside the artifacts directory");
   symlinkSync(path.join(dir, "secret.txt"), path.join(source, "linked.tar.gz"));
   mkdirSync(path.join(source, "subdir"));
+  writeFileSync(path.join(source, "huge.bin"), "");
+  truncateSync(path.join(source, "huge.bin"), MAX_ARTIFACT_BYTES + 1); // sparse: no disk is used
+  writeFileSync(path.join(source, "empty.bin"), "");
   const file = path.join(dir, "config.json");
   const config = new ServerConfigStore(file);
   const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-a", isBuildCompatible: () => true });
@@ -117,15 +120,23 @@ test("only declared regular files are served: unknown, traversal-shaped, hidden,
   await rt.close();
 });
 
+test("the catalog is fixed at construction: a valid file created afterwards is not served, and the path is never built for it", async () => {
+  const rt = await start();
+  writeFileSync(path.join(rt.source, "late-arrival.tar.gz"), "late");
+  assert.equal((await rt.get("/admin/api/release/artifacts/late-arrival.tar.gz")).status, 404, "present on disk, absent from the catalog");
+  assert.equal((await rt.get(ARTIFACT_PATH)).status, 200, "a cataloged file is still served");
+  const fresh = new DirectoryArtifactSource(rt.source);
+  assert.equal(fresh.artifact("late-arrival.tar.gz")?.size, 4, "a source built afterwards declares it");
+  assert.equal(fresh.artifact("manifest.json"), null);
+  await rt.close();
+});
+
 test("explicit bounds: an oversized manifest, an oversized artifact and an empty file are not served", async () => {
   const rt = await start();
   writeFileSync(path.join(rt.source, "manifest.json"), Buffer.alloc(MAX_MANIFEST_BYTES + 1, 0x20));
   assert.equal((await rt.get(MANIFEST_PATH)).status, 404);
   writeFileSync(path.join(rt.source, "manifest.json"), MANIFEST);
   assert.equal((await rt.get(MANIFEST_PATH)).status, 200, "a manifest at the limit-compliant size is served again");
-  writeFileSync(path.join(rt.source, "huge.bin"), "");
-  truncateSync(path.join(rt.source, "huge.bin"), MAX_ARTIFACT_BYTES + 1); // sparse: no disk is used
-  writeFileSync(path.join(rt.source, "empty.bin"), "");
   assert.equal((await rt.get("/admin/api/release/artifacts/huge.bin")).status, 404);
   assert.equal((await rt.get("/admin/api/release/artifacts/empty.bin")).status, 404);
   await rt.close();
