@@ -4,7 +4,7 @@
 # Tag contract: vYYYY.MM.NNNNNN[-fail].
 # GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
 # Production delivery: the release is built only from a passing default-branch pipeline and deployed by a manual job; the logic lives in
-# deploy/prod/deploy.mjs. The target (DEPLOY_* protected variables) is never defined in this repository.
+# deploy/prod/deploy.mjs, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
 image: node:24-bookworm
 
 stages:
@@ -145,6 +145,8 @@ ci-tag-red:
   before_script: []
   interruptible: false
   resource_group: production
+  tags:
+    - docker-prod
   artifacts:
     when: always
     expire_in: 14 days
@@ -157,7 +159,9 @@ ci-tag-red:
     - job: "Build Release"
       artifacts: true
   script:
-    - bash deploy/prod/remote-deploy.sh deploy release
+    - export REACH_ROOT="$HOME/reach-prod"
+    - mkdir -p "$REACH_ROOT/config" "$REACH_ROOT/logs" deploy-evidence
+    - node deploy/prod/deploy.mjs deploy --release release --state "$REACH_ROOT/state" --config "$REACH_ROOT/config/server.json" --proposal "$REACH_ROOT/config/proposal.json" --logs "$REACH_ROOT/logs" --evidence deploy-evidence/evidence.json
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
@@ -168,7 +172,9 @@ ci-tag-red:
   extends: .deploy-job
   needs: []
   script:
-    - bash deploy/prod/remote-deploy.sh rollback
+    - export REACH_ROOT="$HOME/reach-prod"
+    - mkdir -p "$REACH_ROOT/logs" deploy-evidence
+    - node deploy/prod/deploy.mjs rollback --state "$REACH_ROOT/state" --logs "$REACH_ROOT/logs" --evidence deploy-evidence/evidence.json
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never

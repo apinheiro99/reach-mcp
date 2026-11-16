@@ -93,11 +93,13 @@ test("production delivery: the release job needs every validation job, deploy ne
   assert.ok(ci.indexOf("  - validate\n") < ci.indexOf("  - release\n") && ci.indexOf("  - release\n") < ci.indexOf("  - deploy\n"), "stage order: validate, release, deploy");
 });
 
-test("production delivery: logic lives in the controller, deploy jobs serialize, always keep evidence and carry no target values", () => {
+test("production delivery: jobs run on the docker-prod runner, call the controller locally, serialize, keep evidence and need no SSH or target variables", () => {
   const shared = block(".deploy-job");
   assert.match(shared, /resource_group: production/);
   assert.match(shared, /artifacts:\n\s+when: always[\s\S]*- deploy-evidence\//);
-  for (const job of ["Deploy Production", "Rollback Production"]) assert.match(block(job), /script:\n\s+- bash deploy\/prod\/remote-deploy\.sh (deploy release|rollback)\n/, `${job} only calls the transport script`);
-  assert.doesNotMatch(ci, /DEPLOY_[A-Z_]+:\s*\S/, "no DEPLOY_* variable has a value in the repository");
+  assert.match(shared, /tags:\n\s+- docker-prod/, "deploy and rollback run only on the docker-prod runner");
+  assert.match(block("Deploy Production"), /node deploy\/prod\/deploy\.mjs deploy --release release /, "deploy calls the controller locally with the Build Release artifacts");
+  assert.match(block("Rollback Production"), /node deploy\/prod\/deploy\.mjs rollback /, "rollback calls the controller locally");
+  assert.doesNotMatch(ci, /DEPLOY_[A-Z_]+|remote-deploy|SSH_KEY|known_hosts/, "no SSH transport or DEPLOY_* target variable in the production path");
   assert.doesNotMatch(ci, /docker (build|compose|push|run)|ssh |scp /, "no deployment logic in the YAML");
 });
