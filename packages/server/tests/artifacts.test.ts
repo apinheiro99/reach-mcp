@@ -1,0 +1,162 @@
+// Authenticated, non-MCP retrieval of the release manifest and Client artifacts through the admin listener.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { ClientConnectionRegistry, createAdminServer, createHttpServer, DirectoryArtifactSource, ProposalStore, ServerConfigStore, type Audit, type AuditEvent } from "../src/index.ts";
+import { MAX_ARTIFACT_BYTES, MAX_MANIFEST_BYTES } from "../src/artifacts.ts";
+
+const MCP_BEARER = "mcp-bearer-" + "Zr58Lk20";
+const MANIFEST = Buffer.from('{"opaque":"manifest owned by the release producer","release":"r-1"}');
+const CLIENT_BYTES = randomBytes(300_000);
+const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+
+async function start(options: { artifacts?: boolean; active?: boolean } = {}) {
+  const { artifacts = true, active = true } = options;
+  const dir = mkdtempSync(path.join(tmpdir(), "reach-artifacts-"));
+  const source = path.join(dir, "artifacts");
+  mkdirSync(source);
+  writeFileSync(path.join(source, "manifest.json"), MANIFEST);
+  writeFileSync(path.join(source, "reach-client-linux-x64.tar.gz"), CLIENT_BYTES);
+  writeFileSync(path.join(source, ".hidden.tar.gz"), "hidden");
+  writeFileSync(path.join(dir, "secret.txt"), "outside the artifacts directory");
+  symlinkSync(path.join(dir, "secret.txt"), path.join(source, "linked.tar.gz"));
+  mkdirSync(path.join(source, "subdir"));
+  const file = path.join(dir, "config.json");
+  const config = new ServerConfigStore(file);
+  const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-a", isBuildCompatible: () => true });
+  const proposals = new ProposalStore({ path: path.join(dir, "proposal.json"), config, connections });
+  const events: AuditEvent[] = [];
+  const audit: Audit = { record: (e) => void events.push(e) };
+  const admin = createAdminServer({ config, connections, proposals, serverBuild: "srv-a", audit, ...(artifacts ? { artifacts: new DirectoryArtifactSource(source) } : {}) });
+  const data = createHttpServer({ config, connections, proposals, serverBuild: "srv-a" });
+  for (const s of [admin, data]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
+  const port = (s: typeof admin) => (s.address() as AddressInfo).port;
+  const a = `http://127.0.0.1:${port(admin)}`;
+  const d = `http://127.0.0.1:${port(data)}`;
+  if (active) config.applyEdit({ mcp_bearer: MCP_BEARER, clients: [] });
+  const get = (p: string, authorization: string | null = `Bearer ${MCP_BEARER}`, method = "GET") =>
+    fetch(`${a}${p}`, { method, ...(authorization === null ? {} : { headers: { Authorization: authorization } }) });
+  /** Two real Authorization header lines, both the right token. */
+  const twoHeaders = (p: string) =>
+    new Promise<number>((resolve) => {
+      http.get({ host: "127.0.0.1", port: port(admin), path: p, headers: { Authorization: [`Bearer ${MCP_BEARER}`, `Bearer ${MCP_BEARER}`] } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+    });
+  const close = async () => {
+    connections.stop();
+    for (const s of [admin, data]) {
+      s.closeAllConnections();
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  };
+  return { source, dir, a, d, get, twoHeaders, events, close };
+}
+
+const MANIFEST_PATH = "/admin/api/release/manifest";
+const ARTIFACT_PATH = "/admin/api/release/artifacts/reach-client-linux-x64.tar.gz";
+
+test("authentication comes first: absent, malformed, wrong and repeated bearers get 401, whether or not the artifact exists", async () => {
+  const rt = await start();
+  for (const p of [MANIFEST_PATH, ARTIFACT_PATH, "/admin/api/release/artifacts/does-not-exist.tar.gz"]) {
+    for (const authorization of [null, "Bearer", "Bearer wrong-" + MCP_BEARER, `Basic ${MCP_BEARER}`, `Bearer ${MCP_BEARER} extra`]) {
+      const res = await rt.get(p, authorization);
+      assert.equal(res.status, 401, `${p} with ${authorization}`);
+      assert.equal(res.headers.get("www-authenticate"), "Bearer");
+      assert.equal(await res.text(), "", "no body that could reveal the artifact");
+    }
+    assert.equal(await rt.twoHeaders(p), 401, `${p} with two Authorization lines`);
+  }
+  assert.deepEqual(rt.events, [], "a refused request is not a download");
+  await rt.close();
+});
+
+test("without an active configuration the release routes fail closed with 503", async () => {
+  const rt = await start({ active: false });
+  assert.equal((await rt.get(MANIFEST_PATH)).status, 503);
+  assert.equal((await rt.get(ARTIFACT_PATH)).status, 503);
+  await rt.close();
+});
+
+test("a non-MCP caller with the MCP bearer gets the exact manifest bytes and the exact artifact bytes", async () => {
+  const rt = await start();
+  const manifest = await rt.get(MANIFEST_PATH);
+  assert.equal(manifest.status, 200);
+  assert.equal(manifest.headers.get("content-type"), "application/json");
+  assert.equal(manifest.headers.get("content-length"), String(MANIFEST.length));
+  assert.equal(manifest.headers.get("x-content-type-options"), "nosniff");
+  assert.ok(Buffer.from(await manifest.arrayBuffer()).equals(MANIFEST));
+  const artifact = await rt.get(ARTIFACT_PATH);
+  assert.equal(artifact.status, 200);
+  assert.equal(artifact.headers.get("content-type"), "application/octet-stream");
+  assert.equal(artifact.headers.get("content-length"), String(CLIENT_BYTES.length));
+  assert.equal(artifact.headers.get("content-disposition"), 'attachment; filename="reach-client-linux-x64.tar.gz"');
+  assert.equal(artifact.headers.get("cache-control"), "no-store");
+  assert.equal(sha256(Buffer.from(await artifact.arrayBuffer())), sha256(CLIENT_BYTES));
+  assert.deepEqual(rt.events, [{ actor: "admin", action: "artifact_download", target: "reach-client-linux-x64.tar.gz", result: "ok" }], "one audit line, no bearer or bytes");
+  await rt.close();
+});
+
+test("only declared regular files are served: unknown, traversal-shaped, hidden, symlinked, directory, manifest and malformed names are 404", async () => {
+  const rt = await start();
+  const names = ["does-not-exist", "..%2Fsecret.txt", "%2e%2e%2fsecret.txt", "..%2F..%2Fetc%2Fpasswd", "%2Fetc%2Fpasswd", "..", ".hidden.tar.gz", "linked.tar.gz", "subdir", "manifest.json", "reach-client-linux-x64.tar.gz%00", "%E0%A4%A", "a%5Cb"];
+  for (const name of names) {
+    const res = await rt.get(`/admin/api/release/artifacts/${name}`);
+    assert.equal(res.status, 404, name);
+    assert.ok(!(await res.text()).includes("outside the artifacts directory"), name);
+  }
+  assert.equal((await rt.get("/admin/api/release/artifacts/sub/dir")).status, 404, "a slash never reaches the source");
+  assert.equal((await rt.get("/admin/api/release/artifacts/")).status, 404);
+  assert.equal(rt.events.length, 0, "nothing served, nothing audited");
+  await rt.close();
+});
+
+test("explicit bounds: an oversized manifest, an oversized artifact and an empty file are not served", async () => {
+  const rt = await start();
+  writeFileSync(path.join(rt.source, "manifest.json"), Buffer.alloc(MAX_MANIFEST_BYTES + 1, 0x20));
+  assert.equal((await rt.get(MANIFEST_PATH)).status, 404);
+  writeFileSync(path.join(rt.source, "manifest.json"), MANIFEST);
+  assert.equal((await rt.get(MANIFEST_PATH)).status, 200, "a manifest at the limit-compliant size is served again");
+  writeFileSync(path.join(rt.source, "huge.bin"), "");
+  truncateSync(path.join(rt.source, "huge.bin"), MAX_ARTIFACT_BYTES + 1); // sparse: no disk is used
+  writeFileSync(path.join(rt.source, "empty.bin"), "");
+  assert.equal((await rt.get("/admin/api/release/artifacts/huge.bin")).status, 404);
+  assert.equal((await rt.get("/admin/api/release/artifacts/empty.bin")).status, 404);
+  await rt.close();
+});
+
+test("methods other than GET are refused after authentication; a Server without an artifacts source answers 404", async () => {
+  const rt = await start();
+  assert.equal((await rt.get(MANIFEST_PATH, `Bearer ${MCP_BEARER}`, "POST")).status, 405);
+  assert.equal((await rt.get(ARTIFACT_PATH, `Bearer ${MCP_BEARER}`, "DELETE")).status, 405);
+  assert.equal((await rt.get(MANIFEST_PATH, null, "POST")).status, 401);
+  await rt.close();
+  const none = await start({ artifacts: false });
+  assert.equal((await none.get(MANIFEST_PATH)).status, 404);
+  assert.equal((await none.get(ARTIFACT_PATH)).status, 404);
+  assert.equal((await none.get(MANIFEST_PATH, null)).status, 401, "authentication still comes first");
+  await none.close();
+});
+
+test("the release routes exist only on the admin listener, never on the data plane that the MCP tunnel reaches", async () => {
+  const rt = await start();
+  for (const p of [MANIFEST_PATH, ARTIFACT_PATH]) assert.equal((await fetch(`${rt.d}${p}`, { headers: { Authorization: `Bearer ${MCP_BEARER}` } })).status, 404, p);
+  const dataPlane = readFileSync(path.join(import.meta.dirname, "..", "src", "http-server.ts"), "utf8");
+  assert.ok(!/artifact|release/i.test(dataPlane), "the data-plane listener knows nothing about artifacts");
+  const mcp = readFileSync(path.join(import.meta.dirname, "..", "src", "mcp.ts"), "utf8");
+  assert.ok(!/artifact|manifest|download/i.test(mcp), "no MCP tool serves artifacts");
+  await rt.close();
+});
+
+test("the artifact owner reads paths nowhere else: admin.ts holds no filesystem access and the browser page no release logic", () => {
+  const src = path.join(import.meta.dirname, "..", "src");
+  const admin = readFileSync(path.join(src, "admin.ts"), "utf8");
+  assert.ok(!/node:fs|createReadStream|readdirSync|path\.join/.test(admin), "the route adapter never touches the filesystem");
+  assert.ok(!/release|artifact/i.test(readFileSync(path.join(src, "admin-page.ts"), "utf8")), "the browser page has no release or artifact logic");
+});
