@@ -33,3 +33,5 @@ services:
     volumes:
       - ${REACH_TUNNEL_BINARY:?absolute path of the tunnel-client binary}:/usr/local/bin/tunnel-client:ro
       - ${REACH_TUNNEL_DIR:?absolute path of the tunnel config and credentials directory}:/run/reach-tunnel:ro
+      # The slim base image has no CA store and the Go tunnel-client verifies TLS against the system roots: share the host's.
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro

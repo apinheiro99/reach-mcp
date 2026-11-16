@@ -91,6 +91,7 @@ test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is rea
   assert.match(tunnel, /restart: unless-stopped/);
   assert.match(tunnel, /user: "1000:1000"/);
   assert.deepEqual([...tunnel.matchAll(/^\s+- (\$\{REACH_TUNNEL_[A-Z]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split("}:").pop()), ["/usr/local/bin/tunnel-client:ro", "/run/reach-tunnel:ro"]);
+  assert.match(tunnel, /^\s+- \/etc\/ssl\/certs\/ca-certificates\.crt:\/etc\/ssl\/certs\/ca-certificates\.crt:ro$/m, "the Tunnel trusts the host CA bundle read-only");
   assert.doesNotMatch(tunnel, /^\s+ports:|depends_on|8788|REACH_ADMIN|network_mode|privileged|docker\.sock/m, "the Tunnel publishes nothing, never names the admin listener and does not gate the Server");
   assert.doesNotMatch(full, /sk-|tunnel_[0-9a-f]{8}|api[_-]?key:|Bearer /i, "no credential or tunnel identity in the public file");
 });
