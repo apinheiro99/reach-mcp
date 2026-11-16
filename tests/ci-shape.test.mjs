@@ -88,6 +88,9 @@ test("production delivery: the release job needs every validation job, deploy ne
   assert.match(deployJob, /- job: "Build Release"\n\s+artifacts: true/);
   assert.match(deployJob, /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
   assert.match(deployJob, /\$CI_COMMIT_TAG'\n\s+when: never/);
+  assert.match(deployJob, /\$CI_COMMIT_BRANCH == "feature\/task-37-prod-runner-local-ci"'\n\s+when: manual/, "the Task branch may run the manual deploy");
+  assert.doesNotMatch(ci, /feature\/(\*|task-\*)|=~/, "the branch exception is one exact branch, never a wildcard");
+  assert.match(block(".default-branch-push"), /feature\/task-37-prod-runner-local-ci/, "Build Release is also available on the governed Task branch");
   assert.doesNotMatch(deployJob, /allow_failure: false/, "an unrun manual deploy must not block the pipeline");
   assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
   assert.ok(ci.indexOf("  - validate\n") < ci.indexOf("  - release\n") && ci.indexOf("  - release\n") < ci.indexOf("  - deploy\n"), "stage order: validate, release, deploy");

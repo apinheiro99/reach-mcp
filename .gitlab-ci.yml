@@ -121,6 +121,7 @@ ci-tag-red:
     - if: '$CI_COMMIT_TAG'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "feature/task-37-prod-runner-local-ci"'
 
 "Build Release":
   extends: .default-branch-push
@@ -166,6 +167,8 @@ ci-tag-red:
     - if: '$CI_COMMIT_TAG'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "feature/task-37-prod-runner-local-ci"'
       when: manual
 
 "Rollback Production":
