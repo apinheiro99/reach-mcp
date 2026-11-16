@@ -45,11 +45,10 @@ default:
   script:
     - npm test
 
-"Build Package":
+"Package Check":
   extends: .branch-push-only
   stage: validate
   script:
-    - npm run build
     - npm run check:package
 
 .ci-tag:

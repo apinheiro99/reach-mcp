@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startClient } from "../../client/src/runtime.ts";
-import { CliError } from "../../shared/src/cli.ts";
+import { CliError } from "@reach-mcp/shared/cli";
 import { parseServerArgs, startServer, type RunningServer } from "../src/runtime.ts";
 
 const SRC = path.join(import.meta.dirname, "..", "src");

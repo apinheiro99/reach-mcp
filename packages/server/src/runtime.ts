@@ -4,7 +4,7 @@
 // or invalid config simply leaves the Server inactive so the separate admin listener can serve setup mode.
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { parseFlags, parsePort } from "../../shared/src/cli.ts";
+import { parseFlags, parsePort } from "@reach-mcp/shared/cli";
 import { createAdminServer } from "./admin.ts";
 import { AuditWriter } from "./audit.ts";
 import { ConfigError, ServerConfigStore } from "./config.ts";

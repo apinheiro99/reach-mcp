@@ -64,7 +64,7 @@ test("one owner for each primitive: hashing, digest comparison and bearer parsin
     assert.ok(!/createHash|timingSafeEqual|\/\^Bearer/.test(text), `${name} must use the auth owner`);
   }
   assert.equal(files.filter(([, t]) => /export const hashCredential|function bearerCredential|const sameDigest/.test(t)).length, 1);
-  const pkg = JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "..", "..", "package.json"), "utf8")) as { dependencies: Record<string, string> };
+  const pkg = JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")) as { dependencies: Record<string, string> };
   assert.ok(!Object.keys(pkg.dependencies).some((d) => /express|fastify|hono|^@modelcontextprotocol\/sdk$|server-legacy/.test(d)), "no web framework or legacy SDK");
   assert.equal(pkg.dependencies["@modelcontextprotocol/server"], "2.4.0");
   assert.equal(pkg.dependencies["@modelcontextprotocol/node"], "2.1.2");

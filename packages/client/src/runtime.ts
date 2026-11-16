@@ -1,6 +1,6 @@
 // The Client process composition: the one place that builds a running Client. Endpoint, id, credential and root anchors
 // come only from the bootstrap file; the command line carries the build id and the explicit development switch.
-import { parseFlags } from "../../shared/src/cli.ts";
+import { parseFlags } from "@reach-mcp/shared/cli";
 import { loadBootstrap } from "./bootstrap.ts";
 import { ClientDispatcher } from "./dispatcher.ts";
 import { ClientTransport } from "./transport.ts";

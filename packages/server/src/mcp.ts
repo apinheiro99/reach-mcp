@@ -3,7 +3,7 @@
 // schemas are derived from the shared Operation schemas, never copied. Annotations are hints, never authorization.
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { ClientId, Operation, ProjectId, type ResponseEnvelope } from "../../shared/src/wire/index.ts";
+import { ClientId, Operation, ProjectId, type ResponseEnvelope } from "@reach-mcp/shared/wire";
 import { ProposedEdit, type ServerConfigStore } from "./config.ts";
 import type { ClientConnectionRegistry } from "./connections.ts";
 import type { ProposalStore } from "./proposals.ts";

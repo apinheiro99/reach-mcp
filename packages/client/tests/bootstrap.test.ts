@@ -4,8 +4,8 @@ import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { acceptEffectivePolicy, BootstrapError, loadBootstrap, parseBootstrap } from "../src/index.ts";
-import { EffectiveProjectPolicy } from "../../shared/src/wire/index.ts";
-import { FsError } from "../../shared/src/filesystem/index.ts";
+import { EffectiveProjectPolicy } from "@reach-mcp/shared/wire";
+import { FsError } from "@reach-mcp/shared/filesystem";
 
 const CRED = "cred-marker-" + "Zq72nVx";
 const base = mkdtempSync(path.join(tmpdir(), "reach-client-"));

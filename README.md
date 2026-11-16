@@ -40,7 +40,6 @@ Node.js 24 or newer. See [docs/install.md](docs/install.md).
 npm install
 npm run lint
 npm run typecheck
-npm run build
 ```
 
 Real configuration and secrets are never committed to this repository. See [docs/configuration.md](docs/configuration.md).
