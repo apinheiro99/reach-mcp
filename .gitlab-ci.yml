@@ -51,6 +51,12 @@ default:
   script:
     - npm run check:package
 
+"Release Check":
+  extends: .branch-push-only
+  stage: validate
+  script:
+    - npm run check:release
+
 .ci-tag:
   stage: tag
   image: node:24-bookworm
