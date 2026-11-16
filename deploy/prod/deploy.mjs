@@ -20,12 +20,41 @@ const STATE_FILE = "state.json";
 const LOCK_FILE = "deploy.lock";
 const STATE_SCHEMA = 1;
 
+const text = (v) => typeof v === "string" && v !== "";
+
+/** Problems of one persisted deployment record (empty = valid). */
+const recordProblems = (name, r) =>
+  r === null
+    ? []
+    : typeof r !== "object" || Array.isArray(r)
+      ? [`${name} must be a record or null`]
+      : [
+          ...["build_id", "image", "config", "proposal", "deployed_at"].filter((k) => !text(r[k])).map((k) => `${name}.${k} must be a non-empty string`),
+          ...(/^[0-9a-f]{40}$/.test(r.repository_commit) ? [] : [`${name}.repository_commit must be a 40-hex commit`]),
+        ];
+
+/** Fail closed: only a missing state file means "first deployment"; anything unreadable, malformed or unsupported stops the command. */
 const readState = (dir) => {
+  const file = path.join(dir, STATE_FILE);
+  let raw;
   try {
-    return JSON.parse(readFileSync(path.join(dir, STATE_FILE), "utf8"));
-  } catch {
-    return { schema_version: STATE_SCHEMA, current: null, previous: null };
+    raw = readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return { schema_version: STATE_SCHEMA, current: null, previous: null };
+    throw new Error(`deployment state ${file} cannot be read (${error.code ?? error.message}): refusing to continue`);
   }
+  let state;
+  try {
+    state = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`deployment state ${file} is not valid JSON: refusing to continue, it is not repaired automatically`, { cause: error });
+  }
+  const problems =
+    state === null || typeof state !== "object"
+      ? ["the state must be an object"]
+      : [...(state.schema_version === STATE_SCHEMA ? [] : [`unsupported schema_version ${JSON.stringify(state.schema_version)}`]), ...recordProblems("current", state.current), ...recordProblems("previous", state.previous)];
+  if (problems.length > 0) throw new Error(`deployment state ${file} is invalid: refusing to continue\n${problems.join("\n")}`);
+  return state;
 };
 
 function writeStateAtomic(dir, state) {

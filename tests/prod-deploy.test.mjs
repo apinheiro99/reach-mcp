@@ -229,3 +229,55 @@ test("the CI transport script refuses to run without the operator's target varia
   assert.ok(!/DEPLOY_[A-Z_]+:-/.test(src), "no ${DEPLOY_*:-default}");
   assert.match(src, /StrictHostKeyChecking=yes/);
 });
+
+/** A valid two-record state written by hand, then damaged in one way. */
+const goodRecord = (id) => ({ build_id: id, repository_commit: "a".repeat(40), image: `reach-server:${id}`, config: "/c", proposal: "/p", deployed_at: "2026-11-16T00:00:00.000Z" });
+const writeState = (state, content) => {
+  mkdirSync(state, { recursive: true });
+  writeFileSync(path.join(state, "state.json"), content);
+};
+
+test("an existing state that is malformed, unsupported or incomplete stops deploy, rollback and status before any Docker action and is left untouched", async () => {
+  const damaged = {
+    "malformed json": "{ not json",
+    "empty file": "",
+    "not an object": "[]",
+    "unsupported schema": JSON.stringify({ schema_version: 2, current: null, previous: null }),
+    "missing schema": JSON.stringify({ current: null, previous: null }),
+    "missing current key": JSON.stringify({ schema_version: 1, previous: null }),
+    "truncated record": JSON.stringify({ schema_version: 1, current: { build_id: "b1" }, previous: null }),
+    "bad commit": JSON.stringify({ schema_version: 1, current: { ...goodRecord("b1"), repository_commit: "abc" }, previous: null }),
+    "empty field": JSON.stringify({ schema_version: 1, current: goodRecord("b1"), previous: { ...goodRecord("b0"), config: "" } }),
+    "record is a string": JSON.stringify({ schema_version: 1, current: "b1", previous: null }),
+  };
+  for (const [label, content] of Object.entries(damaged)) {
+    const w = world();
+    const state = stateDir();
+    writeState(state, content);
+    await assert.rejects(() => deploy(opts(w, make("b9").dir, state), w.deps), /deployment state .* (is not valid JSON|is invalid)/, `deploy: ${label}`);
+    await assert.rejects(() => rollback(opts(w, "", state), w.deps), /deployment state/, `rollback: ${label}`);
+    assert.throws(() => status({ state }), /deployment state/, `status: ${label}`);
+    assert.equal(w.log.length, 0, `${label}: no compose call`);
+    assert.equal(readFileSync(path.join(state, "state.json"), "utf8"), content, `${label}: the file is not rewritten`);
+    assert.ok(!existsSync(path.join(state, "evidence.json")), `${label}: no evidence claims anything`);
+    assert.ok(!existsSync(path.join(state, "deploy.lock")), `${label}: the lock is released`);
+  }
+});
+
+test("a state path that cannot be read as a file stops the command instead of becoming an empty state", async () => {
+  const w = world();
+  const state = stateDir();
+  mkdirSync(path.join(state, "state.json"), { recursive: true });
+  await assert.rejects(() => deploy(opts(w, make("b9").dir, state), w.deps), /cannot be read/);
+  assert.equal(w.log.length, 0);
+});
+
+test("a valid two-record state is accepted and a missing state file is still a first deployment", async () => {
+  const w = world();
+  const state = stateDir();
+  writeState(state, JSON.stringify({ schema_version: 1, current: goodRecord("b2"), previous: goodRecord("b1") }));
+  assert.equal(status({ state }).previous.build_id, "b1");
+  const fresh = stateDir();
+  assert.deepEqual(status({ state: fresh }), { schema_version: 1, current: null, previous: null });
+  assert.equal((await deploy(opts(w, make("b1").dir, fresh), w.deps)).exit, 0);
+});
