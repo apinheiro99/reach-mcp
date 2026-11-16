@@ -1,4 +1,5 @@
-export { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
+export { authenticateBearer, bearerCredential, hashCredential, sameDigest } from "./auth.ts";
+export { DirectoryArtifactSource, type ArtifactSource } from "./artifacts.ts";
 export { ConfigError, DEFAULT_LOGGING, LoggingSettings, ServerConfig, ServerConfigStore, ProposedEdit, type EditableClient, type PublicClient } from "./config.ts";
 export { ClientConnectionRegistry, type ConnectionOptions, type SessionStatus } from "./connections.ts";
 export { buildMcpServer, type McpDeps } from "./mcp.ts";

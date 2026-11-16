@@ -3,7 +3,7 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { WebSocketServer } from "ws";
-import { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
+import { authenticateBearer } from "./auth.ts";
 import type { ClientConnectionRegistry } from "./connections.ts";
 import type { ServerConfigStore } from "./config.ts";
 import { buildHealth } from "./health.ts";
@@ -26,19 +26,6 @@ const CLIENT_PATH = "/client";
 
 const pathOf = (req: IncomingMessage): string => new URL(req.url ?? "/", "http://localhost").pathname;
 
-/** The one bearer check of the data plane: 200 when allowed, 401 when refused, 503 when no configuration is active. */
-function authenticate(config: ServerConfigStore, req: IncomingMessage): 200 | 401 | 503 {
-  const bearer = bearerCredential(req.headers);
-  if (bearer === null) return 401;
-  let expected: string;
-  try {
-    expected = config.mcpBearerDigest();
-  } catch {
-    return 503;
-  }
-  return sameDigest(hashCredential(bearer), expected) ? 200 : 401;
-}
-
 export function createHttpServer(deps: HttpServerDeps): Server {
   const clients = new WebSocketServer({ noServer: true });
   const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
@@ -47,7 +34,7 @@ export function createHttpServer(deps: HttpServerDeps): Server {
     const pathname = pathOf(req);
     if (pathname === HEALTH_PATH) {
       if (req.method !== "GET") return void res.writeHead(405).end();
-      const auth = deps.config.isActive() ? authenticate(deps.config, req) : 503; // fail closed: no health body without an active configuration
+      const auth = deps.config.isActive() ? authenticateBearer(deps.config, req.headers) : 503; // fail closed: no health body without an active configuration
       if (auth !== 200) return void res.writeHead(auth, auth === 401 ? { "WWW-Authenticate": "Bearer" } : {}).end();
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(buildHealth({ ...deps, uptimeSeconds })));
       return;
@@ -56,7 +43,7 @@ export function createHttpServer(deps: HttpServerDeps): Server {
       res.writeHead(404).end();
       return;
     }
-    const auth = authenticate(deps.config, req);
+    const auth = authenticateBearer(deps.config, req.headers);
     if (auth !== 200) {
       res.writeHead(auth, auth === 401 ? { "WWW-Authenticate": "Bearer" } : {}).end(); // 503: no active configuration, and the SDK is never created
       return;

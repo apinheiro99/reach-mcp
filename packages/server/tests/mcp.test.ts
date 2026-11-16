@@ -23,7 +23,7 @@ test("tools/list is exactly discovery, two config tools and the 13 shared operat
   const rt = await startRuntime();
   const tools = await listTools(rt);
   assert.deepEqual(tools.map((t) => t.name).sort(), ["reach_discover", "reach_config_get", "reach_config_propose", ...OPS].sort());
-  assert.ok(!tools.some((t) => /shell|exec|commit|push|admin|setup|approve|reject|activate/i.test(t.name)));
+  assert.ok(!tools.some((t) => /shell|exec|commit|push|admin|setup|approve|reject|activate|artifact|release|download/i.test(t.name)));
   for (const tool of tools.filter((t) => OPS.includes(t.name))) {
     assert.ok("client_id" in tool.inputSchema.properties && "project_id" in tool.inputSchema.properties, `${tool.name} is qualified`);
     assert.ok(tool.inputSchema.required?.includes("client_id") && tool.inputSchema.required.includes("project_id"));

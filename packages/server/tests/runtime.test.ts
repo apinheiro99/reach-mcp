@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startClient } from "../../client/src/runtime.ts";
@@ -24,6 +24,8 @@ test("server args: required flags, loopback defaults, valid ports, nothing else 
   const args = parseServerArgs(argv(d));
   assert.deepEqual([args.dataHost, args.adminHost, args.build], ["127.0.0.1", "127.0.0.1", "dev-1"]);
   assert.equal(parseServerArgs(argv(d, ["--repository-commit", "abc"])).repositoryCommit, "abc");
+  assert.equal(parseServerArgs(argv(d)).artifacts, undefined, "no artifacts directory unless one is given");
+  assert.equal(parseServerArgs(argv(d, ["--artifacts", "/srv/releases"])).artifacts, "/srv/releases");
   for (const bad of [[], argv(d).slice(2), [...argv(d), "--config", SECRET], [...argv(d), "--bearer", SECRET], argv(d).map((v) => (v === "0" ? "70000" : v)), [...argv(d), "--data-host"]]) {
     assert.throws(() => parseServerArgs(bad), (e: unknown) => e instanceof CliError && !e.message.includes(SECRET));
   }
@@ -48,6 +50,25 @@ test("setup mode: with no config the admin works and the data plane fails closed
   assert.match(logs, /runtime configuration is not active, setup mode/);
   assert.match(logs, /runtime server started build=dev-1/);
   assert.ok(!logs.includes(BEARER));
+});
+
+test("--artifacts wires the release routes on the admin listener of the real Server: manifest and artifact bytes with the MCP bearer, 404 without the flag", async () => {
+  const d = dirs();
+  const artifacts = path.join(d.base, "release");
+  mkdirSync(artifacts);
+  writeFileSync(path.join(artifacts, "manifest.json"), '{"release":"r-1"}');
+  writeFileSync(path.join(artifacts, "reach-client-linux-x64.tar.gz"), "client-bytes");
+  const withFlag = await startServer(parseServerArgs(argv(d, ["--artifacts", artifacts])));
+  const admin = `http://127.0.0.1:${withFlag.adminPort}`;
+  const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
+  assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
+  assert.equal(await (await fetch(`${admin}/admin/api/release/manifest`, auth)).text(), '{"release":"r-1"}');
+  assert.equal(await (await fetch(`${admin}/admin/api/release/artifacts/reach-client-linux-x64.tar.gz`, auth)).text(), "client-bytes");
+  assert.equal((await fetch(`${admin}/admin/api/release/manifest`)).status, 401);
+  await withFlag.stop();
+  const withoutFlag = await startServer(parseServerArgs(argv(d)));
+  assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.adminPort}/admin/api/release/manifest`, auth)).status, 404, "configured, authenticated, but no artifacts source");
+  await withoutFlag.stop();
 });
 
 test("Server and Client runtimes handshake over loopback from temporary private files, with the same build id", async () => {
