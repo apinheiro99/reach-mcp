@@ -3,7 +3,8 @@
 # The tag stage is self-contained and records the aggregate result directly in this repository.
 # Tag contract: vYYYY.MM.NNNNNN[-fail].
 # GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
-# Production delivery: the release is built only from a passing default-branch pipeline and deployed automatically after it; rollback stays manual; the logic lives in
+# Production delivery: the release is built only from a passing default-branch or Task-branch pipeline. The default branch deploys automatically after it; a Task branch deploys by itself
+# as Deploy Candidate, for the exact pipeline SHA (live acceptance before merge); rollback stays manual; the logic lives in
 # deploy/prod/deploy.mjs, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
 image: node:24-bookworm
 
@@ -116,15 +117,15 @@ ci-tag-red:
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: on_failure
 
-.default-branch-push:
+.release-push:
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "feature/task-37-prod-runner-local-ci"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^feature\/task-/'
 
 "Build Release":
-  extends: .default-branch-push
+  extends: .release-push
   stage: release
   needs:
     - "Public Release Check"
@@ -154,7 +155,8 @@ ci-tag-red:
     paths:
       - deploy-evidence/
 
-"Deploy Production":
+# The one deployment script: the release built by "Build Release" for this pipeline's SHA goes through the controller.
+.deploy-release:
   extends: .deploy-job
   needs:
     - job: "Build Release"
@@ -164,11 +166,21 @@ ci-tag-red:
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p "$REACH_ROOT/config" "$REACH_ROOT/logs" deploy-evidence
     - node deploy/prod/deploy.mjs deploy --release release --state "$REACH_ROOT/state" --config "$REACH_ROOT/config/server.json" --proposal "$REACH_ROOT/config/proposal.json" --logs "$REACH_ROOT/logs" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --evidence deploy-evidence/evidence.json
+
+"Deploy Production":
+  extends: .deploy-release
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "feature/task-37-prod-runner-local-ci"'
+
+# Live acceptance of one validated Task-branch SHA before merge (PO order: no button): runs by itself only once "Build Release" (which needs every validation job) has passed.
+"Deploy Candidate":
+  extends: .deploy-release
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^feature\/task-/'
 
 "Rollback Production":
   extends: .deploy-job
