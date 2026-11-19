@@ -1,4 +1,4 @@
-# ADR-0003 — One production port, endpoint-separated routes
+# ADR-0003 — Two production ports: reachable service and downloads, private admin
 
 **Status:** Accepted (revised 2026-11-19; supersedes the three-port version of 2026-11-18)  
 **Date:** 2026-11-18
