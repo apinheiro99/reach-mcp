@@ -22,6 +22,7 @@ export function serverArgs(env, layout = LAYOUT) {
     "--config", layout.config, "--proposal", layout.proposal, "--logs", layout.logs,
     "--data-host", env.REACH_DATA_HOST ?? "0.0.0.0", "--data-port", env.REACH_DATA_PORT ?? "8787",
     "--admin-host", env.REACH_ADMIN_HOST ?? "0.0.0.0", "--admin-port", env.REACH_ADMIN_PORT ?? "8788",
+    "--artifact-host", env.REACH_ARTIFACT_HOST ?? "0.0.0.0", "--artifact-port", env.REACH_ARTIFACT_PORT ?? "8789",
     "--build", release.build_id, "--repository-commit", release.repository_commit,
     "--artifacts", layout.artifacts,
   ];

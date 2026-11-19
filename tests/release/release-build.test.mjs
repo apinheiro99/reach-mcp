@@ -104,28 +104,29 @@ test("the real Linux Client archive installs with deploy/client/install-linux.sh
 test("a real Server from the extracted runtime serves the produced manifest and both Client archives; the bytes equal the manifest hashes", async () => {
   const dir = path.join(extract("server"), "reach-server");
   const state = path.join(base, "state");
-  const args = ["reach-server.mjs", "--config", `${state}/private/config.json`, "--proposal", `${state}/private/proposal.json`, "--logs", `${state}/logs`, "--data-port", "0", "--admin-port", "0", "--build", BUILD_ID, "--artifacts", path.join(out, "artifacts")];
+  const args = ["reach-server.mjs", "--config", `${state}/private/config.json`, "--proposal", `${state}/private/proposal.json`, "--logs", `${state}/logs`, "--data-port", "0", "--admin-port", "0", "--artifact-port", "0", "--build", BUILD_ID, "--artifacts", path.join(out, "artifacts")];
   const child = spawn(process.execPath, args, { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (c) => (output += c));
   child.stderr.on("data", (c) => (output += c));
   try {
     for (let i = 0; i < 100 && !output.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
-    const ports = /data=(\d+) admin=(\d+)/.exec(output);
+    const ports = /data=(\d+) admin=(\d+) artifact=(\d+)/.exec(output);
     assert.ok(ports, output);
     const admin = `http://127.0.0.1:${ports[2]}`;
+    const artifact = `http://127.0.0.1:${ports[3]}`;
     assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
     const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
-    assert.deepEqual(Buffer.from(await (await fetch(`${admin}/admin/api/release/manifest`, auth)).arrayBuffer()), readFileSync(path.join(out, "artifacts", "manifest.json")), "the manifest served is the manifest produced");
+    assert.deepEqual(Buffer.from(await (await fetch(`${artifact}/release/manifest`, auth)).arrayBuffer()), readFileSync(path.join(out, "artifacts", "manifest.json")), "the manifest served is the manifest produced");
     for (const a of manifest.artifacts.filter((x) => x.role === "client")) {
-      const res = await fetch(`${admin}/admin/api/release/artifacts/${a.name}`, auth);
+      const res = await fetch(`${artifact}/release/artifacts/${a.name}`, auth);
       assert.equal(res.status, 200, a.name);
       const bytes = Buffer.from(await res.arrayBuffer());
       assert.deepEqual([bytes.length, sha256(bytes)], [a.size_bytes, a.sha256], a.name);
       assert.deepEqual(bytes, readFileSync(path.join(out, "artifacts", a.name)), "the same bytes the builder produced");
-      assert.equal((await fetch(`${admin}/admin/api/release/artifacts/${a.name}`)).status, 401);
+      assert.equal((await fetch(`${artifact}/release/artifacts/${a.name}`)).status, 401);
     }
-    assert.equal((await fetch(`${admin}/admin/api/release/artifacts/${names.server}`, auth)).status, 404, "the Server runtime is not a served artifact");
+    assert.equal((await fetch(`${artifact}/release/artifacts/${names.server}`, auth)).status, 404, "the Server runtime is not a served artifact");
   } finally {
     child.kill("SIGTERM");
     await new Promise((r) => child.once("exit", r));
@@ -136,7 +137,7 @@ test("the production entrypoint starts the real extracted Server from the manife
   const state = path.join(base, "prod-state");
   mkdirSync(state, { recursive: true });
   const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${state}/config.json`, proposal: `${state}/proposal.json`, logs: `${state}/logs` };
-  const args = serverArgs({ REACH_DATA_HOST: "127.0.0.1", REACH_ADMIN_HOST: "127.0.0.1", REACH_DATA_PORT: "0", REACH_ADMIN_PORT: "0" }, layout);
+  const args = serverArgs({ REACH_DATA_HOST: "127.0.0.1", REACH_ADMIN_HOST: "127.0.0.1", REACH_DATA_PORT: "0", REACH_ADMIN_PORT: "0", REACH_ARTIFACT_HOST: "127.0.0.1", REACH_ARTIFACT_PORT: "0" }, layout);
   assert.deepEqual([args[args.indexOf("--build") + 1], args[args.indexOf("--repository-commit") + 1]], [BUILD_ID, COMMIT]);
   const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH } });
   let output = "";
@@ -144,17 +145,18 @@ test("the production entrypoint starts the real extracted Server from the manife
   child.stderr.on("data", (c) => (output += c));
   try {
     for (let i = 0; i < 100 && !output.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
-    const ports = /data=(\d+) admin=(\d+)/.exec(output);
+    const ports = /data=(\d+) admin=(\d+) artifact=(\d+)/.exec(output);
     assert.ok(ports, output);
     const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_ADMIN_PORT: ports[2] } });
     assert.equal(health.status, 0, "healthy in setup mode with no bearer configured");
     const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_ADMIN_PORT: "1" } });
     assert.equal(down.status, 1, "unhealthy when nothing listens");
     const admin = `http://127.0.0.1:${ports[2]}`;
+    const artifact = `http://127.0.0.1:${ports[3]}`;
     assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
     const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
     for (const a of manifest.artifacts.filter((x) => x.role === "client")) {
-      const bytes = Buffer.from(await (await fetch(`${admin}/admin/api/release/artifacts/${a.name}`, auth)).arrayBuffer());
+      const bytes = Buffer.from(await (await fetch(`${artifact}/release/artifacts/${a.name}`, auth)).arrayBuffer());
       assert.deepEqual(bytes, readFileSync(path.join(out, "artifacts", a.name)), `${a.name}: the baked bytes are the canonical bytes`);
     }
   } finally {

@@ -105,7 +105,7 @@ function assertInputFiles(opts) {
 function apply(deps, opts, d) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
     REACH_IMAGE: d.image, REACH_CONFIG_FILE: d.config, REACH_PROPOSAL_FILE: d.proposal, REACH_LOG_DIR: opts.logs,
-    REACH_DATA_PORT: String(opts.dataPort), REACH_ADMIN_PORT: String(opts.adminPort),
+    REACH_DATA_PORT: String(opts.dataPort), REACH_ADMIN_PORT: String(opts.adminPort), REACH_ARTIFACT_PORT: String(opts.artifactPort),
     REACH_TUNNEL_BINARY: opts.tunnelBinary, REACH_TUNNEL_DIR: opts.tunnelDir,
   });
 }
@@ -211,7 +211,7 @@ export function parseArgs(argv) {
   };
   const opts = {
     state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach", imageRepo: flags["image-repo"] ?? "reach-server",
-    dataPort: Number(flags["data-port"] ?? 8787), adminPort: Number(flags["admin-port"] ?? 8788),
+    dataPort: Number(flags["data-port"] ?? 8787), adminPort: Number(flags["admin-port"] ?? 8788), artifactPort: Number(flags["artifact-port"] ?? 8789),
     retries: Number(flags.retries ?? 30), intervalMs: Number(flags["interval-ms"] ?? 2000), ...(flags.evidence === undefined ? {} : { evidence: path.resolve(flags.evidence) }),
   };
   const tunnel = () => ({ tunnelBinary: path.resolve(need("tunnel-binary")), tunnelDir: path.resolve(need("tunnel-dir")) });

@@ -6,6 +6,7 @@ export { buildMcpServer, type McpDeps } from "./mcp.ts";
 export { createHttpServer, type HttpServerDeps } from "./http-server.ts";
 export { buildHealth, type HealthDeps, type HealthSnapshot } from "./health.ts";
 export { createAdminServer, type AdminDeps } from "./admin.ts";
+export { createArtifactServer, type ArtifactServerDeps } from "./artifact-server.ts";
 export { ProposalStore, type DecisionResult, type DiffEntry, type ProposalDeps, type ProposalSummary, type ProposeResult } from "./proposals.ts";
 export { RotatingTextWriter, oneLine, type LogSettings, type RotatingTextDeps } from "./rotating-text.ts";
 export { NO_LOGGER, OperationalLogger, type Level, type Logger } from "./logging.ts";

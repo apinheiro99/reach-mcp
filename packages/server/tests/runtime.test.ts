@@ -17,12 +17,12 @@ const dirs = () => {
   const base = mkdtempSync(path.join(tmpdir(), "reach-runtime-"));
   return { base, config: path.join(base, "private", "config.json"), proposal: path.join(base, "private", "proposal.json"), logs: path.join(base, "logs") };
 };
-const argv = (d: ReturnType<typeof dirs>, extra: string[] = []) => ["--config", d.config, "--proposal", d.proposal, "--logs", d.logs, "--data-port", "0", "--admin-port", "0", "--build", "dev-1", ...extra];
+const argv = (d: ReturnType<typeof dirs>, extra: string[] = []) => ["--config", d.config, "--proposal", d.proposal, "--logs", d.logs, "--data-port", "0", "--admin-port", "0", "--artifact-port", "0", "--build", "dev-1", ...extra];
 
 test("server args: required flags, loopback defaults, valid ports, nothing else accepted and no value echoed", () => {
   const d = dirs();
   const args = parseServerArgs(argv(d));
-  assert.deepEqual([args.dataHost, args.adminHost, args.build], ["127.0.0.1", "127.0.0.1", "dev-1"]);
+  assert.deepEqual([args.dataHost, args.adminHost, args.artifactHost, args.build], ["127.0.0.1", "127.0.0.1", "127.0.0.1", "dev-1"]);
   assert.equal(parseServerArgs(argv(d, ["--repository-commit", "abc"])).repositoryCommit, "abc");
   assert.equal(parseServerArgs(argv(d)).artifacts, undefined, "no artifacts directory unless one is given");
   assert.equal(parseServerArgs(argv(d, ["--artifacts", "/srv/releases"])).artifacts, "/srv/releases");
@@ -46,13 +46,14 @@ test("setup mode: with no config the admin works and the data plane fails closed
   await server.stop();
   await assert.rejects(fetch(`${data}/health`), "the data listener is closed");
   await assert.rejects(fetch(`${admin}/admin/api/state`), "the admin listener is closed");
+  await assert.rejects(fetch(`http://127.0.0.1:${server.artifactPort}/release/manifest`), "the artifact listener is closed");
   const logs = readdirSync(d.logs).map((f) => readFileSync(path.join(d.logs, f), "utf8")).join("\n");
   assert.match(logs, /runtime configuration is not active, setup mode/);
   assert.match(logs, /runtime server started build=dev-1/);
   assert.ok(!logs.includes(BEARER));
 });
 
-test("--artifacts wires the release routes on the admin listener of the real Server: manifest and artifact bytes with the MCP bearer, 404 without the flag", async () => {
+test("--artifacts wires the release routes on the artifact listener of the real Server: manifest and artifact bytes with the MCP bearer, 404 without the flag", async () => {
   const d = dirs();
   const artifacts = path.join(d.base, "release");
   mkdirSync(artifacts);
@@ -60,14 +61,16 @@ test("--artifacts wires the release routes on the admin listener of the real Ser
   writeFileSync(path.join(artifacts, "reach-client-linux-x64.tar.gz"), "client-bytes");
   const withFlag = await startServer(parseServerArgs(argv(d, ["--artifacts", artifacts])));
   const admin = `http://127.0.0.1:${withFlag.adminPort}`;
+  const artifact = `http://127.0.0.1:${withFlag.artifactPort}`;
   const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
   assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
-  assert.equal(await (await fetch(`${admin}/admin/api/release/manifest`, auth)).text(), '{"release":"r-1"}');
-  assert.equal(await (await fetch(`${admin}/admin/api/release/artifacts/reach-client-linux-x64.tar.gz`, auth)).text(), "client-bytes");
-  assert.equal((await fetch(`${admin}/admin/api/release/manifest`)).status, 401);
+  assert.equal(await (await fetch(`${artifact}/release/manifest`, auth)).text(), '{"release":"r-1"}');
+  assert.equal(await (await fetch(`${artifact}/release/artifacts/reach-client-linux-x64.tar.gz`, auth)).text(), "client-bytes");
+  assert.equal((await fetch(`${artifact}/release/manifest`)).status, 401);
+  assert.equal((await fetch(`${admin}/admin/api/release/manifest`, auth)).status, 404, "the admin plane no longer serves releases");
   await withFlag.stop();
   const withoutFlag = await startServer(parseServerArgs(argv(d)));
-  assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.adminPort}/admin/api/release/manifest`, auth)).status, 404, "configured, authenticated, but no artifacts source");
+  assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.artifactPort}/release/manifest`, auth)).status, 404, "configured, authenticated, but no artifacts source");
   await withoutFlag.stop();
 });
 
@@ -103,7 +106,7 @@ test("the real Server process starts in setup mode and exits cleanly on SIGTERM"
   let out = "";
   child.stdout.on("data", (c: Buffer) => (out += c.toString()));
   for (let i = 0; i < 100 && !out.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
-  const ports = /data=(\d+) admin=(\d+)/.exec(out);
+  const ports = /data=(\d+) admin=(\d+) artifact=(\d+)/.exec(out);
   assert.ok(ports, "announced its ports");
   assert.equal(((await (await fetch(`http://127.0.0.1:${ports[2]}/admin/api/state`)).json()) as { setup_mode: boolean }).setup_mode, true);
   const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));

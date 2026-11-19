@@ -15,7 +15,7 @@ RUN mkdir -p /opt/reach/server /var/log/reach \
 COPY artifacts/ /opt/reach/artifacts/
 COPY entrypoint.mjs healthcheck.mjs /opt/reach/
 USER node
-ENV REACH_DATA_PORT=8787 REACH_ADMIN_PORT=8788
-EXPOSE 8787 8788
+ENV REACH_DATA_PORT=8787 REACH_ADMIN_PORT=8788 REACH_ARTIFACT_PORT=8789
+EXPOSE 8787 8788 8789
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "/opt/reach/healthcheck.mjs"]
 ENTRYPOINT ["node", "/opt/reach/entrypoint.mjs"]

@@ -6,6 +6,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { parseFlags, parsePort } from "@reach-mcp/shared/cli";
 import { createAdminServer } from "./admin.ts";
+import { createArtifactServer } from "./artifact-server.ts";
 import { DirectoryArtifactSource } from "./artifacts.ts";
 import { AuditWriter } from "./audit.ts";
 import { ConfigError, ServerConfigStore } from "./config.ts";
@@ -23,16 +24,18 @@ export type ServerArgs = {
   dataPort: number;
   adminHost: string;
   adminPort: number;
+  artifactHost: string;
+  artifactPort: number;
   build: string;
   repositoryCommit?: string;
-  /** Optional directory holding the release manifest and Client artifacts that the admin release routes serve. */
+  /** Optional directory holding the release manifest and Client artifacts that the artifact plane serves. */
   artifacts?: string;
 };
 
 const LOOPBACK = "127.0.0.1";
 
 export const SERVER_USAGE =
-  "usage: server --config <file> --proposal <file> --logs <dir> --data-port <n> --admin-port <n> --build <id> [--data-host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>]";
+  "usage: server --config <file> --proposal <file> --logs <dir> --data-port <n> --admin-port <n> --artifact-port <n> --build <id> [--data-host <addr>] [--admin-host <addr>] [--artifact-host <addr>] [--repository-commit <id>] [--artifacts <dir>]";
 
 export function parseServerArgs(argv: readonly string[]): ServerArgs {
   const flags = parseFlags(argv, {
@@ -43,6 +46,8 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     "data-port": { required: true },
     "admin-host": {},
     "admin-port": { required: true },
+    "artifact-host": {},
+    "artifact-port": { required: true },
     build: { required: true },
     "repository-commit": {},
     artifacts: {},
@@ -56,13 +61,15 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     dataPort: parsePort("data-port", text("data-port")),
     adminHost: (flags["admin-host"] as string | undefined) ?? LOOPBACK,
     adminPort: parsePort("admin-port", text("admin-port")),
+    artifactHost: (flags["artifact-host"] as string | undefined) ?? LOOPBACK,
+    artifactPort: parsePort("artifact-port", text("artifact-port")),
     build: text("build"),
     ...(flags["repository-commit"] === undefined ? {} : { repositoryCommit: text("repository-commit") }),
     ...(flags.artifacts === undefined ? {} : { artifacts: text("artifacts") }),
   };
 }
 
-export type RunningServer = { dataPort: number; adminPort: number; stop(): Promise<void> };
+export type RunningServer = { dataPort: number; adminPort: number; artifactPort: number; stop(): Promise<void> };
 
 const listen = (server: Server, port: number, host: string) =>
   new Promise<number>((resolve, reject) => {
@@ -91,16 +98,17 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
   const data = createHttpServer(common);
-  const admin = createAdminServer({ ...common, logger, audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
+  const admin = createAdminServer({ ...common, logger, audit });
+  const artifact = createArtifactServer({ config, audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
   const stop = async () => {
     connections.stop();
-    await Promise.all([close(data), close(admin)]);
+    await Promise.all([close(data), close(admin), close(artifact)]);
   };
   try {
-    const [dataPort, adminPort] = await Promise.all([listen(data, args.dataPort, args.dataHost), listen(admin, args.adminPort, args.adminHost)]);
+    const [dataPort, adminPort, artifactPort] = await Promise.all([listen(data, args.dataPort, args.dataHost), listen(admin, args.adminPort, args.adminHost), listen(artifact, args.artifactPort, args.artifactHost)]);
     connections.start();
-    logger.log("INFO", "runtime", `server started build=${args.build} data_port=${dataPort} admin_port=${adminPort} active=${config.isActive()}`);
-    return { dataPort, adminPort, stop };
+    logger.log("INFO", "runtime", `server started build=${args.build} data_port=${dataPort} admin_port=${adminPort} artifact_port=${artifactPort} active=${config.isActive()}`);
+    return { dataPort, adminPort, artifactPort, stop };
   } catch (error) {
     await stop();
     throw error;

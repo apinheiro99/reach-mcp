@@ -8,7 +8,9 @@
 #   REACH_TUNNEL_BINARY  the tunnel-client executable (a regular file)
 #   REACH_TUNNEL_DIR     a directory readable by uid 1000 with tunnel-client.yaml, api-key and mcp.auth (rotating them needs no rebuild)
 # The container is named reach-server (override with REACH_CONTAINER_NAME); the Compose project name stays the controller's.
-# Data (MCP) and admin are separate listeners and separate mappings; both default to host loopback only.
+# Three separate listeners and mappings (ADR-0003): data (MCP and Client WSS) and artifact (release manifest and Client artifacts, authenticated
+# read-only) are LAN planes, so REACH_DATA_BIND and REACH_ARTIFACT_BIND are the operator's exposure choice (default all interfaces);
+# admin stays private: REACH_ADMIN_BIND defaults to host loopback.
 services:
   reach-server:
     container_name: ${REACH_CONTAINER_NAME:-reach-server}
@@ -19,8 +21,9 @@ services:
       - ${REACH_PROPOSAL_FILE:?absolute path of the proposal file}:/run/reach/proposal.json
       - ${REACH_LOG_DIR:?absolute path of the log directory}:/var/log/reach
     ports:
-      - "${REACH_DATA_BIND:-127.0.0.1}:${REACH_DATA_PORT:-8787}:8787"
+      - "${REACH_DATA_BIND:-0.0.0.0}:${REACH_DATA_PORT:-8787}:8787"
       - "${REACH_ADMIN_BIND:-127.0.0.1}:${REACH_ADMIN_PORT:-8788}:8788"
+      - "${REACH_ARTIFACT_BIND:-0.0.0.0}:${REACH_ARTIFACT_PORT:-8789}:8789"
 
   # Only the MCP/data listener is routed (reach-server:8787 over the internal Compose network, set in tunnel-client.yaml); the admin
   # listener is never a tunnel route. The Server does not depend on the tunnel: it stays healthy while the tunnel restarts.

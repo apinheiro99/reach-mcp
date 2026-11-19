@@ -1,13 +1,9 @@
 // The Server's admin surface: a second, separate HTTP listener serving one static vanilla page and a tiny JSON API. It
 // holds no state: configuration is read and written only through ServerConfigStore, operational facts come from
 // buildHealth, and policies are pushed by the connection registry. It is never a path on the data-plane listener, so it is
-// not reachable through the MCP tunnel; where it is bound and exposed is a deployment decision. The only routes that
-// authenticate are the release routes (manifest and Client artifacts, for a caller without MCP); they reuse the MCP bearer
-// through the auth owner and serve only what the injected ArtifactSource declares.
+// not reachable through the MCP tunnel; it stays private and local by deployment. Release artifacts are served by the separate
+// artifact plane (artifact-server.ts), never here.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { pipeline } from "node:stream";
-import type { ArtifactSource } from "./artifacts.ts";
-import { authenticateBearer } from "./auth.ts";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import { ConfigError } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
@@ -18,11 +14,9 @@ import type { ProposalStore } from "./proposals.ts";
 const MAX_BODY_BYTES = 1_000_000;
 const CREDENTIAL_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/credential$/;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
-const RELEASE_MANIFEST_ROUTE = "/admin/api/release/manifest";
-const RELEASE_ARTIFACT_ROUTE = /^\/admin\/api\/release\/artifacts\/([^/]+)$/;
 const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
-export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & { proposals: ProposalStore; uptimeSeconds?: () => number; logger?: Logger; audit?: Audit; artifacts?: ArtifactSource };
+export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & { proposals: ProposalStore; uptimeSeconds?: () => number; logger?: Logger; audit?: Audit };
 
 const send = (res: ServerResponse, status: number, body?: unknown): void => {
   if (body === undefined) return void res.writeHead(status).end();
@@ -68,24 +62,6 @@ export function createAdminServer(deps: AdminDeps): Server {
     }
   };
 
-  /** Release routes: authenticate first (a refusal never reveals whether an artifact exists), then look up by name only. */
-  const release = (req: IncomingMessage, res: ServerResponse, name: string | null): void => {
-    const auth = authenticateBearer(config, req.headers);
-    if (auth !== 200) return void res.writeHead(auth, auth === 401 ? { "WWW-Authenticate": "Bearer" } : {}).end();
-    if (req.method !== "GET") return send(res, 405);
-    const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
-    if (name === null) {
-      const manifest = deps.artifacts?.manifest() ?? null;
-      if (manifest === null) return send(res, 404);
-      return void res.writeHead(200, { ...headers, "content-type": "application/json", "content-length": manifest.length }).end(manifest);
-    }
-    const artifact = deps.artifacts?.artifact(name) ?? null;
-    if (artifact === null) return send(res, 404);
-    audit.record({ actor: "admin", action: "artifact_download", target: name, result: "ok" });
-    res.writeHead(200, { ...headers, "content-type": "application/octet-stream", "content-length": artifact.size, "content-disposition": `attachment; filename="${name}"` });
-    pipeline(artifact.stream(), res, () => undefined);
-  };
-
   // joinDuplicateHeaders: repeated Authorization lines are joined and then refused by the auth owner's exact parser, as on the data plane.
   return createServer({ joinDuplicateHeaders: true }, (req, res) => {
     handle(req, res).catch(() => {
@@ -127,17 +103,6 @@ export function createAdminServer(deps: AdminDeps): Server {
       const id = decodeURIComponent(decision[1] as string);
       const result = decision[2] === "approve" ? proposals.approve(id) : proposals.reject(id);
       return send(res, DECISION_HTTP[result.status], { ok: result.status === "approved" || result.status === "rejected", ...result, config: config.editableView() });
-    }
-    if (pathname === RELEASE_MANIFEST_ROUTE) return release(req, res, null);
-    const artifact = RELEASE_ARTIFACT_ROUTE.exec(pathname);
-    if (artifact) {
-      let name: string;
-      try {
-        name = decodeURIComponent(artifact[1] as string);
-      } catch {
-        name = ""; // malformed percent-encoding is just a name no source declares
-      }
-      return release(req, res, name);
     }
     const credential = CREDENTIAL_ROUTE.exec(pathname);
     if (credential) {
