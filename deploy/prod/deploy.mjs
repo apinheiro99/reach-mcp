@@ -105,7 +105,7 @@ function assertInputFiles(opts) {
 function apply(deps, opts, d) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
     REACH_IMAGE: d.image, REACH_CONFIG_FILE: d.config, REACH_PROPOSAL_FILE: d.proposal, REACH_LOG_DIR: opts.logs,
-    REACH_PORT: String(opts.port),
+    REACH_PORT: String(opts.port), REACH_ADMIN_PORT: String(opts.adminPort),
     REACH_TUNNEL_BINARY: opts.tunnelBinary, REACH_TUNNEL_DIR: opts.tunnelDir,
   });
 }
@@ -113,7 +113,7 @@ function apply(deps, opts, d) {
 /** Health, running identity and smoke for one deployment. Returns { ok, checks[] } with no secret material. */
 async function verify(deps, opts, d) {
   const checks = [];
-  const admin = `http://127.0.0.1:${opts.port}/admin/api/state`;
+  const admin = `http://127.0.0.1:${opts.adminPort}/admin/api/state`;
   let health = null;
   for (let i = 0; i < opts.retries && health === null; i++) {
     try {
@@ -211,7 +211,7 @@ export function parseArgs(argv) {
   };
   const opts = {
     state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach", imageRepo: flags["image-repo"] ?? "reach-server",
-    port: Number(flags.port ?? 8787),
+    port: Number(flags.port ?? 8787), adminPort: Number(flags["admin-port"] ?? 8788),
     retries: Number(flags.retries ?? 30), intervalMs: Number(flags["interval-ms"] ?? 2000), ...(flags.evidence === undefined ? {} : { evidence: path.resolve(flags.evidence) }),
   };
   const tunnel = () => ({ tunnelBinary: path.resolve(need("tunnel-binary")), tunnelDir: path.resolve(need("tunnel-dir")) });

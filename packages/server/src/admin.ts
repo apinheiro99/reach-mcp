@@ -1,12 +1,8 @@
-// The Server's admin surface: one static vanilla page and a tiny JSON API, mounted by the one listener (http-server.ts) under
+// The Server's admin surface: one static vanilla page and a tiny JSON API, served by the private admin listener (runtime.ts) under
 // / and /admin. It holds no state: configuration is read and written only through ServerConfigStore, operational facts come
 // from buildHealth, and policies are pushed by the connection registry. The MCP tunnel routes only /mcp, so it never reaches
-// these routes. The release routes (manifest and Client artifacts) are the only unauthenticated ones: installing a Client
-// needs network reachability only, Client authentication begins when the installed Client connects. They are read-only and
-// serve only what the injected ArtifactSource declares.
+// these routes. They listen on their own private port (8788), never the service port and never the tunnel.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { pipeline } from "node:stream";
-import type { ArtifactSource } from "./artifacts.ts";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import { ConfigError } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
@@ -17,11 +13,9 @@ import type { ProposalStore } from "./proposals.ts";
 const MAX_BODY_BYTES = 1_000_000;
 const CREDENTIAL_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/credential$/;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
-const RELEASE_MANIFEST_ROUTE = "/admin/api/release/manifest";
-const RELEASE_ARTIFACT_ROUTE = /^\/admin\/api\/release\/artifacts\/([^/]+)$/;
 const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
-export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & { proposals: ProposalStore; uptimeSeconds?: () => number; logger?: Logger; audit?: Audit; artifacts?: ArtifactSource };
+export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & { proposals: ProposalStore; uptimeSeconds?: () => number; logger?: Logger; audit?: Audit };
 
 const send = (res: ServerResponse, status: number, body?: unknown): void => {
   if (body === undefined) return void res.writeHead(status).end();
@@ -67,22 +61,6 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     }
   };
 
-  /** Release routes: public and read-only; the catalog is the only gate and lookup is by name only. */
-  const release = (req: IncomingMessage, res: ServerResponse, name: string | null): void => {
-    if (req.method !== "GET") return send(res, 405);
-    const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
-    if (name === null) {
-      const manifest = deps.artifacts?.manifest() ?? null;
-      if (manifest === null) return send(res, 404);
-      return void res.writeHead(200, { ...headers, "content-type": "application/json", "content-length": manifest.length }).end(manifest);
-    }
-    const artifact = deps.artifacts?.artifact(name) ?? null;
-    if (artifact === null) return send(res, 404);
-    audit.record({ actor: "admin", action: "artifact_download", target: name, result: "ok" });
-    res.writeHead(200, { ...headers, "content-type": "application/octet-stream", "content-length": artifact.size, "content-disposition": `attachment; filename="${name}"` });
-    pipeline(artifact.stream(), res, () => undefined);
-  };
-
   return (req, res) => {
     handle(req, res).catch(() => {
       if (!res.headersSent) send(res, 500);
@@ -123,17 +101,6 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
       const id = decodeURIComponent(decision[1] as string);
       const result = decision[2] === "approve" ? proposals.approve(id) : proposals.reject(id);
       return send(res, DECISION_HTTP[result.status], { ok: result.status === "approved" || result.status === "rejected", ...result, config: config.editableView() });
-    }
-    if (pathname === RELEASE_MANIFEST_ROUTE) return release(req, res, null);
-    const artifact = RELEASE_ARTIFACT_ROUTE.exec(pathname);
-    if (artifact) {
-      let name: string;
-      try {
-        name = decodeURIComponent(artifact[1] as string);
-      } catch {
-        name = ""; // malformed percent-encoding is just a name no source declares
-      }
-      return release(req, res, name);
     }
     const credential = CREDENTIAL_ROUTE.exec(pathname);
     if (credential) {

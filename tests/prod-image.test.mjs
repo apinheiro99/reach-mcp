@@ -63,14 +63,15 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
   assert.equal(args[0], "/opt/reach/server/reach-server.mjs");
   assert.deepEqual([flag("build"), flag("repository-commit")], [BUILD_ID, COMMIT]);
   assert.deepEqual([flag("config"), flag("proposal"), flag("logs"), flag("artifacts")], ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach", layout.artifacts]);
-  assert.deepEqual([flag("port"), flag("host")], ["8787", "0.0.0.0"]);
-  assert.ok(!args.includes("--admin-port") && !args.includes("--data-port"), "one listener: no admin or data port flag");
+  assert.deepEqual([flag("port"), flag("host"), flag("admin-port"), flag("admin-host")], ["8787", "0.0.0.0", "8788", "0.0.0.0"]);
+  assert.ok(!args.includes("--data-port"), "two listeners only: service and admin");
   const custom = serverArgs({ REACH_PORT: "9001" }, layout);
   assert.equal(custom[custom.indexOf("--port") + 1], "9001");
+  assert.equal(serverArgs({ REACH_ADMIN_PORT: "9002" }, layout)[serverArgs({ REACH_ADMIN_PORT: "9002" }, layout).indexOf("--admin-port") + 1], "9002");
   assert.ok(!/BUILD|COMMIT/.test(text("entrypoint.mjs").replace(/build_id|repository_commit|--build|--repository-commit/g, "")), "no build identity is read from the environment");
 });
 
-test("Compose runs a built image and mounts exactly config file, proposal file and log dir, with exactly one published port and a restart policy", () => {
+test("Compose runs a built image and mounts exactly config file, proposal file and log dir, with exactly two published ports (service reachable, admin on loopback) and a restart policy", () => {
   const yaml = text("compose.yaml").replace(/^\s*#.*$/gm, "").split(/^\s{2}reach-tunnel:$/m)[0];
   assert.doesNotMatch(yaml, /^\s*build:/m, "Compose never builds from source");
   assert.match(yaml, /image: \$\{REACH_IMAGE:\?/);
@@ -80,9 +81,9 @@ test("Compose runs a built image and mounts exactly config file, proposal file a
   assert.deepEqual(volumes, ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach"]);
   assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 3, "no other mount");
   assert.doesNotMatch(yaml, /docker\.sock|privileged|network_mode: host|volumes:\s*\n\s*\w+:|\s- \/:|\s- \/\w+:\/\w+/);
-  const ports = [...yaml.matchAll(/^\s+- "(\$\{REACH_BIND:-0\.0\.0\.0\}:\$\{REACH_PORT:-\d+\}:(\d+))"$/gm)].map((m) => m[2]);
-  assert.deepEqual(ports, ["8787"], "one published port, reachable by default");
-  assert.doesNotMatch(yaml, /8788|8789|REACH_ADMIN|REACH_DATA/, "no admin or artifact listener");
+  const ports = [...yaml.matchAll(/^\s+- "(\$\{REACH_(?:ADMIN_)?BIND:-[0-9.]+\}:\$\{REACH_(?:ADMIN_)?PORT:-\d+\}:(\d+))"$/gm)].map((m) => m[1]);
+  assert.deepEqual(ports, ["${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787", "${REACH_ADMIN_BIND:-127.0.0.1}:${REACH_ADMIN_PORT:-8788}:8788"], "service reachable by default, admin on host loopback by default");
+  assert.doesNotMatch(yaml, /8789|REACH_DATA/, "no third listener");
 });
 
 test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is read-only mounted, unpublished and independent of the Server", () => {

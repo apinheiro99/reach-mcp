@@ -75,7 +75,7 @@ Default install directory: `C:\\Program Files\\REACH\\Client`.
 
 The Server release artifact is self-contained and does not require Git/workspace links. The production reference deployment is one Compose project (`reach`) with separate `reach-server` and `reach-tunnel` services, controlled CD and explicit rollback. See [production-deployment.md](production-deployment.md).
 
-The Server uses one listener on port 8787 with separate endpoint families: `/mcp`, `/client`, `/health`, `/admin/...` and the read-only release routes. The OpenAI MCP tunnel routes only `/mcp`.
+The Server uses two ports: 8787 for `/mcp`, `/client`, `/health` and the read-only release downloads under `/release/...`, and 8788 for the private Web UI/admin (host loopback by default). The OpenAI MCP tunnel routes only `/mcp` on 8787.
 
 ## Upgrade
 

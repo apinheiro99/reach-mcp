@@ -11,5 +11,5 @@ try {
   process.exit(2);
 }
 const server = await startServer(args);
-process.stdout.write(`reach-server listening port=${server.port}\n`);
+process.stdout.write(`reach-server listening port=${server.port} admin_port=${server.adminPort}\n`);
 for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => void server.stop().then(() => process.exit(0)));
