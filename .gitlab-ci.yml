@@ -3,8 +3,8 @@
 # The tag stage is self-contained and records the aggregate result directly in this repository.
 # Tag contract: vYYYY.MM.NNNNNN[-fail].
 # GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
-# Production delivery: the release is built only from a passing default-branch or Task-branch pipeline. The default branch deploys automatically after it; a Task branch exposes one
-# manual Deploy Candidate for the exact pipeline SHA (live acceptance before merge); rollback stays manual; the logic lives in
+# Production delivery: the release is built only from a passing default-branch or Task-branch pipeline. The default branch deploys automatically after it; a Task branch deploys by itself
+# as Deploy Candidate, for the exact pipeline SHA (live acceptance before merge); rollback stays manual; the logic lives in
 # deploy/prod/deploy.mjs, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
 image: node:24-bookworm
 
@@ -174,15 +174,13 @@ ci-tag-red:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
 
-# Live acceptance of one validated Task-branch SHA before merge: never automatic, playable only once "Build Release" (which needs every validation job) has passed.
+# Live acceptance of one validated Task-branch SHA before merge (PO order: no button): runs by itself only once "Build Release" (which needs every validation job) has passed.
 "Deploy Candidate":
   extends: .deploy-release
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^feature\/task-/'
-      when: manual
-      allow_failure: true
 
 "Rollback Production":
   extends: .deploy-job

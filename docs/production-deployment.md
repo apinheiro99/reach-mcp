@@ -83,7 +83,7 @@ validation -> Build Release -> Deploy Production
 
 `Deploy Production` runs automatically after the release succeeds. `Rollback Production` remains manual.
 
-On a Task branch (`feature/task-*`) the same validation and `Build Release` run for that pipeline's exact SHA, and `Deploy Candidate` becomes a manual action only after `Build Release` passes (it needs every validation job, so a failed validation never exposes it). It deploys through the same `deploy/prod/deploy.mjs` transaction, `production` resource group, evidence and rollback, for live acceptance before merge. It never runs automatically and never for a tag.
+On a Task branch (`feature/task-*`) the same validation and `Build Release` run for that pipeline's exact SHA, and `Deploy Candidate` runs automatically, with no button, only after `Build Release` passes (it needs every validation job, so a failed validation never exposes it). It deploys through the same `deploy/prod/deploy.mjs` transaction, `production` resource group, evidence and rollback, for live acceptance before merge. It never runs for a tag.
 
 `deploy/prod/deploy.mjs` is the only deployment transaction owner. It validates required external inputs before building/starting and records known-good deployment state for rollback.
 

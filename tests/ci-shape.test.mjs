@@ -79,7 +79,7 @@ test("CI has no dependency on any external project", () => {
   assert.doesNotMatch(ci, /gitgate/i);
 });
 
-test("production delivery: the release job needs every validation job; the default branch deploys automatically and a Task branch only through one manual Deploy Candidate", () => {
+test("production delivery: the release job needs every validation job; the default branch deploys automatically and a Task branch through Deploy Candidate, also without a button", () => {
   const release = block("Build Release");
   for (const job of validationJobs) assert.match(release, new RegExp(`- "${job}"`), `Build Release must need ${job}`);
   assert.match(release, /stage: release/);
@@ -101,7 +101,8 @@ test("production delivery: the release job needs every validation job; the defau
   const candidate = block("Deploy Candidate");
   assert.match(candidate, /extends: \.deploy-release/, "one deployment script, no copy");
   assert.match(candidate, /\$CI_COMMIT_TAG'\n\s+when: never/, "never for a tag pipeline");
-  assert.match(candidate, /\$CI_COMMIT_BRANCH =~ \/\^feature\\\/task-\/'\n\s+when: manual\n\s+allow_failure: true/, "manual on Task branches and never blocking the pipeline");
+  assert.match(candidate, /\$CI_COMMIT_BRANCH =~ \/\^feature\\\/task-\/'\n/, "Task branches only");
+  assert.doesNotMatch(candidate, /when: manual|allow_failure/, "PO order: no button, it runs after Build Release passes");
   assert.doesNotMatch(candidate, /\$CI_DEFAULT_BRANCH/, "never the default branch");
   assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
   assert.ok(ci.indexOf("  - validate\n") < ci.indexOf("  - release\n") && ci.indexOf("  - release\n") < ci.indexOf("  - deploy\n"), "stage order: validate, release, deploy");
