@@ -51,7 +51,7 @@ test("setup mode: with no config the admin works and the data plane fails closed
   assert.ok(!logs.includes(BEARER));
 });
 
-test("--artifacts wires the release routes on the one listener of the real Server: manifest and artifact bytes with the MCP bearer, 404 without the flag", async () => {
+test("--artifacts wires the release routes on the one listener of the real Server: manifest and artifact bytes with no credential, 404 without the flag", async () => {
   const d = dirs();
   const artifacts = path.join(d.base, "release");
   mkdirSync(artifacts);
@@ -59,14 +59,11 @@ test("--artifacts wires the release routes on the one listener of the real Serve
   writeFileSync(path.join(artifacts, "reach-client-linux-x64.tar.gz"), "client-bytes");
   const withFlag = await startServer(parseServerArgs(argv(d, ["--artifacts", artifacts])));
   const admin = `http://127.0.0.1:${withFlag.port}`;
-  const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
-  assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
-  assert.equal(await (await fetch(`${admin}/admin/api/release/manifest`, auth)).text(), '{"release":"r-1"}');
-  assert.equal(await (await fetch(`${admin}/admin/api/release/artifacts/reach-client-linux-x64.tar.gz`, auth)).text(), "client-bytes");
-  assert.equal((await fetch(`${admin}/admin/api/release/manifest`)).status, 401);
+  assert.equal(await (await fetch(`${admin}/admin/api/release/manifest`)).text(), '{"release":"r-1"}', "setup mode, no credential");
+  assert.equal(await (await fetch(`${admin}/admin/api/release/artifacts/reach-client-linux-x64.tar.gz`)).text(), "client-bytes");
   await withFlag.stop();
   const withoutFlag = await startServer(parseServerArgs(argv(d)));
-  assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.port}/admin/api/release/manifest`, auth)).status, 404, "configured, authenticated, but no artifacts source");
+  assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.port}/admin/api/release/manifest`)).status, 404, "no artifacts source");
   await withoutFlag.stop();
 });
 

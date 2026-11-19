@@ -91,7 +91,7 @@ A production rollout is accepted only when:
 - running build id and repository commit match the release;
 - the protected MCP data plane responds as expected;
 - an authorized LAN Client can reach `/client`;
-- the artifact listener serves only the authenticated manifest/catalog artifacts;
+- an unauthenticated GET of the release manifest and the declared Linux/Windows Client artifacts succeeds on 8787 from another host, and nothing else under the release routes is served;
 - the admin routes are not reachable through the MCP tunnel and nothing listens on 8788 or 8789;
 - the Secure MCP Tunnel reaches MCP;
 - restarting only the tunnel does not disturb the Server;

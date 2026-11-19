@@ -123,7 +123,7 @@ test("a real Server from the extracted runtime serves the produced manifest and 
       const bytes = Buffer.from(await res.arrayBuffer());
       assert.deepEqual([bytes.length, sha256(bytes)], [a.size_bytes, a.sha256], a.name);
       assert.deepEqual(bytes, readFileSync(path.join(out, "artifacts", a.name)), "the same bytes the builder produced");
-      assert.equal((await fetch(`${admin}/admin/api/release/artifacts/${a.name}`)).status, 401);
+      assert.equal((await fetch(`${admin}/admin/api/release/artifacts/${a.name}`)).status, 200, "no credential needed to download");
     }
     assert.equal((await fetch(`${admin}/admin/api/release/artifacts/${names.server}`, auth)).status, 404, "the Server runtime is not a served artifact");
   } finally {

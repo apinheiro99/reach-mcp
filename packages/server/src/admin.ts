@@ -1,13 +1,12 @@
 // The Server's admin surface: one static vanilla page and a tiny JSON API, mounted by the one listener (http-server.ts) under
 // / and /admin. It holds no state: configuration is read and written only through ServerConfigStore, operational facts come
 // from buildHealth, and policies are pushed by the connection registry. The MCP tunnel routes only /mcp, so it never reaches
-// these routes. The only routes that
-// authenticate are the release routes (manifest and Client artifacts, for a caller without MCP); they reuse the MCP bearer
-// through the auth owner and serve only what the injected ArtifactSource declares.
+// these routes. The release routes (manifest and Client artifacts) are the only unauthenticated ones: installing a Client
+// needs network reachability only, Client authentication begins when the installed Client connects. They are read-only and
+// serve only what the injected ArtifactSource declares.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream";
 import type { ArtifactSource } from "./artifacts.ts";
-import { authenticateBearer } from "./auth.ts";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import { ConfigError } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
@@ -68,10 +67,8 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     }
   };
 
-  /** Release routes: authenticate first (a refusal never reveals whether an artifact exists), then look up by name only. */
+  /** Release routes: public and read-only; the catalog is the only gate and lookup is by name only. */
   const release = (req: IncomingMessage, res: ServerResponse, name: string | null): void => {
-    const auth = authenticateBearer(config, req.headers);
-    if (auth !== 200) return void res.writeHead(auth, auth === 401 ? { "WWW-Authenticate": "Bearer" } : {}).end();
     if (req.method !== "GET") return send(res, 405);
     const headers = { "cache-control": "no-store", "x-content-type-options": "nosniff" };
     if (name === null) {

@@ -1,9 +1,8 @@
-// Authenticated, non-MCP retrieval of the release manifest and Client artifacts through the admin routes of the one listener.
+// Unauthenticated, read-only retrieval of the release manifest and Client artifacts through the admin routes of the one listener.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
-import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -45,48 +44,38 @@ async function start(options: { artifacts?: boolean; active?: boolean } = {}) {
   if (active) config.applyEdit({ mcp_bearer: MCP_BEARER, clients: [] });
   const get = (p: string, authorization: string | null = `Bearer ${MCP_BEARER}`, method = "GET") =>
     fetch(`${a}${p}`, { method, ...(authorization === null ? {} : { headers: { Authorization: authorization } }) });
-  /** Two real Authorization header lines, both the right token. */
-  const twoHeaders = (p: string) =>
-    new Promise<number>((resolve) => {
-      http.get({ host: "127.0.0.1", port: port(admin), path: p, headers: { Authorization: [`Bearer ${MCP_BEARER}`, `Bearer ${MCP_BEARER}`] } }, (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
-      });
-    });
   const close = async () => {
     connections.stop();
     admin.closeAllConnections();
     await new Promise<void>((r) => admin.close(() => r()));
   };
-  return { source, dir, a, d, get, twoHeaders, events, close };
+  return { source, dir, a, d, get, events, close };
 }
 
 const MANIFEST_PATH = "/admin/api/release/manifest";
 const ARTIFACT_PATH = "/admin/api/release/artifacts/reach-client-linux-x64.tar.gz";
 
-test("authentication comes first: absent, malformed, wrong and repeated bearers get 401, whether or not the artifact exists", async () => {
+test("the release routes need no credential: no bearer or a wrong bearer never blocks a catalog download", async () => {
   const rt = await start();
-  for (const p of [MANIFEST_PATH, ARTIFACT_PATH, "/admin/api/release/artifacts/does-not-exist.tar.gz"]) {
-    for (const authorization of [null, "Bearer", "Bearer wrong-" + MCP_BEARER, `Basic ${MCP_BEARER}`, `Bearer ${MCP_BEARER} extra`]) {
-      const res = await rt.get(p, authorization);
-      assert.equal(res.status, 401, `${p} with ${authorization}`);
-      assert.equal(res.headers.get("www-authenticate"), "Bearer");
-      assert.equal(await res.text(), "", "no body that could reveal the artifact");
-    }
-    assert.equal(await rt.twoHeaders(p), 401, `${p} with two Authorization lines`);
+  for (const authorization of [null, "Bearer wrong-" + MCP_BEARER, `Basic ${MCP_BEARER}`]) {
+    assert.equal((await rt.get(MANIFEST_PATH, authorization)).status, 200, `manifest with ${authorization}`);
+    assert.equal((await rt.get(ARTIFACT_PATH, authorization)).status, 200, `artifact with ${authorization}`);
   }
-  assert.deepEqual(rt.events, [], "a refused request is not a download");
   await rt.close();
 });
 
-test("without an active configuration the release routes fail closed with 503", async () => {
+test("in setup mode (no active configuration) the release routes still serve, and /health still needs the MCP bearer", async () => {
   const rt = await start({ active: false });
-  assert.equal((await rt.get(MANIFEST_PATH)).status, 503);
-  assert.equal((await rt.get(ARTIFACT_PATH)).status, 503);
+  assert.equal((await rt.get(MANIFEST_PATH, null)).status, 200);
+  assert.equal((await rt.get(ARTIFACT_PATH, null)).status, 200);
+  assert.equal((await fetch(`${rt.d}/health`)).status, 503, "the data plane still fails closed in setup mode");
   await rt.close();
+  const active = await start();
+  assert.equal((await fetch(`${active.d}/health`)).status, 401);
+  await active.close();
 });
 
-test("a non-MCP caller with the MCP bearer gets the exact manifest bytes and the exact artifact bytes", async () => {
+test("an unauthenticated caller gets the exact manifest bytes and the exact artifact bytes", async () => {
   const rt = await start();
   const manifest = await rt.get(MANIFEST_PATH);
   assert.equal(manifest.status, 200);
@@ -141,16 +130,14 @@ test("explicit bounds: an oversized manifest, an oversized artifact and an empty
   await rt.close();
 });
 
-test("methods other than GET are refused after authentication; a Server without an artifacts source answers 404", async () => {
+test("methods other than GET are refused; a Server without an artifacts source answers 404", async () => {
   const rt = await start();
-  assert.equal((await rt.get(MANIFEST_PATH, `Bearer ${MCP_BEARER}`, "POST")).status, 405);
-  assert.equal((await rt.get(ARTIFACT_PATH, `Bearer ${MCP_BEARER}`, "DELETE")).status, 405);
-  assert.equal((await rt.get(MANIFEST_PATH, null, "POST")).status, 401);
+  assert.equal((await rt.get(MANIFEST_PATH, null, "POST")).status, 405);
+  assert.equal((await rt.get(ARTIFACT_PATH, null, "DELETE")).status, 405);
   await rt.close();
   const none = await start({ artifacts: false });
   assert.equal((await none.get(MANIFEST_PATH)).status, 404);
   assert.equal((await none.get(ARTIFACT_PATH)).status, 404);
-  assert.equal((await none.get(MANIFEST_PATH, null)).status, 401, "authentication still comes first");
   await none.close();
 });
 

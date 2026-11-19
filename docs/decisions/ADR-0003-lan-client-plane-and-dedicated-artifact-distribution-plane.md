@@ -17,13 +17,13 @@ The production Server has **one listener, port 8787**, with distinct endpoint fa
 - `/client` — authenticated Client WSS;
 - `/health` — protected health;
 - `/` and `/admin/...` — Web UI and administrative API, including first-boot setup mode;
-- `/admin/api/release/manifest` and `/admin/api/release/artifacts/<name>` — read-only, catalog-gated release downloads, authenticated with the existing MCP bearer.
+- `/admin/api/release/manifest` and `/admin/api/release/artifacts/<name>` — read-only, catalog-gated release downloads, with no credential: downloading and installing a Client needs network reachability only.
 
-Every route family keeps the behavior and authentication it had when it had its own port. Setup mode, Web UI configuration, autosave, HITL and enrollment are unchanged. Nothing listens on 8788 or 8789.
+Every route family keeps the behavior and authentication it had when it had its own port, except the release routes, which no longer require the MCP bearer. Setup mode, Web UI configuration, autosave, HITL and enrollment are unchanged. Nothing listens on 8788 or 8789.
 
 ## Deployment consequences
 
-- The production Compose stack still has exactly two services, `reach-server` and `reach-tunnel`, and publishes one port, 8787 (`REACH_BIND`/`REACH_PORT`, loopback by default; the operator chooses the LAN address).
+- The production Compose stack still has exactly two services, `reach-server` and `reach-tunnel`, and publishes one port, 8787 (`REACH_BIND`/`REACH_PORT`, all host addresses by default so Client machines can reach it; the operator may narrow it to one address).
 - The tunnel routes only `/mcp`; the admin and release routes are not tunnel routes.
 - The healthcheck and the deploy controller probe the same listener.
 
@@ -37,4 +37,4 @@ Every route family keeps the behavior and authentication it had when it had its 
 ## Consequences
 
 - One listener, one port, one healthcheck.
-- Owners are unchanged: `runtime.ts` composes, `auth.ts` authenticates, `artifacts.ts` owns the catalog, `admin.ts` owns the admin and release routes, `deploy/prod/deploy.mjs` owns the deploy transaction.
+- Owners are unchanged: `runtime.ts` composes, `auth.ts` authenticates MCP and Clients, `artifacts.ts` owns the catalog, `admin.ts` owns the admin and release routes, `deploy/prod/deploy.mjs` owns the deploy transaction.

@@ -124,7 +124,7 @@ Clients may be on different hosts, networks, clouds or countries. They only need
 
 ### Production network endpoint
 
-The production Server exposes **one listener, port 8787**. Responsibilities are separated by endpoint, not by TCP port: `/mcp` (ChatGPT-facing MCP), `/client` (authenticated Client WSS), `/health`, `/admin/...` (Web UI and administrative API, including setup mode) and the read-only release manifest/Client artifact routes under `/admin/api/release/...`. The OpenAI Secure MCP Tunnel routes only `/mcp`. Each route family keeps its own behavior and authentication; sharing the listener changes none of it.
+The production Server exposes **one listener, port 8787**. Responsibilities are separated by endpoint, not by TCP port: `/mcp` (ChatGPT-facing MCP), `/client` (authenticated Client WSS), `/health`, `/admin/...` (Web UI and administrative API, including setup mode) and the read-only release manifest/Client artifact routes under `/admin/api/release/...`. The OpenAI Secure MCP Tunnel routes only `/mcp`. Each route family keeps its own behavior and authentication; sharing the listener changes none of it. The release routes need no credential: installing a Client requires network reachability only, and Client authentication begins when the installed Client connects.
 
 Shared storage, NFS, SMB or centralized filesystems may be used by an operator but are **not** REACH architecture requirements.
 
