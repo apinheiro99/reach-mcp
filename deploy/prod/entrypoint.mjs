@@ -1,5 +1,5 @@
 // Deployment argument composition only: the build id and repository commit come from the baked canonical manifest, the layout is
-// fixed by the image and the ports are the only settings. Then it hands over to the canonical Server launcher.
+// fixed by the image and the two ports are the only settings. Then it hands over to the canonical Server launcher.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +21,7 @@ export function serverArgs(env, layout = LAYOUT) {
     layout.server,
     "--config", layout.config, "--proposal", layout.proposal, "--logs", layout.logs,
     "--host", env.REACH_HOST ?? "0.0.0.0", "--port", env.REACH_PORT ?? "8787",
+    "--admin-host", env.REACH_ADMIN_HOST ?? "0.0.0.0", "--admin-port", env.REACH_ADMIN_PORT ?? "8788",
     "--build", release.build_id, "--repository-commit", release.repository_commit,
     "--artifacts", layout.artifacts,
   ];

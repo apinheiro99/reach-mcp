@@ -17,7 +17,6 @@ import { sha256, validateManifest, verifyRelease } from "../../scripts/release/m
 const { fetch } = globalThis;
 const BUILD_ID = "release-test-1";
 const COMMIT = "b".repeat(40);
-const BEARER = "release-bearer-" + "Zq81Lm40";
 let base;
 let out;
 let manifest;
@@ -104,28 +103,27 @@ test("the real Linux Client archive installs with deploy/client/install-linux.sh
 test("a real Server from the extracted runtime serves the produced manifest and both Client archives; the bytes equal the manifest hashes", async () => {
   const dir = path.join(extract("server"), "reach-server");
   const state = path.join(base, "state");
-  const args = ["reach-server.mjs", "--config", `${state}/private/config.json`, "--proposal", `${state}/private/proposal.json`, "--logs", `${state}/logs`, "--port", "0", "--build", BUILD_ID, "--artifacts", path.join(out, "artifacts")];
+  const args = ["reach-server.mjs", "--config", `${state}/private/config.json`, "--proposal", `${state}/private/proposal.json`, "--logs", `${state}/logs`, "--port", "0", "--admin-port", "0", "--build", BUILD_ID, "--artifacts", path.join(out, "artifacts")];
   const child = spawn(process.execPath, args, { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (c) => (output += c));
   child.stderr.on("data", (c) => (output += c));
   try {
     for (let i = 0; i < 100 && !output.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
-    const port = /port=(\d+)/.exec(output);
+    const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
-    const admin = `http://127.0.0.1:${port[1]}`;
-    assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
-    const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
-    assert.deepEqual(Buffer.from(await (await fetch(`${admin}/admin/api/release/manifest`, auth)).arrayBuffer()), readFileSync(path.join(out, "artifacts", "manifest.json")), "the manifest served is the manifest produced");
+    const service = `http://127.0.0.1:${port[1]}`;
+    const auth = {};
+    assert.deepEqual(Buffer.from(await (await fetch(`${service}/release/manifest`, auth)).arrayBuffer()), readFileSync(path.join(out, "artifacts", "manifest.json")), "the manifest served is the manifest produced");
     for (const a of manifest.artifacts.filter((x) => x.role === "client")) {
-      const res = await fetch(`${admin}/admin/api/release/artifacts/${a.name}`, auth);
+      const res = await fetch(`${service}/release/artifacts/${a.name}`, auth);
       assert.equal(res.status, 200, a.name);
       const bytes = Buffer.from(await res.arrayBuffer());
       assert.deepEqual([bytes.length, sha256(bytes)], [a.size_bytes, a.sha256], a.name);
       assert.deepEqual(bytes, readFileSync(path.join(out, "artifacts", a.name)), "the same bytes the builder produced");
-      assert.equal((await fetch(`${admin}/admin/api/release/artifacts/${a.name}`)).status, 401);
+      assert.equal((await fetch(`${service}/release/artifacts/${a.name}`)).status, 200, "no credential needed to download");
     }
-    assert.equal((await fetch(`${admin}/admin/api/release/artifacts/${names.server}`, auth)).status, 404, "the Server runtime is not a served artifact");
+    assert.equal((await fetch(`${service}/release/artifacts/${names.server}`, auth)).status, 404, "the Server runtime is not a served artifact");
   } finally {
     child.kill("SIGTERM");
     await new Promise((r) => child.once("exit", r));
@@ -144,17 +142,16 @@ test("the production entrypoint starts the real extracted Server from the manife
   child.stderr.on("data", (c) => (output += c));
   try {
     for (let i = 0; i < 100 && !output.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
-    const port = /port=(\d+)/.exec(output);
+    const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
-    const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: port[1] } });
+    const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_ADMIN_PORT: port[2] } });
     assert.equal(health.status, 0, "healthy in setup mode with no bearer configured");
-    const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: "1" } });
+    const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_ADMIN_PORT: "1" } });
     assert.equal(down.status, 1, "unhealthy when nothing listens");
-    const admin = `http://127.0.0.1:${port[1]}`;
-    assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
-    const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
+    const service = `http://127.0.0.1:${port[1]}`;
+    const auth = {};
     for (const a of manifest.artifacts.filter((x) => x.role === "client")) {
-      const bytes = Buffer.from(await (await fetch(`${admin}/admin/api/release/artifacts/${a.name}`, auth)).arrayBuffer());
+      const bytes = Buffer.from(await (await fetch(`${service}/release/artifacts/${a.name}`, auth)).arrayBuffer());
       assert.deepEqual(bytes, readFileSync(path.join(out, "artifacts", a.name)), `${a.name}: the baked bytes are the canonical bytes`);
     }
   } finally {

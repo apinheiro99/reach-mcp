@@ -18,13 +18,13 @@ reach-tunnel
 reach-server:8787/mcp
 
 Authorized LAN Clients ---------> reach-server:8787/client
-Authorized LAN installers ------> reach-server:8787/admin/api/release/...
-Operator -----------------------> reach-server:8787/admin
+Authorized LAN installers ------> reach-server:8787/release/...
+Operator (host loopback) -------> reach-server:8788/admin
 ```
 
-The Server owns one network listener, **8787**, with distinct endpoint families: `/mcp`, `/client`, `/health`, `/admin/...` (Web UI, administrative API, setup mode) and the read-only release routes under `/admin/api/release/...`. Nothing listens on 8788 or 8789.
+The Server owns two listeners. **8787** carries `/mcp`, `/client`, `/health` and the read-only release routes under `/release/...`, published on a reachable bind (`REACH_BIND`, all host addresses by default). **8788** carries only `/` and `/admin/...` (Web UI, administrative API, setup mode), published on host loopback by default (`REACH_ADMIN_BIND`; never a broad address). Nothing listens on 8789.
 
-`reach-server` owns the application and its one listener. `reach-tunnel` owns only the Secure MCP Tunnel client. The tunnel publishes no host port and routes only `/mcp`. The Server does not depend on tunnel health; the tunnel waits until the Server service listener responds before it starts. Both services restart automatically through Compose.
+`reach-server` owns the application and its two listeners. `reach-tunnel` owns only the Secure MCP Tunnel client. The tunnel publishes no host port and routes only `/mcp`. The Server does not depend on tunnel health; the tunnel waits until the Server service listener responds before it starts. Both services restart automatically through Compose.
 
 Bindings are configurable. A deployment may use an explicit LAN address, a trusted interface or a broader bind narrowed by host/network firewall policy. The product contract is reachability and separation of planes, not a hardcoded subnet or interface.
 
@@ -91,7 +91,7 @@ A production rollout is accepted only when:
 - running build id and repository commit match the release;
 - the protected MCP data plane responds as expected;
 - an authorized LAN Client can reach `/client`;
-- the artifact listener serves only the authenticated manifest/catalog artifacts;
+- an unauthenticated GET of the release manifest and the declared Linux/Windows Client artifacts succeeds on 8787 from another host, nothing else under the release routes is served, and from another host nothing answers on 8788;
 - the admin routes are not reachable through the MCP tunnel and nothing listens on 8788 or 8789;
 - the Secure MCP Tunnel reaches MCP;
 - restarting only the tunnel does not disturb the Server;

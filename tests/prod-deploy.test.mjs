@@ -77,7 +77,7 @@ const make = (id) => {
 
 const opts = (w, rel, state, extra = {}) => ({
   release: rel, state, config: C1, proposal: P1, logs: "/srv/logs", docker: w.docker, tunnelBinary: TB, tunnelDir: TD, project: "reach", imageRepo: "reach-server",
-  port: 8787, retries: 2, intervalMs: 0, ...extra,
+  port: 8787, adminPort: 8788, retries: 2, intervalMs: 0, ...extra,
 });
 const stateDir = () => path.join(base, `state-${counter++}`);
 
@@ -214,7 +214,7 @@ test("the command line requires the operator's target inputs and has no defaults
   assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l"]), /missing --tunnel-binary/);
   assert.throws(() => parseArgs(["frobnicate", "--state", "/s"]), /usage/);
   const a = parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"]);
-  assert.deepEqual([a.port, a.docker, a.project], [8787, "docker", "reach"]);
+  assert.deepEqual([a.port, a.adminPort, a.docker, a.project], [8787, 8788, "docker", "reach"]);
   assert.equal(parseArgs(["rollback", "--state", "/s", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"]).command, "rollback");
 });
 

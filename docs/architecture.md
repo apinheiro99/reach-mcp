@@ -124,7 +124,7 @@ Clients may be on different hosts, networks, clouds or countries. They only need
 
 ### Production network endpoint
 
-The production Server exposes **one listener, port 8787**. Responsibilities are separated by endpoint, not by TCP port: `/mcp` (ChatGPT-facing MCP), `/client` (authenticated Client WSS), `/health`, `/admin/...` (Web UI and administrative API, including setup mode) and the read-only release manifest/Client artifact routes under `/admin/api/release/...`. The OpenAI Secure MCP Tunnel routes only `/mcp`. Each route family keeps its own behavior and authentication; sharing the listener changes none of it.
+The production Server exposes **two listeners**. **8787** serves `/mcp` (ChatGPT-facing MCP), `/client` (authenticated Client WSS), `/health` and the read-only release manifest/Client artifact routes under `/release/...`; it is reachable by Client machines. **8788** serves only `/` and `/admin/...` (Web UI and administrative API, including setup mode) and is private by default (host loopback). No admin route answers on 8787 and no service route answers on 8788. The OpenAI Secure MCP Tunnel routes only `/mcp` on 8787. Each route family keeps its own behavior and authentication. The release routes need no credential: installing a Client requires network reachability only, and Client authentication begins when the installed Client connects.
 
 Shared storage, NFS, SMB or centralized filesystems may be used by an operator but are **not** REACH architecture requirements.
 
@@ -751,7 +751,7 @@ If required private configuration is missing/incomplete:
 - MCP endpoint remains reachable enough to report that setup is required and provide the setup location/instructions;
 - project operations remain unavailable until setup completes.
 
-The administrative Web UI/API is served over HTTP under `/admin/...` of the one 8787 listener and is not published through the ChatGPT tunnel path, which routes only `/mcp`.
+The administrative Web UI/API is served over HTTP under `/admin/...` of the private 8788 listener and is not published through the ChatGPT tunnel path, which routes only `/mcp`.
 
 Web UI is the canonical production configuration path.
 
