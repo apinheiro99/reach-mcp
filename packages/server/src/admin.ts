@@ -1,10 +1,10 @@
-// The Server's admin surface: a second, separate HTTP listener serving one static vanilla page and a tiny JSON API. It
-// holds no state: configuration is read and written only through ServerConfigStore, operational facts come from
-// buildHealth, and policies are pushed by the connection registry. It is never a path on the data-plane listener, so it is
-// not reachable through the MCP tunnel; where it is bound and exposed is a deployment decision. The only routes that
+// The Server's admin surface: one static vanilla page and a tiny JSON API, mounted by the one listener (http-server.ts) under
+// / and /admin. It holds no state: configuration is read and written only through ServerConfigStore, operational facts come
+// from buildHealth, and policies are pushed by the connection registry. The MCP tunnel routes only /mcp, so it never reaches
+// these routes. The only routes that
 // authenticate are the release routes (manifest and Client artifacts, for a caller without MCP); they reuse the MCP bearer
 // through the auth owner and serve only what the injected ArtifactSource declares.
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream";
 import type { ArtifactSource } from "./artifacts.ts";
 import { authenticateBearer } from "./auth.ts";
@@ -44,7 +44,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   }
 }
 
-export function createAdminServer(deps: AdminDeps): Server {
+export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res: ServerResponse) => void {
   const { config, connections, proposals } = deps;
   const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
   const logger = deps.logger ?? NO_LOGGER;
@@ -86,13 +86,12 @@ export function createAdminServer(deps: AdminDeps): Server {
     pipeline(artifact.stream(), res, () => undefined);
   };
 
-  // joinDuplicateHeaders: repeated Authorization lines are joined and then refused by the auth owner's exact parser, as on the data plane.
-  return createServer({ joinDuplicateHeaders: true }, (req, res) => {
+  return (req, res) => {
     handle(req, res).catch(() => {
       if (!res.headersSent) send(res, 500);
       else res.end();
     });
-  });
+  };
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;

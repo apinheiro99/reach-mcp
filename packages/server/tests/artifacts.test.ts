@@ -1,4 +1,4 @@
-// Authenticated, non-MCP retrieval of the release manifest and Client artifacts through the admin listener.
+// Authenticated, non-MCP retrieval of the release manifest and Client artifacts through the admin routes of the one listener.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
@@ -7,7 +7,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ClientConnectionRegistry, createAdminServer, createHttpServer, DirectoryArtifactSource, ProposalStore, ServerConfigStore, type Audit, type AuditEvent } from "../src/index.ts";
+import { ClientConnectionRegistry, createAdminHandler, createHttpServer, DirectoryArtifactSource, ProposalStore, ServerConfigStore, type Audit, type AuditEvent } from "../src/index.ts";
 import { MAX_ARTIFACT_BYTES, MAX_MANIFEST_BYTES } from "../src/artifacts.ts";
 
 const MCP_BEARER = "mcp-bearer-" + "Zr58Lk20";
@@ -35,9 +35,10 @@ async function start(options: { artifacts?: boolean; active?: boolean } = {}) {
   const proposals = new ProposalStore({ path: path.join(dir, "proposal.json"), config, connections });
   const events: AuditEvent[] = [];
   const audit: Audit = { record: (e) => void events.push(e) };
-  const admin = createAdminServer({ config, connections, proposals, serverBuild: "srv-a", audit, ...(artifacts ? { artifacts: new DirectoryArtifactSource(source) } : {}) });
-  const data = createHttpServer({ config, connections, proposals, serverBuild: "srv-a" });
-  for (const s of [admin, data]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
+  const routes = createAdminHandler({ config, connections, proposals, serverBuild: "srv-a", audit, ...(artifacts ? { artifacts: new DirectoryArtifactSource(source) } : {}) });
+  const admin = createHttpServer({ config, connections, proposals, serverBuild: "srv-a", routes });
+  const data = admin; // one listener serves the data and the admin/release families
+  await new Promise<void>((r) => admin.listen(0, "127.0.0.1", () => r()));
   const port = (s: typeof admin) => (s.address() as AddressInfo).port;
   const a = `http://127.0.0.1:${port(admin)}`;
   const d = `http://127.0.0.1:${port(data)}`;
@@ -54,10 +55,8 @@ async function start(options: { artifacts?: boolean; active?: boolean } = {}) {
     });
   const close = async () => {
     connections.stop();
-    for (const s of [admin, data]) {
-      s.closeAllConnections();
-      await new Promise<void>((r) => s.close(() => r()));
-    }
+    admin.closeAllConnections();
+    await new Promise<void>((r) => admin.close(() => r()));
   };
   return { source, dir, a, d, get, twoHeaders, events, close };
 }
@@ -155,11 +154,9 @@ test("methods other than GET are refused after authentication; a Server without 
   await none.close();
 });
 
-test("the release routes exist only on the admin listener, never on the data plane that the MCP tunnel reaches", async () => {
+test("the release routes are admin-family routes of the one listener and no MCP code serves artifacts", async () => {
   const rt = await start();
-  for (const p of [MANIFEST_PATH, ARTIFACT_PATH]) assert.equal((await fetch(`${rt.d}${p}`, { headers: { Authorization: `Bearer ${MCP_BEARER}` } })).status, 404, p);
-  const dataPlane = readFileSync(path.join(import.meta.dirname, "..", "src", "http-server.ts"), "utf8");
-  assert.ok(!/artifact|release/i.test(dataPlane), "the data-plane listener knows nothing about artifacts");
+  assert.equal((await fetch(`${rt.d}/release/manifest`, { headers: { Authorization: `Bearer ${MCP_BEARER}` } })).status, 404, "no separate /release family: the paths are unchanged");
   const mcp = readFileSync(path.join(import.meta.dirname, "..", "src", "mcp.ts"), "utf8");
   assert.ok(!/artifact|manifest|download/i.test(mcp), "no MCP tool serves artifacts");
   await rt.close();

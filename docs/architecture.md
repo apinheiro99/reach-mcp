@@ -122,15 +122,9 @@ Each Client initiates one authenticated outbound WSS connection to the Server.
 
 Clients may be on different hosts, networks, clouds or countries. They only need outbound reachability to the Server.
 
-### Production network planes
+### Production network endpoint
 
-The production Server has three explicit exposure planes with one owner each:
-
-- **Service / Client plane** — authenticated Client WSS, MCP data-plane requests and protected health. This plane must be reachable by authorized Client machines; in the reference deployment it is LAN-reachable on port 8787. The OpenAI Secure MCP Tunnel routes only the MCP path on this plane.
-- **Administrative plane** — Web UI and configuration/credential/proposal administration. This remains private/local by default on port 8788 and is never routed through the OpenAI Secure MCP Tunnel.
-- **Artifact distribution plane** — read-only authenticated release manifest and catalog-gated Client artifact download. This is LAN-reachable by deployment policy on port 8789 so machines can install/update a Client without SSH, source checkout or manual file relay.
-
-The artifact plane exposes no configuration mutation, credential issuance, admin UI, MCP operation or arbitrary file serving. It reuses the canonical release catalog/manifest and authentication owners rather than creating parallel state.
+The production Server exposes **one listener, port 8787**. Responsibilities are separated by endpoint, not by TCP port: `/mcp` (ChatGPT-facing MCP), `/client` (authenticated Client WSS), `/health`, `/admin/...` (Web UI and administrative API, including setup mode) and the read-only release manifest/Client artifact routes under `/admin/api/release/...`. The OpenAI Secure MCP Tunnel routes only `/mcp`. Each route family keeps its own behavior and authentication; sharing the listener changes none of it.
 
 Shared storage, NFS, SMB or centralized filesystems may be used by an operator but are **not** REACH architecture requirements.
 
@@ -757,7 +751,7 @@ If required private configuration is missing/incomplete:
 - MCP endpoint remains reachable enough to report that setup is required and provide the setup location/instructions;
 - project operations remain unavailable until setup completes.
 
-The administrative Web UI/API is served over HTTP as a separate exposure boundary from both the ChatGPT MCP tunnel and the artifact distribution plane. It remains private/local by default and is never published through either path.
+The administrative Web UI/API is served over HTTP under `/admin/...` of the one 8787 listener and is not published through the ChatGPT tunnel path, which routes only `/mcp`.
 
 Web UI is the canonical production configuration path.
 

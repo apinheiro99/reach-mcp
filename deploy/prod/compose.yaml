@@ -8,7 +8,7 @@
 #   REACH_TUNNEL_BINARY  the tunnel-client executable (a regular file)
 #   REACH_TUNNEL_DIR     a directory readable by uid 1000 with tunnel-client.yaml, api-key and mcp.auth (rotating them needs no rebuild)
 # The container is named reach-server (override with REACH_CONTAINER_NAME); the Compose project name stays the controller's.
-# Data (MCP) and admin are separate listeners and separate mappings; both default to host loopback only.
+# One listener, one published port (8787): MCP, Client WSS, health, admin and release are endpoint families of it. It defaults to host loopback only.
 services:
   reach-server:
     container_name: ${REACH_CONTAINER_NAME:-reach-server}
@@ -19,11 +19,10 @@ services:
       - ${REACH_PROPOSAL_FILE:?absolute path of the proposal file}:/run/reach/proposal.json
       - ${REACH_LOG_DIR:?absolute path of the log directory}:/var/log/reach
     ports:
-      - "${REACH_DATA_BIND:-127.0.0.1}:${REACH_DATA_PORT:-8787}:8787"
-      - "${REACH_ADMIN_BIND:-127.0.0.1}:${REACH_ADMIN_PORT:-8788}:8788"
+      - "${REACH_BIND:-127.0.0.1}:${REACH_PORT:-8787}:8787"
 
-  # Only the MCP/data listener is routed (reach-server:8787 over the internal Compose network, set in tunnel-client.yaml); the admin
-  # listener is never a tunnel route. The Server does not depend on the tunnel: it stays healthy while the tunnel restarts.
+  # Only /mcp is routed (reach-server:8787 over the internal Compose network, set in tunnel-client.yaml); the admin
+  # routes are never a tunnel route. The Server does not depend on the tunnel: it stays healthy while the tunnel restarts.
   reach-tunnel:
     container_name: ${REACH_TUNNEL_CONTAINER_NAME:-reach-tunnel}
     image: ${REACH_TUNNEL_BASE_IMAGE:-node:24-bookworm-slim}

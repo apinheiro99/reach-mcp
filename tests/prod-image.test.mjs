@@ -63,13 +63,14 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
   assert.equal(args[0], "/opt/reach/server/reach-server.mjs");
   assert.deepEqual([flag("build"), flag("repository-commit")], [BUILD_ID, COMMIT]);
   assert.deepEqual([flag("config"), flag("proposal"), flag("logs"), flag("artifacts")], ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach", layout.artifacts]);
-  assert.deepEqual([flag("data-port"), flag("admin-port"), flag("data-host")], ["8787", "8788", "0.0.0.0"]);
-  const custom = serverArgs({ REACH_DATA_PORT: "9001", REACH_ADMIN_PORT: "9002" }, layout);
-  assert.deepEqual([custom[custom.indexOf("--data-port") + 1], custom[custom.indexOf("--admin-port") + 1]], ["9001", "9002"]);
+  assert.deepEqual([flag("port"), flag("host")], ["8787", "0.0.0.0"]);
+  assert.ok(!args.includes("--admin-port") && !args.includes("--data-port"), "one listener: no admin or data port flag");
+  const custom = serverArgs({ REACH_PORT: "9001" }, layout);
+  assert.equal(custom[custom.indexOf("--port") + 1], "9001");
   assert.ok(!/BUILD|COMMIT/.test(text("entrypoint.mjs").replace(/build_id|repository_commit|--build|--repository-commit/g, "")), "no build identity is read from the environment");
 });
 
-test("Compose runs a built image and mounts exactly config file, proposal file and log dir, with separate loopback ports and a restart policy", () => {
+test("Compose runs a built image and mounts exactly config file, proposal file and log dir, with exactly one published loopback port and a restart policy", () => {
   const yaml = text("compose.yaml").replace(/^\s*#.*$/gm, "").split(/^\s{2}reach-tunnel:$/m)[0];
   assert.doesNotMatch(yaml, /^\s*build:/m, "Compose never builds from source");
   assert.match(yaml, /image: \$\{REACH_IMAGE:\?/);
@@ -79,8 +80,9 @@ test("Compose runs a built image and mounts exactly config file, proposal file a
   assert.deepEqual(volumes, ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach"]);
   assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 3, "no other mount");
   assert.doesNotMatch(yaml, /docker\.sock|privileged|network_mode: host|volumes:\s*\n\s*\w+:|\s- \/:|\s- \/\w+:\/\w+/);
-  const ports = [...yaml.matchAll(/^\s+- "(\$\{REACH_(DATA|ADMIN)_BIND:-127\.0\.0\.1\}:\$\{REACH_\2_PORT:-\d+\}:(\d+))"$/gm)].map((m) => [m[2], m[3]]);
-  assert.deepEqual(ports, [["DATA", "8787"], ["ADMIN", "8788"]], "data and admin are separate mappings, loopback by default");
+  const ports = [...yaml.matchAll(/^\s+- "(\$\{REACH_BIND:-127\.0\.0\.1\}:\$\{REACH_PORT:-\d+\}:(\d+))"$/gm)].map((m) => m[2]);
+  assert.deepEqual(ports, ["8787"], "one published port, loopback by default");
+  assert.doesNotMatch(yaml, /8788|8789|REACH_ADMIN|REACH_DATA/, "no admin or artifact listener");
 });
 
 test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is read-only mounted, unpublished and independent of the Server", () => {
@@ -93,7 +95,7 @@ test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is rea
   assert.match(tunnel, /until node -e .*reach-server:8787\/health.*exec \/usr\/local\/bin\/tunnel-client run --config \/run\/reach-tunnel\/tunnel-client\.yaml/, "the Tunnel waits for the Server before it starts");
   assert.deepEqual([...tunnel.matchAll(/^\s+- (\$\{REACH_TUNNEL_[A-Z]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split("}:").pop()), ["/usr/local/bin/tunnel-client:ro", "/run/reach-tunnel:ro"]);
   assert.match(tunnel, /^\s+- \/etc\/ssl\/certs\/ca-certificates\.crt:\/etc\/ssl\/certs\/ca-certificates\.crt:ro$/m, "the Tunnel trusts the host CA bundle read-only");
-  assert.doesNotMatch(tunnel, /^\s+ports:|depends_on|8788|REACH_ADMIN|network_mode|privileged|docker\.sock/m, "the Tunnel publishes nothing, never names the admin listener and does not gate the Server");
+  assert.doesNotMatch(tunnel, /^\s+ports:|depends_on|8788|8789|REACH_ADMIN|network_mode|privileged|docker\.sock/m, "the Tunnel publishes nothing, never names the admin listener and does not gate the Server");
   assert.doesNotMatch(full, /sk-|tunnel_[0-9a-f]{8}|api[_-]?key:|Bearer /i, "no credential or tunnel identity in the public file");
 });
 

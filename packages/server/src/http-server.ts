@@ -1,6 +1,6 @@
 // The Server's one HTTP listener: authenticated stateless Streamable HTTP MCP on /mcp and the Client WebSocket upgrade on
-// /client, plus the private /health. Every other path is a 404; the admin surface is a separate listener (admin.ts), and there is no MCP session here. TLS is the reverse proxy's job.
-import { createServer, type IncomingMessage, type Server } from "node:http";
+// /client, plus the private /health. "/" and "/admin..." go to the injected admin route handler (admin.ts); every other path is a 404, and there is no MCP session here. TLS is the reverse proxy's job.
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { WebSocketServer } from "ws";
 import { authenticateBearer } from "./auth.ts";
@@ -18,6 +18,8 @@ export type HttpServerDeps = {
   /** Injected build metadata; omitted means the health snapshot reports null. */
   repositoryCommit?: string;
   uptimeSeconds?: () => number;
+  /** Handler for the admin and release route families; without it those paths are 404. */
+  routes?: (req: IncomingMessage, res: ServerResponse) => void;
 };
 
 const MCP_PATH = "/mcp";
@@ -39,6 +41,7 @@ export function createHttpServer(deps: HttpServerDeps): Server {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(buildHealth({ ...deps, uptimeSeconds })));
       return;
     }
+    if (deps.routes && (pathname === "/" || pathname === "/admin" || pathname.startsWith("/admin/"))) return deps.routes(req, res);
     if (pathname !== MCP_PATH) {
       res.writeHead(404).end();
       return;
