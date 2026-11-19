@@ -1,108 +1,40 @@
-# ADR-0003 — LAN Client plane and dedicated artifact distribution plane
+# ADR-0003 — One production port, endpoint-separated routes
 
-**Status:** Accepted  
+**Status:** Accepted (revised 2026-11-19; supersedes the three-port version of 2026-11-18)  
 **Date:** 2026-11-18
 
 ## Context
 
-REACH Clients are machine-level agents that initiate an authenticated outbound WSS connection to the REACH Server. A production Server therefore cannot be reachable only from host loopback if Clients on other machines or containers in the operator network are expected to connect to it.
+REACH Clients dial the Server with authenticated outbound WSS, so a production Server cannot be reachable only from host loopback. The canonical release also carries the Client archives that other machines must be able to download without SSH, source checkout or manual relay.
 
-The canonical release also contains the Client installers/runtime archives. Those artifacts must be retrievable by machines that need to install or update a Client without exposing the administrative Web UI/API to the whole LAN.
-
-The previous production deployment bound both Server listeners to host loopback and served release artifacts from the administrative listener. That is too restrictive for real multi-machine operation and couples artifact distribution to the admin exposure boundary.
+The first version of this decision gave each responsibility its own TCP port (8787 service/client, 8788 admin, 8789 artifacts). That equated logical separation with listener separation and added flags, Compose mappings, healthchecks and tests for no product benefit. The Product Owner decided on KISS: one port, separated by endpoint. Nothing else about the approved architecture changes.
 
 ## Decision
 
-REACH production has three explicit network planes with one owner each:
+The production Server has **one listener, port 8787**, with distinct endpoint families:
 
-### 1. Service / Client plane
+- `/mcp` — ChatGPT-facing MCP; the only route the OpenAI Secure MCP Tunnel carries;
+- `/client` — authenticated Client WSS;
+- `/health` — protected health;
+- `/` and `/admin/...` — Web UI and administrative API, including first-boot setup mode;
+- `/admin/api/release/manifest` and `/admin/api/release/artifacts/<name>` — read-only, catalog-gated release downloads, authenticated with the existing MCP bearer.
 
-The existing Server data listener owns:
-
-- authenticated Client WSS connections;
-- MCP data-plane requests;
-- protected health.
-
-In production it is **LAN-reachable by deployment policy** so authorized REACH Clients on other machines/containers can connect to the Server.
-
-The OpenAI Secure MCP Tunnel routes only the MCP path on this listener. Making the listener LAN-reachable does not make the admin plane public.
-
-Canonical production port: **8787**.
-
-### 2. Administrative plane
-
-The administrative Web UI/API remains a separate listener and a separate exposure boundary.
-
-It owns:
-
-- human configuration;
-- Client registration and credential actions;
-- proposal approval/rejection;
-- operational administration.
-
-It remains private/local by default and is **not** routed through the OpenAI Secure MCP Tunnel.
-
-Canonical production port: **8788**.
-
-### 3. Artifact distribution plane
-
-Release manifest and Client runtime download move to a dedicated **read-only authenticated artifact listener**.
-
-It serves only:
-
-- the canonical release manifest;
-- catalog-gated Client artifacts declared by that manifest.
-
-It does not serve configuration mutation, Client credential issuance, proposal actions, general admin UI/API, MCP, filesystem operations or arbitrary files.
-
-It is LAN-reachable by deployment policy so authorized machines can install/update the REACH Client without SSH or manual file copying.
-
-Canonical production port: **8789**.
-
-The artifact plane reuses the existing canonical release catalog/verification owner and an existing Server authentication owner; it must not create a second release catalog, second manifest model or unrelated secret-management subsystem.
+Every route family keeps the behavior and authentication it had when it had its own port. Setup mode, Web UI configuration, autosave, HITL and enrollment are unchanged. Nothing listens on 8788 or 8789.
 
 ## Deployment consequences
 
-The production Compose stack still has exactly two services:
-
-- `reach-server`;
-- `reach-tunnel`.
-
-This ADR adds no third container. The Server process owns the three listeners.
-
-Default deployment bindings are configurable. The reference operator deployment binds:
-
-- service/client plane (8787) to the operator LAN address/interface;
-- admin plane (8788) to loopback/private management only;
-- artifact plane (8789) to the operator LAN address/interface.
-
-Firewall policy may narrow LAN sources, but firewall rules are deployment policy rather than product architecture.
-
-## Client installation and update
-
-A target machine:
-
-1. reaches the artifact plane;
-2. retrieves the manifest and platform artifact;
-3. verifies the artifact against the manifest;
-4. installs explicitly through the canonical platform installer;
-5. connects to the service/client plane using its protected bootstrap.
-
-No source checkout, SSH tunnel, manual PO file relay or direct container-network access is part of the normal installation contract.
+- The production Compose stack still has exactly two services, `reach-server` and `reach-tunnel`, and publishes one port, 8787 (`REACH_BIND`/`REACH_PORT`, loopback by default; the operator chooses the LAN address).
+- The tunnel routes only `/mcp`; the admin and release routes are not tunnel routes.
+- The healthcheck and the deploy controller probe the same listener.
 
 ## Security invariants
 
-- admin is never exposed through the artifact plane;
-- artifact routes are read-only and catalog-gated;
-- artifact download requires authentication;
-- Clients still require their own Client identity/credential for WSS;
-- the MCP tunnel routes only MCP and never admin/artifact paths;
-- secrets are not baked into public images or public repositories;
-- no arbitrary file serving exists.
+- the admin routes are never routed through the MCP tunnel;
+- release routes are read-only and catalog-gated, no arbitrary file serving;
+- Clients still require their own identity and credential for WSS;
+- secrets are not baked into public images or public repositories.
 
 ## Consequences
 
-- Any authorized LAN machine/container can install and run a REACH Client without host SSH access.
-- The administrative UI/API remains isolated.
-- Server, Client and release artifacts remain one coordinated release identity.
-- The same three-plane pattern can be reused by other MCP products that need remote Clients and distributable platform artifacts.
+- One listener, one port, one healthcheck.
+- Owners are unchanged: `runtime.ts` composes, `auth.ts` authenticates, `artifacts.ts` owns the catalog, `admin.ts` owns the admin and release routes, `deploy/prod/deploy.mjs` owns the deploy transaction.

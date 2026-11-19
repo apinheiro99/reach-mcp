@@ -18,17 +18,13 @@ reach-tunnel
 reach-server:8787/mcp
 
 Authorized LAN Clients ---------> reach-server:8787/client
-Authorized LAN installers ------> reach-server:8789/release/...
-Private/local operator ---------> reach-server:8788/admin
+Authorized LAN installers ------> reach-server:8787/admin/api/release/...
+Operator -----------------------> reach-server:8787/admin
 ```
 
-The Server owns three explicit network planes:
+The Server owns one network listener, **8787**, with distinct endpoint families: `/mcp`, `/client`, `/health`, `/admin/...` (Web UI, administrative API, setup mode) and the read-only release routes under `/admin/api/release/...`. Nothing listens on 8788 or 8789.
 
-- **8787 service/client plane** — authenticated Client WSS, MCP data plane and protected health. It is LAN-reachable by deployment policy because REACH Clients on other machines must connect to it.
-- **8788 administrative plane** — Web UI and administrative API. It remains private/local by default and is never routed through the OpenAI Secure MCP Tunnel.
-- **8789 artifact distribution plane** — read-only authenticated manifest and canonical Client artifact download. It is LAN-reachable by deployment policy and exposes no configuration mutation or general admin capability.
-
-`reach-server` owns the application and all three listeners. `reach-tunnel` owns only the Secure MCP Tunnel client. The tunnel publishes no host port and routes only the MCP path to the service/client plane. The Server does not depend on tunnel health; the tunnel waits until the Server service listener responds before it starts. Both services restart automatically through Compose.
+`reach-server` owns the application and its one listener. `reach-tunnel` owns only the Secure MCP Tunnel client. The tunnel publishes no host port and routes only `/mcp`. The Server does not depend on tunnel health; the tunnel waits until the Server service listener responds before it starts. Both services restart automatically through Compose.
 
 Bindings are configurable. A deployment may use an explicit LAN address, a trusted interface or a broader bind narrowed by host/network firewall policy. The product contract is reachability and separation of planes, not a hardcoded subnet or interface.
 
@@ -40,7 +36,7 @@ The production Server image carries the exact release `artifacts/` tree that bel
 - `reach-client-linux-x64.tgz`;
 - `reach-client-win32-x64.zip`.
 
-Authorized target machines retrieve the manifest and platform Client archive from the artifact distribution plane, verify the archive against the manifest, install it explicitly with the platform installer, then connect to the service/client plane with their protected Client bootstrap.
+Authorized target machines retrieve the manifest and platform Client archive from the release routes of the Server, verify the archive against the manifest, install it explicitly with the platform installer, then connect to `/client` with their protected Client bootstrap.
 
 SSH tunneling, manual file relay and source checkout are not part of the normal Client installation contract.
 
@@ -94,9 +90,9 @@ A production rollout is accepted only when:
 - the Server is healthy;
 - running build id and repository commit match the release;
 - the protected MCP data plane responds as expected;
-- an authorized LAN Client can reach the service/client plane;
+- an authorized LAN Client can reach `/client`;
 - the artifact listener serves only the authenticated manifest/catalog artifacts;
-- the administrative listener is not reachable through the MCP tunnel or artifact plane;
+- the admin routes are not reachable through the MCP tunnel and nothing listens on 8788 or 8789;
 - the Secure MCP Tunnel reaches MCP;
 - restarting only the tunnel does not disturb the Server;
 - restarting the full stack restores Server identity and tunnel reachability without manual repair.

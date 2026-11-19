@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { AuditWriter, createAdminServer, OperationalLogger, ProposalStore, RotatingTextWriter, type ConnectionOptions } from "../src/index.ts";
+import { AuditWriter, createAdminHandler, createHttpServer, OperationalLogger, ProposalStore, RotatingTextWriter, type ConnectionOptions } from "../src/index.ts";
 import { CLIENT_MARKER, MCP_MARKER, PHYSICAL_ROOT, requestsOf, startRuntime, until } from "./runtime-fixture.ts";
 
 const FILE_CONTENT = "FILE-CONTENT-" + "Hq58Lw";
@@ -90,7 +90,7 @@ test("admin and proposal actions are each audited once, without secret values", 
   const w = writers();
   const rt = await startRuntime({ logger: w.logger, audit: w.audit } as Partial<ConnectionOptions>);
   const proposals = new ProposalStore({ path: path.join(w.dir, "proposal.json"), config: rt.config, connections: rt.connections, logger: w.logger, audit: w.audit });
-  const admin = createAdminServer({ config: rt.config, connections: rt.connections, proposals, serverBuild: "srv-1", logger: w.logger, audit: w.audit });
+  const admin = createHttpServer({ config: rt.config, connections: rt.connections, proposals, serverBuild: "srv-1", routes: createAdminHandler({ config: rt.config, connections: rt.connections, proposals, serverBuild: "srv-1", logger: w.logger, audit: w.audit }) });
   await new Promise<void>((r) => admin.listen(0, "127.0.0.1", () => r()));
   const base = `http://127.0.0.1:${(admin.address() as AddressInfo).port}`;
   const put = (body: unknown) => fetch(`${base}/admin/api/config`, { method: "PUT", body: JSON.stringify(body) });

@@ -75,7 +75,7 @@ Default install directory: `C:\\Program Files\\REACH\\Client`.
 
 The Server release artifact is self-contained and does not require Git/workspace links. The production reference deployment is one Compose project (`reach`) with separate `reach-server` and `reach-tunnel` services, controlled CD and explicit rollback. See [production-deployment.md](production-deployment.md).
 
-The Server uses separate exposure planes: the service/client plane for MCP and Client WSS, the private administrative plane for Web UI/configuration, and a dedicated read-only authenticated artifact plane for release-manifest/Client-artifact retrieval. The artifact plane is intended to be reachable by authorized installer machines; neither admin nor artifact routes are exposed through the OpenAI MCP tunnel.
+The Server uses one listener on port 8787 with separate endpoint families: `/mcp`, `/client`, `/health`, `/admin/...` and the read-only release routes. The OpenAI MCP tunnel routes only `/mcp`.
 
 ## Upgrade
 

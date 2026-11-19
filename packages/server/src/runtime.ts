@@ -1,11 +1,11 @@
 // The Server process composition, and the only place that builds one: it constructs each existing owner exactly once and
 // wires them together. The command line carries only runtime values (paths, bind addresses, build metadata); projects,
 // Clients, credentials, policies and logging settings come from the config file through ServerConfigStore, and a missing
-// or invalid config simply leaves the Server inactive so the separate admin listener can serve setup mode.
+// or invalid config simply leaves the Server inactive so the admin routes of the one listener can serve setup mode.
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { parseFlags, parsePort } from "@reach-mcp/shared/cli";
-import { createAdminServer } from "./admin.ts";
+import { createAdminHandler } from "./admin.ts";
 import { DirectoryArtifactSource } from "./artifacts.ts";
 import { AuditWriter } from "./audit.ts";
 import { ConfigError, ServerConfigStore } from "./config.ts";
@@ -19,10 +19,8 @@ export type ServerArgs = {
   config: string;
   proposal: string;
   logs: string;
-  dataHost: string;
-  dataPort: number;
-  adminHost: string;
-  adminPort: number;
+  host: string;
+  port: number;
   build: string;
   repositoryCommit?: string;
   /** Optional directory holding the release manifest and Client artifacts that the admin release routes serve. */
@@ -32,17 +30,15 @@ export type ServerArgs = {
 const LOOPBACK = "127.0.0.1";
 
 export const SERVER_USAGE =
-  "usage: server --config <file> --proposal <file> --logs <dir> --data-port <n> --admin-port <n> --build <id> [--data-host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>]";
+  "usage: server --config <file> --proposal <file> --logs <dir> --port <n> --build <id> [--host <addr>] [--repository-commit <id>] [--artifacts <dir>]";
 
 export function parseServerArgs(argv: readonly string[]): ServerArgs {
   const flags = parseFlags(argv, {
     config: { required: true },
     proposal: { required: true },
     logs: { required: true },
-    "data-host": {},
-    "data-port": { required: true },
-    "admin-host": {},
-    "admin-port": { required: true },
+    host: {},
+    port: { required: true },
     build: { required: true },
     "repository-commit": {},
     artifacts: {},
@@ -52,17 +48,15 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     config: text("config"),
     proposal: text("proposal"),
     logs: text("logs"),
-    dataHost: (flags["data-host"] as string | undefined) ?? LOOPBACK,
-    dataPort: parsePort("data-port", text("data-port")),
-    adminHost: (flags["admin-host"] as string | undefined) ?? LOOPBACK,
-    adminPort: parsePort("admin-port", text("admin-port")),
+    host: (flags.host as string | undefined) ?? LOOPBACK,
+    port: parsePort("port", text("port")),
     build: text("build"),
     ...(flags["repository-commit"] === undefined ? {} : { repositoryCommit: text("repository-commit") }),
     ...(flags.artifacts === undefined ? {} : { artifacts: text("artifacts") }),
   };
 }
 
-export type RunningServer = { dataPort: number; adminPort: number; stop(): Promise<void> };
+export type RunningServer = { port: number; stop(): Promise<void> };
 
 const listen = (server: Server, port: number, host: string) =>
   new Promise<number>((resolve, reject) => {
@@ -90,17 +84,17 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
   const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, logger, audit });
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
-  const data = createHttpServer(common);
-  const admin = createAdminServer({ ...common, logger, audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
+  const routes = createAdminHandler({ ...common, logger, audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
+  const server = createHttpServer({ ...common, routes });
   const stop = async () => {
     connections.stop();
-    await Promise.all([close(data), close(admin)]);
+    await close(server);
   };
   try {
-    const [dataPort, adminPort] = await Promise.all([listen(data, args.dataPort, args.dataHost), listen(admin, args.adminPort, args.adminHost)]);
+    const port = await listen(server, args.port, args.host);
     connections.start();
-    logger.log("INFO", "runtime", `server started build=${args.build} data_port=${dataPort} admin_port=${adminPort} active=${config.isActive()}`);
-    return { dataPort, adminPort, stop };
+    logger.log("INFO", "runtime", `server started build=${args.build} port=${port} active=${config.isActive()}`);
+    return { port, stop };
   } catch (error) {
     await stop();
     throw error;
