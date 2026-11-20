@@ -49,6 +49,22 @@ Before starting the DEV Client, build/obtain the matching Client release artifac
 
 Production Server deployment is containerized and is a separate concern, see [install.md](install.md).
 
+## Disposable Linux target
+
+`deploy/dev/disposable-linux-target.sh` creates a throwaway Linux target to develop and prove the machine-level Client install without touching a real machine. It is test and development tooling only: nothing in the product, the release or the public architecture depends on it. Docker was the preferred option, but the reference DEV container has no Docker or Podman, so the target is built from Linux user, mount and PID namespaces with util-linux `unshare` (no root, no image to maintain).
+
+```
+name=$(deploy/dev/disposable-linux-target.sh create)          # a fresh private directory, no Client identity
+deploy/dev/disposable-linux-target.sh put "$name" <abs-file>   # copy an artifact or script in, visible as /mnt/<file>
+deploy/dev/disposable-linux-target.sh run "$name" [--detach] -- <command...>
+deploy/dev/disposable-linux-target.sh status ["$name"]
+deploy/dev/disposable-linux-target.sh destroy "$name"          # stop what runs inside, remove the directory and every trace
+```
+
+Inside a target the canonical paths work unchanged: the installer runs with its own defaults, `/opt` and `/etc/systemd/system` resolve to the target's private directories, the host's Node.js prefix is mounted read-only at `/usr/local`, and `/home`, `/root`, `/scope` and `/reach` are empty. Host environment variables are not passed. A Client that generates its identity does so in the bootstrap file under the target, and `destroy` removes it; no real identity is ever copied in or out. `REACH_TARGET_ROOT` (default `$TMPDIR` or `/tmp`) chooses where targets live and `REACH_TARGET_NODE_PREFIX` overrides the Node.js prefix. `tests/disposable-target.test.mjs` proves create, isolation, install of the real release artifact, enrollment against a real Server, clean recreation and destroy; it is skipped with a stated reason on a host without unprivileged namespaces.
+
+Limits that the Linux onboarding Task must account for: there is no init system inside a target, so enabling and restarting a service (`systemctl`, restart on failure, start at boot) cannot be proven there and needs a separate proof, while the unit file the installer writes can be inspected; the network is the host's, so the Server is reached as the host reaches it and sees the host's address as the peer; and the rest of the host filesystem stays readable, which is why no host secret may be passed into a target.
+
 ## Rebuilding the environment
 
 The container definition (Incus profile plus cloud-init) is private provisioning material kept in `reach-private/provisioning/incus/`. To rebuild:
