@@ -12,7 +12,7 @@ The Server is the operational configuration authority for logical projects, root
 - **Private deployment defaults.** Environment-specific values such as Server address, trusted Client network, administrative IP/CIDR allowlist and initial onboarding defaults belong to private deployment configuration (for the owner's environment, REACH Private), never hardcoded public source.
 - **Safe activation.** Changes activate atomically; an invalid configuration never replaces the last-known-good one.
 - **Web UI administration.** The Web UI manages Clients, roots, modes, key rotation, proposals and operational visibility after installation. It is not required for first Client enrollment.
-- **Administrative network boundary.** Port 8788 accepts only the configured trusted source IP/CIDR. The default value is environment-owned and normally matches the trusted network containing the development/operator machine. There is no universal hardcoded subnet.
+- **Administrative network boundary.** Port 8788 has no application login in the MVP. Production therefore defaults to host loopback. A non-loopback bind is an explicit deployment exception and requires both an equivalent firewall/network boundary and a configured source IP/CIDR allowlist checked against the direct peer address. There is no universal hardcoded subnet and forwarded headers are not trusted for admin admission.
 - **Service plane.** Port 8787 owns MCP, Client WebSocket, health, release download and zero-touch enrollment. Client enrollment never requires access to 8788.
 
 ## AI-assisted changes
@@ -27,12 +27,14 @@ Operational logging and audit must record enrollment, key rotation, connect/disc
 
 ## Clients
 
-A Client is thin. Its protected local state owns:
+A Client is thin. Its protected local state is created automatically by onboarding and owns:
 
 - the Server endpoint;
 - the `client_id`;
 - the Ed25519 private key;
 - the physical base roots this Client is ever allowed to expose.
+
+This is the single normal Client-state contract. A manual `bootstrap.env` retained in DEV is migration compatibility only; production onboarding does not require an operator to hand-write or copy a Client credential from the Server.
 
 The private key never leaves the Client. The Server stores only the matching public key and Server-owned logical project/policy configuration.
 
@@ -51,7 +53,7 @@ Normal enrollment is zero-touch:
 
 Implemented contract (Task #73): the enrollment exchange is the first frame of the persistent `/client` WebSocket, so no extra route or port exists. The Server opens every connection with `challenge{nonce}`; the Client answers once with `hello{client_id, client_build, public_key, signature}`, where the signature covers that nonce and the `client_id`. A known `client_id` must present its stored public key. An unknown `client_id` is enrolled only when the direct socket peer is inside the deployment-owned `--enroll-from` list (addresses or CIDRs, never forwarded headers; no list means nobody can enroll) and its build is compatible; enrollment is one atomic `ServerConfigStore` write of the `client_id` and public key with no project, and a public key can belong to only one `client_id`. A different key for a known `client_id` is refused and never replaces the stored one. Failures are `AUTH_FAILED` and never say which check failed. The Client writes its generated `client_id` and private key into its 0600 bootstrap file on first run; nothing is signed again after the welcome.
 
-The installer may propose the current working/project directory as the initial root. If that choice is not unambiguous, the normal installer may ask only for confirmation of the proposed root. Controlled write access initially remains limited to `temp/**` unless private deployment defaults explicitly choose otherwise.
+There is no hardcoded/default root. The installer may propose the current working/project directory as the initial root; it becomes authorized only after an unambiguous choice or explicit confirmation is persisted as a local root anchor and mapped by the Server. Controlled write access initially remains limited to `temp/**` unless private deployment defaults explicitly choose otherwise.
 
 ### Key rotation
 

@@ -68,7 +68,7 @@ The current Dev MCP is a working prototype and provides proven implementation pa
 - Zod;
 - ChatGPT-facing MCP using Streamable HTTP.
 
-Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. `GET /health` returns a minimal snapshot behind the same bearer (401 when missing or wrong, 503 with no body while no configuration is active): `status`, `server_build`, `repository_commit` (injected, otherwise null), `uptime_seconds`, `config_active`, every configured Client joined with its live session (`client_id`, `enabled`, `online`, `client_build` and `last_seen`, null while disconnected) and request totals (`in_flight`, `completed`, `failed`, `timed_out`); it never includes roots, credentials or paths. Every other path answers 404; there is no admin UI or MCP session state on this listener. Each MCP tool result carries the `request_id` that travelled on the wire to the Client. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
+Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. `GET /health` is the single service-plane health contract and stays behind the same bearer: missing/wrong bearer returns 401; while no configuration is active it returns 503; with active configuration it returns the minimal operational snapshot (`status`, `server_build`, `repository_commit`, `uptime_seconds`, `config_active`, Client online/build/last-seen state and request totals). It never includes roots, private keys, bearer values, credentials or paths. There is no second readiness route. Every other non-release path answers 404; there is no admin UI or MCP session state on this listener. Each MCP tool result carries the `request_id` that travelled on the wire to the Client. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
 
 REACH should remain Node/TypeScript unless a concrete blocker appears.
 
@@ -130,7 +130,7 @@ The Server exposes **two listeners** with separate responsibilities. **8787** is
 
 The OpenAI Secure MCP Tunnel routes only `/mcp` on 8787. Client machines reach the Server directly on the local/private network; Client↔Server traffic does not depend on the OpenAI tunnel.
 
-Administrative reachability is not hardcoded in public source. The deployment/private configuration defines the allowed source IP or CIDR for 8788; by default in the owner's environment this is the same trusted network as the development/operator machine. The listener/firewall exposure enforces that boundary. The Web UI may later change Clients, projects, roots, modes and key rotation, but it is not required for first installation.
+Administrative reachability is not hardcoded in public source. Port 8788 has no application login in the MVP, so its protection is the network boundary: production defaults to host loopback. A non-loopback bind is an explicit deployment exception and is supported only with an equivalent firewall/network boundary plus an explicit source IP/CIDR allowlist. The allowlist is checked against the direct peer address, never `X-Forwarded-For`; proxying the admin plane is out of scope for now. The Web UI may later change Clients, projects, roots, modes and key rotation, but it is not required for first installation.
 
 Release download and first enrollment require only service-plane network reachability. No admin tunnel, manual credential relay or manual bootstrap editing is part of the normal onboarding path.
 
@@ -520,7 +520,8 @@ sequenceDiagram
 
     alt Configuration missing/incomplete
         S->>S: Enter SETUP MODE
-        M-->>M: Data-plane disabled
+        M-->>M: /mcp and /client refuse normal operation
+        M-->>O: /health remains protected and reports 503; canonical /release files remain read-only
         M-->>O: Setup required + operator-facing setup location
         O->>UI: Open the administrative Web UI over HTTP
         UI->>S: Valid initial configuration
@@ -695,7 +696,7 @@ Normal enrollment is automatic when an authorized agent can access the target ma
 
 The normal operator interaction is one instruction: access machine X and install the Client. No Web UI data entry, manual credential copy/paste, admin-port tunnel or hand-written bootstrap is part of first enrollment.
 
-The default initial project/root may be proposed from the install agent's current working directory. Any required confirmation is about that root choice only, not about identity or credentials. Controlled write access starts at `temp/**` unless private deployment configuration says otherwise.
+There is no hardcoded/default project root. The installer may propose the install agent's current working directory, but that root exists only after an unambiguous choice or explicit confirmation is persisted as the Client's local root anchor and mapped logically by the Server. Any normal question is about that root choice only, never identity or credentials. Controlled write access starts at `temp/**` unless private deployment configuration says otherwise.
 
 ### Key rotation
 
@@ -831,7 +832,7 @@ There is no generic Save/Confirm button for ordinary configuration changes.
 
 ## 12. AI-assisted configuration and HITL
 
-REACH may expose typed administrative MCP operations so ChatGPT can inspect and propose configuration.
+REACH may expose only the small typed administrative surface needed for the MVP: inspect current configuration, create/replace the single pending proposal, and inspect proposal status. No generic administrative CRUD layer is required.
 
 All AI/MCP-originated configuration mutations are proposal-based, regardless of whether a field is classified as security-sensitive:
 
@@ -841,7 +842,7 @@ All AI/MCP-originated configuration mutations are proposal-based, regardless of 
 4. human operator explicitly approves/rejects;
 5. only after approval does Server atomically activate the change.
 
-Human-originated ordinary Web UI edits continue to use autosave.
+Human-originated ordinary Web UI edits continue to use autosave. The MVP keeps at most one active pending AI proposal; a newly accepted proposal replaces the previous pending candidate rather than creating a workflow system. Approval always revalidates the candidate against the current configuration before atomic activation.
 
 This is explicit **human-in-the-loop (HITL)** governance.
 
@@ -895,10 +896,10 @@ Never log secrets/credentials/file contents by default.
 
 ### Rotation
 
-Operational logs rotate:
+Operational logs use one rotation mechanism with two triggers:
 
-- at midnight;
-- earlier if configurable maximum file size is reached.
+- midnight;
+- configurable maximum file size.
 
 Default retention: **5 days**.
 
@@ -917,7 +918,7 @@ Default audit scope is broad/enabled. Web UI may allow categories to be disabled
 Compact records should include the minimum useful context:
 
 - timestamp;
-- actor/source;
+- actor/source (`operator-ui`, `mcp-proposal`, `client-enrollment` or `system`);
 - client;
 - project/root;
 - operation/action;
@@ -927,10 +928,10 @@ Compact records should include the minimum useful context:
 
 Do not record file contents, credentials or secrets.
 
-Audit uses the same rotation model:
+Audit uses the same single rotation mechanism:
 
-- midnight rotation;
-- earlier rotation by size;
+- midnight trigger;
+- earlier trigger by size;
 - default 5-day retention;
 - Web UI configurable.
 
@@ -986,7 +987,7 @@ One release build produces, from the same opaque build identity and repository c
 
 Client installation is machine-level. Linux uses the installed release artifact plus systemd; Windows uses the installed release artifact plus a native Scheduled Task/startup mechanism. No native `.exe`/ELF compilation is required for MVP. Direct `git clone` remains valid for development only and is not the installation contract.
 
-The installer/bootstrap remains simple and explicit: binaries are installed to the machine-level install directory, while bootstrap/secrets/root anchors remain in a separate operator-owned protected file. REACH never silently updates itself.
+The installer/onboarding remains simple and explicit: binaries are installed to the machine-level install directory, while the Client's protected local state is created on that machine and stores the Server endpoint, `client_id`, Ed25519 private key and local root anchors. Only the public key is Server-side identity material. The normal production path has no hand-written bootstrap or Server-issued Client secret; any manual bootstrap file retained in DEV is migration compatibility, not the target contract. REACH never silently updates itself.
 
 ### Windows filesystem safety
 
@@ -1014,7 +1015,7 @@ Do **not** introduce:
 
 At connection time, Server and Client report their actual running opaque build identifier for observability and troubleshooting.
 
-For manifest schema v1 and the runtime gate, compatibility is deliberately exact: `client_build == server_build`. The release manifest records the same build id for release, Server and Client and declares `compatibility.strategy = "exact"` with exactly that Client build accepted. An incompatible Client is rejected explicitly.
+For manifest schema v1 and the runtime gate, compatibility is deliberately exact: `client_build == server_build`. The release manifest records the same build id for release, Server and Client and declares `compatibility.strategy = "exact"` with exactly that Client build accepted. An incompatible Client is rejected explicitly. This deliberately means a Server upgrade can leave older Clients offline until they are explicitly upgraded; that is accepted MVP behavior, not a signal to add version negotiation.
 
 No independent protocol number, negotiation framework, SemVer layer or version-range parser is introduced.
 

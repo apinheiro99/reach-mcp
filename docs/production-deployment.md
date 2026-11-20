@@ -22,7 +22,7 @@ Authorized LAN installers ------> reach-server:8787/release/...
 Operator (host loopback) -------> reach-server:8788/admin
 ```
 
-The Server owns two listeners. **8787** carries `/mcp`, `/client`, `/health` and the read-only release routes under `/release/...`, published on a reachable bind (`REACH_BIND`, all host addresses by default). **8788** carries only `/` and `/admin/...` (Web UI, administrative API, setup mode), published on host loopback by default (`REACH_ADMIN_BIND`; never a broad address). Nothing listens on 8789.
+The Server owns two listeners. **8787** carries `/mcp`, `/client`, protected `/health` and the fixed read-only Client release routes under `/release/...`, published on a reachable bind (`REACH_BIND`, all host addresses by default). **8788** carries only `/` and `/admin/...` (Web UI, administrative API, setup mode) and defaults to host loopback (`REACH_ADMIN_BIND`). Because the MVP admin plane has no application login, any non-loopback bind is an explicit deployment exception and requires an equivalent firewall/network boundary plus a direct-peer source allowlist. Nothing listens on 8789.
 
 `reach-server` owns the application and its two listeners. `reach-tunnel` owns only the Secure MCP Tunnel client. The tunnel publishes no host port and routes only `/mcp`. The Server does not depend on tunnel health; the tunnel waits until the Server service listener responds before it starts. Both services restart automatically through Compose.
 
@@ -36,7 +36,7 @@ The production Server image carries the exact release `artifacts/` tree that bel
 - `reach-client-linux-x64.tgz`;
 - `reach-client-win32-x64.zip`.
 
-Authorized target machines retrieve the manifest and platform Client archive from the release routes of the Server, verify the archive against the manifest, install it explicitly with the platform installer, then connect to `/client` with their protected Client bootstrap.
+Authorized target machines retrieve only the catalog-gated public Client release routes: `/release/manifest` and `/release/artifacts/<client-artifact-name>`. The manifest is the authority for which Client artifact names are served; there is no directory listing, arbitrary artifact path, traversal/symlink escape or public Server-artifact route. The installer verifies the platform archive against the manifest, installs it, creates the Client protected local state automatically, and then connects to `/client`.
 
 SSH tunneling, manual file relay and source checkout are not part of the normal Client installation contract.
 
@@ -57,7 +57,7 @@ The product does not require a source checkout or a private repository inside ei
 
 ### Empty root
 
-An empty persistent root is a supported first-run condition. REACH starts in setup mode: the data plane stays unavailable until the operator completes the initial configuration through the private administrative UI.
+An empty persistent root is a supported first-run condition. REACH starts in setup mode: `/mcp` and `/client` refuse normal operation until the operator completes initial configuration through the private administrative UI; protected `/health` returns 503; the fixed read-only Client release allowlist remains available because it does not depend on active configuration.
 
 ### Pre-seeded root
 
@@ -87,11 +87,11 @@ On a Task branch (`feature/task-*`) the same validation and `Build Release` run 
 
 A production rollout is accepted only when:
 
-- the Server is healthy;
+- authenticated `GET /health` on 8787 returns the normal active-config health snapshot (setup mode returns 503);
 - running build id and repository commit match the release;
 - the protected MCP data plane responds as expected;
 - an authorized LAN Client can reach `/client`;
-- an unauthenticated GET of the release manifest and the declared Linux/Windows Client artifacts succeeds on 8787 from another host, nothing else under the release routes is served, and from another host nothing answers on 8788;
+- an unauthenticated GET of exactly the manifest and declared Linux/Windows Client artifacts succeeds on 8787 from another host; directory listing, arbitrary paths and the Server artifact do not; from another host 8788 is unreachable in the default production deployment;
 - the admin routes are not reachable through the MCP tunnel and nothing listens on 8788 or 8789;
 - the Secure MCP Tunnel reaches MCP;
 - restarting only the tunnel does not disturb the Server;

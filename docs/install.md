@@ -47,7 +47,7 @@ A REACH Client is installed once per machine, not once per project. Normal insta
 
 Default install directory: `/opt/reach-mcp-client`.
 
-The supported normal path is one non-interactive onboarding command executed by an authorized agent on the target host. It resolves the Server endpoint from deployment/private defaults or explicit invocation context, downloads and verifies `reach-client-linux-x64.tgz`, creates protected local identity/state, enrolls automatically, installs the runtime and systemd service, starts it, and verifies connection. The low-level artifact installer remains an internal building block, not the operator workflow.
+The supported normal path is one operator instruction executed through an authorized agent with shell access to the target host. That agent resolves the Server endpoint from deployment/private defaults or explicit invocation context, downloads and verifies `reach-client-linux-x64.tgz`, creates protected local identity/state, enrolls automatically, installs the runtime and systemd service, starts it, and verifies connection. The operator may use a temporary Claude Code/SSH workstation container to drive that remote shell workflow; that container is tooling only and is not part of the REACH runtime. The low-level artifact installer remains a building block, not the human workflow.
 
 `--install-dir` may explicitly override the default. Insecure `ws://` remains an explicit development/test choice; normal secure deployments use the configured transport policy.
 
@@ -67,7 +67,7 @@ The Server uses two ports: 8787 for `/mcp`, `/client`, `/health` and the read-on
 
 ## Upgrade
 
-Upgrade is always explicit: obtain/build the intended release, verify it, replace the installed/deployed artifact, restart, and verify health. REACH never upgrades itself silently.
+Upgrade is always explicit: obtain/build the intended release, verify it, replace the installed/deployed artifact, restart, and verify health. Because MVP compatibility is exact (`client_build == server_build`), upgrading the Server can temporarily leave older Clients offline until they are explicitly upgraded. REACH never upgrades itself silently and does not add version negotiation to hide that consequence.
 
 ## Configuration
 
