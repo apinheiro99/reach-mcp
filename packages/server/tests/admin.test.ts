@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { mkdtempSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ClientConnectionRegistry, createAdminServer, createHttpServer, hashCredential, ProposalStore, ServerConfigStore } from "../src/index.ts";
+import { ClientConnectionRegistry, createAdminHandler, createHttpServer, hashCredential, ProposalStore, ServerConfigStore } from "../src/index.ts";
 
 const MCP_BEARER = "mcp-bearer-" + "Vt29Qw71";
 const PRIVATE_ROOT = "/srv/admin-private-root";
@@ -17,17 +18,16 @@ async function start(initialConfig = false) {
   const realSync = connections.syncAllPolicies.bind(connections);
   connections.syncAllPolicies = () => (syncs++, realSync());
   const proposals = new ProposalStore({ path: path.join(path.dirname(file), "proposal.json"), config, connections });
-  const admin = createAdminServer({ config, connections, proposals, serverBuild: "srv-a", uptimeSeconds: () => 5 });
-  const data = createHttpServer({ config, connections, proposals, serverBuild: "srv-a" });
-  for (const s of [admin, data]) await new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()));
-  const url = (s: typeof admin) => `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
-  const a = url(admin);
-  const d = url(data);
+  const server = createServer(createAdminHandler({ config, connections, proposals, serverBuild: "srv-a", uptimeSeconds: () => 5 }));
+  const service = createHttpServer({ config, connections, proposals, serverBuild: "srv-a" });
+  await Promise.all([server, service].map((s) => new Promise<void>((r) => s.listen(0, "127.0.0.1", () => r()))));
+  const a = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const d = `http://127.0.0.1:${(service.address() as AddressInfo).port}`;
   const put = (body: unknown) => fetch(`${a}/admin/api/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (initialConfig) await put({ mcp_bearer: MCP_BEARER, clients: [{ client_id: "laptop", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode: "read_only" }] }] });
   const close = async () => {
     connections.stop();
-    for (const s of [admin, data]) {
+    for (const s of [server, service]) {
       s.closeAllConnections();
       await new Promise<void>((r) => s.close(() => r()));
     }
@@ -91,10 +91,12 @@ test("no response carries a digest, a bearer or a credential; a generated creden
   await rt.close();
 });
 
-test("the admin surface is its own listener: the data plane has no admin path and the admin has no data-plane path", async () => {
+test("two listeners: admin paths only under / and /admin on the admin port; the service port serves only its own families and 404s the admin paths", async () => {
   const rt = await start(true);
-  for (const p of ["/admin", "/admin/api/state", "/admin/api/config"]) assert.equal((await fetch(`${rt.d}${p}`, { headers: { Authorization: `Bearer ${MCP_BEARER}` } })).status, 404, p);
-  for (const p of ["/mcp", "/health", "/client"]) assert.equal((await fetch(`${rt.a}${p}`)).status, 404, p);
+  for (const p of ["/admin-x", "/administrator", "/mcp/admin", "/client", "/mcp", "/health"]) assert.equal((await fetch(`${rt.a}${p}`)).status, 404, `admin port ${p}`);
+  for (const p of ["/", "/admin", "/admin/api/state", "/admin/api/config", "/admin/api/proposal"]) assert.equal((await fetch(`${rt.d}${p}`)).status, 404, `service port ${p}`);
+  assert.equal((await fetch(`${rt.d}/mcp`, { method: "POST" })).status, 401, "the MCP route still needs its bearer");
+  assert.equal((await fetch(`${rt.d}/health`, { headers: { Authorization: `Bearer ${MCP_BEARER}` } })).status, 200);
   assert.equal((await fetch(`${rt.a}/admin/api/state`, { method: "POST" })).status, 405);
   await rt.close();
 });
@@ -154,5 +156,5 @@ test("static owner audit: admin holds no schema, store, session or health calcul
   assert.ok(!/from "zod"|writeFileSync|renameSync|readFileSync|new Map|new Set|node:crypto|ws"/.test(admin));
   assert.ok(/buildHealth/.test(admin) && /syncAllPolicies/.test(admin));
   const dataPlane = readFileSync(path.join(src, "http-server.ts"), "utf8");
-  assert.ok(!/["`]\/admin|createAdminServer/.test(dataPlane), "the data-plane listener serves no admin route");
+  assert.ok(!/node:fs|syncAllPolicies|ServerConfigStore\(/.test(dataPlane), "the listener only mounts the admin owner, it owns none of it");
 });

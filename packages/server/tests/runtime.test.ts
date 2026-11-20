@@ -17,16 +17,16 @@ const dirs = () => {
   const base = mkdtempSync(path.join(tmpdir(), "reach-runtime-"));
   return { base, config: path.join(base, "private", "config.json"), proposal: path.join(base, "private", "proposal.json"), logs: path.join(base, "logs") };
 };
-const argv = (d: ReturnType<typeof dirs>, extra: string[] = []) => ["--config", d.config, "--proposal", d.proposal, "--logs", d.logs, "--data-port", "0", "--admin-port", "0", "--build", "dev-1", ...extra];
+const argv = (d: ReturnType<typeof dirs>, extra: string[] = []) => ["--config", d.config, "--proposal", d.proposal, "--logs", d.logs, "--port", "0", "--admin-port", "0", "--build", "dev-1", ...extra];
 
-test("server args: required flags, loopback defaults, valid ports, nothing else accepted and no value echoed", () => {
+test("server args: required flags, loopback defaults for both listeners, valid ports, nothing else accepted and no value echoed", () => {
   const d = dirs();
   const args = parseServerArgs(argv(d));
-  assert.deepEqual([args.dataHost, args.adminHost, args.build], ["127.0.0.1", "127.0.0.1", "dev-1"]);
+  assert.deepEqual([args.host, args.adminHost, args.build], ["127.0.0.1", "127.0.0.1", "dev-1"]);
   assert.equal(parseServerArgs(argv(d, ["--repository-commit", "abc"])).repositoryCommit, "abc");
   assert.equal(parseServerArgs(argv(d)).artifacts, undefined, "no artifacts directory unless one is given");
   assert.equal(parseServerArgs(argv(d, ["--artifacts", "/srv/releases"])).artifacts, "/srv/releases");
-  for (const bad of [[], argv(d).slice(2), [...argv(d), "--config", SECRET], [...argv(d), "--bearer", SECRET], argv(d).map((v) => (v === "0" ? "70000" : v)), [...argv(d), "--data-host"]]) {
+  for (const bad of [[], argv(d).slice(2), [...argv(d), "--config", SECRET], [...argv(d), "--bearer", SECRET], argv(d).map((v) => (v === "0" ? "70000" : v)), argv(d).filter((v, i, a) => v !== "--admin-port" && a[i - 1] !== "--admin-port"), [...argv(d), "--host"]]) {
     assert.throws(() => parseServerArgs(bad), (e: unknown) => e instanceof CliError && !e.message.includes(SECRET));
   }
 });
@@ -34,7 +34,7 @@ test("server args: required flags, loopback defaults, valid ports, nothing else 
 test("setup mode: with no config the admin works and the data plane fails closed; the first config opens it without a restart", async () => {
   const d = dirs();
   const server = await startServer(parseServerArgs(argv(d)));
-  const data = `http://127.0.0.1:${server.dataPort}`;
+  const data = `http://127.0.0.1:${server.port}`;
   const admin = `http://127.0.0.1:${server.adminPort}`;
   assert.equal(((await (await fetch(`${admin}/admin/api/state`)).json()) as { setup_mode: boolean }).setup_mode, true);
   assert.equal((await fetch(`${data}/health`, { headers: { Authorization: `Bearer ${BEARER}` } })).status, 503);
@@ -44,7 +44,7 @@ test("setup mode: with no config the admin works and the data plane fails closed
   assert.equal(health.status, 200, "usable without a restart");
   assert.equal(((await health.json()) as { server_build: string }).server_build, "dev-1");
   await server.stop();
-  await assert.rejects(fetch(`${data}/health`), "the data listener is closed");
+  await assert.rejects(fetch(`${data}/health`), "the service listener is closed");
   await assert.rejects(fetch(`${admin}/admin/api/state`), "the admin listener is closed");
   const logs = readdirSync(d.logs).map((f) => readFileSync(path.join(d.logs, f), "utf8")).join("\n");
   assert.match(logs, /runtime configuration is not active, setup mode/);
@@ -52,30 +52,28 @@ test("setup mode: with no config the admin works and the data plane fails closed
   assert.ok(!logs.includes(BEARER));
 });
 
-test("--artifacts wires the release routes on the admin listener of the real Server: manifest and artifact bytes with the MCP bearer, 404 without the flag", async () => {
+test("--artifacts wires the public release routes on the service listener of the real Server: manifest and artifact bytes with no credential, 404 without the flag", async () => {
   const d = dirs();
   const artifacts = path.join(d.base, "release");
   mkdirSync(artifacts);
   writeFileSync(path.join(artifacts, "manifest.json"), '{"release":"r-1"}');
   writeFileSync(path.join(artifacts, "reach-client-linux-x64.tar.gz"), "client-bytes");
   const withFlag = await startServer(parseServerArgs(argv(d, ["--artifacts", artifacts])));
-  const admin = `http://127.0.0.1:${withFlag.adminPort}`;
-  const auth = { headers: { Authorization: `Bearer ${BEARER}` } };
-  assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
-  assert.equal(await (await fetch(`${admin}/admin/api/release/manifest`, auth)).text(), '{"release":"r-1"}');
-  assert.equal(await (await fetch(`${admin}/admin/api/release/artifacts/reach-client-linux-x64.tar.gz`, auth)).text(), "client-bytes");
-  assert.equal((await fetch(`${admin}/admin/api/release/manifest`)).status, 401);
+  const service = `http://127.0.0.1:${withFlag.port}`;
+  assert.equal(await (await fetch(`${service}/release/manifest`)).text(), '{"release":"r-1"}', "setup mode, no credential");
+  assert.equal(await (await fetch(`${service}/release/artifacts/reach-client-linux-x64.tar.gz`)).text(), "client-bytes");
+  assert.equal((await fetch(`http://127.0.0.1:${withFlag.adminPort}/release/manifest`)).status, 404, "never on the admin listener");
   await withFlag.stop();
   const withoutFlag = await startServer(parseServerArgs(argv(d)));
-  assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.adminPort}/admin/api/release/manifest`, auth)).status, 404, "configured, authenticated, but no artifacts source");
+  assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.port}/release/manifest`)).status, 404, "no artifacts source");
   await withoutFlag.stop();
 });
 
 test("Server and Client runtimes handshake over loopback from temporary private files, with the same build id", async () => {
   const d = dirs();
   const server: RunningServer = await startServer(parseServerArgs(argv(d)));
+  const data = `http://127.0.0.1:${server.port}`;
   const admin = `http://127.0.0.1:${server.adminPort}`;
-  const data = `http://127.0.0.1:${server.dataPort}`;
   const root = mkdtempSync(path.join(tmpdir(), "reach-anchor-"));
   const put = (body: unknown) => fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify(body) });
   const project = { project_id: "web", physical_root: root, mode: "read_only" };
@@ -83,7 +81,7 @@ test("Server and Client runtimes handshake over loopback from temporary private 
   const credential = ((await (await fetch(`${admin}/admin/api/clients/laptop/credential`, { method: "POST" })).json()) as { result: { credential: string } }).result.credential;
   assert.equal((await put({ clients: [{ client_id: "laptop", enabled: true, projects: [project] }] })).status, 200);
   const file = path.join(d.base, "bootstrap.env");
-  writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:${server.dataPort}/client\nREACH_CLIENT_ID=laptop\nREACH_CLIENT_CREDENTIAL=${credential}\nREACH_ROOTS=${JSON.stringify([root])}\n`);
+  writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:${server.port}/client\nREACH_CLIENT_ID=laptop\nREACH_CLIENT_CREDENTIAL=${credential}\nREACH_ROOTS=${JSON.stringify([root])}\n`);
   chmodSync(file, 0o600);
   const client = startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true });
   const connected = async () => ((await (await fetch(`${data}/health`, { headers: { Authorization: `Bearer ${BEARER}` } })).json()) as { clients: { connected: number } }).clients.connected;
@@ -103,13 +101,14 @@ test("the real Server process starts in setup mode and exits cleanly on SIGTERM"
   let out = "";
   child.stdout.on("data", (c: Buffer) => (out += c.toString()));
   for (let i = 0; i < 100 && !out.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
-  const ports = /data=(\d+) admin=(\d+)/.exec(out);
-  assert.ok(ports, "announced its ports");
-  assert.equal(((await (await fetch(`http://127.0.0.1:${ports[2]}/admin/api/state`)).json()) as { setup_mode: boolean }).setup_mode, true);
+  const port = /listening port=(\d+) admin_port=(\d+)/.exec(out);
+  assert.ok(port, "announced its two ports");
+  assert.equal(((await (await fetch(`http://127.0.0.1:${port[2]}/admin/api/state`)).json()) as { setup_mode: boolean }).setup_mode, true);
   const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
   child.kill("SIGTERM");
   assert.equal(await exited, 0);
-  await assert.rejects(fetch(`http://127.0.0.1:${ports[1]}/health`));
+  await assert.rejects(fetch(`http://127.0.0.1:${port[1]}/health`));
+  await assert.rejects(fetch(`http://127.0.0.1:${port[2]}/admin/api/state`));
 });
 
 test("the Server process refuses bad arguments with a usage line and exit code 2, echoing no value", () => {
@@ -122,9 +121,9 @@ test("composition owner audit: each owner is built once, in runtime.ts only", as
   const { readdirSync: ls } = await import("node:fs");
   const files = [...ls(SRC).map((f) => path.join(SRC, f)), ...ls(path.join(ROOT, "packages", "client", "src")).map((f) => path.join(ROOT, "packages", "client", "src", f))];
   const count = (re: RegExp) => files.filter((f) => !f.endsWith("runtime.ts")).filter((f) => re.test(readFileSync(f, "utf8")));
-  assert.deepEqual(count(/new ServerConfigStore\(|new ClientConnectionRegistry\(|new ProposalStore\(|new RotatingTextWriter\(|= createHttpServer\(|= createAdminServer\(|new ClientTransport\(|new ClientDispatcher\(/), []);
+  assert.deepEqual(count(/new ServerConfigStore\(|new ClientConnectionRegistry\(|new ProposalStore\(|new RotatingTextWriter\(|= createHttpServer\(|= createAdminHandler\(|= createReleaseHandler\(|new ClientTransport\(|new ClientDispatcher\(/), []);
   const runtime = readFileSync(path.join(SRC, "runtime.ts"), "utf8");
-  for (const [name, expected] of [["new ServerConfigStore(", 1], ["new ClientConnectionRegistry(", 1], ["new ProposalStore(", 1], ["new RotatingTextWriter(", 2], ["createHttpServer(common", 1], ["createAdminServer(", 1]] as const) {
+  for (const [name, expected] of [["new ServerConfigStore(", 1], ["new ClientConnectionRegistry(", 1], ["new ProposalStore(", 1], ["new RotatingTextWriter(", 2], ["createHttpServer({ ...common", 1], ["createAdminHandler(", 1], ["createReleaseHandler(", 1]] as const) {
     assert.equal(runtime.split(name).length - 1, expected, name);
   }
   assert.ok(!/process\.env|child_process|spawn|setInterval/.test(runtime), "no env contract, subprocess or supervisor loop");
@@ -144,6 +143,6 @@ test("DEV unit files: only the approved /reach layout, no credential, no obsolet
     assert.match(text, /Restart=on-failure/);
     assert.match(text, /^User=dev$/m);
   }
-  assert.match(units[0]?.text ?? "", /--data-host 127\.0\.0\.1/);
+  assert.match(units[0]?.text ?? "", /--host 127\.0\.0\.1 --port 8787 --admin-host 127\.0\.0\.1 --admin-port 8788/);
   assert.match(units[1]?.text ?? "", /--allow-insecure-ws/);
 });

@@ -2,7 +2,7 @@
 
 ## Current state
 
-REACH is still pre-alpha, but the repository now produces installable release artifacts. Public production deployment is not yet declared generally available; Story #10 still owns the production Server image/Compose/CD path.
+REACH is still pre-alpha, but the repository now produces installable release artifacts. Public production deployment is not yet declared generally available, but the repository now contains the validated production Server image/Compose/CD reference path.
 
 ## Build from source (development)
 
@@ -41,41 +41,29 @@ server/
 
 ## Client installation
 
-A REACH Client is installed once per machine, not once per project. The bootstrap file is separate from the installed binaries and remains the operator-owned protected file containing endpoint, Client identity, credential and local physical root anchors.
+A REACH Client is installed once per machine, not once per project. Normal installation is zero-touch from an authorized target-host agent: the installer obtains and verifies the canonical artifact, the Client generates its own `client_id` and Ed25519 keypair locally, enrollment sends only the public key to the Server, protected local state is created automatically, the service is installed, and the persistent outbound connection is proven. The Client private key never leaves the machine.
 
 ### Linux
 
 Default install directory: `/opt/reach-mcp-client`.
 
-```sh
-deploy/client/install-linux.sh \
-  --archive <release-dir>/artifacts/reach-client-linux-x64.tgz \
-  --bootstrap <absolute-protected-bootstrap-file> \
-  --build <build-id> \
-  --user <service-user> \
-  --enable
-```
+The supported normal path is one non-interactive onboarding command executed by an authorized agent on the target host. It resolves the Server endpoint from deployment/private defaults or explicit invocation context, downloads and verifies `reach-client-linux-x64.tgz`, creates protected local identity/state, enrolls automatically, installs the runtime and systemd service, starts it, and verifies connection. The low-level artifact installer remains an internal building block, not the operator workflow.
 
-`--install-dir` explicitly overrides the default. The installer stages/replaces the runtime and generates a systemd unit that runs the installed `reach-client.mjs`. `--allow-insecure-ws` exists only as an explicit DEV/test option.
+`--install-dir` may explicitly override the default. Insecure `ws://` remains an explicit development/test choice; normal secure deployments use the configured transport policy.
 
 ### Windows
 
 Default install directory: `C:\\Program Files\\REACH\\Client`.
 
-```powershell
-.\deploy\client\install-windows.ps1 \
-  -Archive <release-dir>\artifacts\reach-client-win32-x64.zip \
-  -Bootstrap <absolute-protected-bootstrap-file> \
-  -Build <build-id>
-```
+Windows follows the same zero-touch onboarding contract as Linux: one authorized target-host action resolves/downloads/verifies the canonical Windows artifact, creates the Client identity and protected local state, enrolls automatically, installs the machine-level service/task, starts it and verifies connection. Platform-specific packaging differs; identity, admission, policy and operator experience do not.
 
-`-InstallDir` explicitly overrides the default. The installer registers one machine-level Scheduled Task that starts Node with the installed `reach-client.mjs`. Native Windows execution of this installer remains to be proven on a Windows host; the current repository validation proves its structure and release layout only.
+`-InstallDir` may explicitly override the default. Native Windows execution still requires real-host proof before general availability.
 
 ## Server distribution
 
-The Server release artifact is already self-contained and does not require Git/workspace links. Story #10 owns wrapping that runtime in the production non-root Docker image/Compose deployment, controlled CD, rollback and Secure MCP Tunnel exposure.
+The Server release artifact is self-contained and does not require Git/workspace links. The production reference deployment is one Compose project (`reach`) with separate `reach-server` and `reach-tunnel` services, controlled CD and explicit rollback. See [production-deployment.md](production-deployment.md).
 
-The Server admin listener is a separate exposure boundary. Authenticated release-manifest/Client-artifact retrieval exists there; it is not an MCP tool and must not be exposed through the public MCP tunnel by default.
+The Server uses two ports: 8787 for `/mcp`, `/client`, `/health` and the read-only release downloads under `/release/...`, and 8788 for the private Web UI/admin (host loopback by default). The OpenAI MCP tunnel routes only `/mcp` on 8787.
 
 ## Upgrade
 

@@ -47,8 +47,10 @@ KISS and YAGNI are binding: protect against realistic failures; do not build spe
 ### Design principles
 
 - **Outbound only.** Clients dial the Server; target machines expose no inbound REACH port.
-- **Explicit roots.** Nothing is reachable unless a project root is configured; there is no default root.
-- **Read-only by default.** Read operations are annotated as read-only for ChatGPT.
+- **Zero-touch onboarding.** Normal installation starts from one operator instruction to an authorized agent: access the target machine and install the Client. Artifact retrieval, identity creation, enrollment, bootstrap creation, service installation and first connection are automatic.
+- **One owner per responsibility.** Client identity key generation belongs to the Client; public-key admission and routing belong to the Server; private environment defaults belong to deployment/private configuration; filesystem safety belongs to the Client safety engine. No duplicated owner or parallel credential system.
+- **Explicit roots after onboarding.** The onboarding path may propose the agent's current project directory as the initial project root, but the Client must know the exact local anchor it is authorizing and the Server must persist the resulting logical project mapping. There is no source-code hardcoded project root.
+- **Read-only by default outside the controlled writable surface.** Initial controlled write access is limited to `temp/**` with delete-as-trash unless later changed through Server configuration/UI.
 - **Bounded behavior.** Reads, search and listing operate under configurable limits.
 
 ---
@@ -122,6 +124,16 @@ Each Client initiates one authenticated outbound WSS connection to the Server.
 
 Clients may be on different hosts, networks, clouds or countries. They only need outbound reachability to the Server.
 
+### Server network endpoints
+
+The Server exposes **two listeners** with separate responsibilities. **8787** is the service plane: `/mcp` for ChatGPT-facing MCP, `/client` for persistent Client WebSocket sessions, `/health`, read-only release routes under `/release/...`, and the minimal Client enrollment exchange needed for zero-touch installation. **8788** is the administrative plane: `/` and `/admin/...` only.
+
+The OpenAI Secure MCP Tunnel routes only `/mcp` on 8787. Client machines reach the Server directly on the local/private network; Client↔Server traffic does not depend on the OpenAI tunnel.
+
+Administrative reachability is not hardcoded in public source. The deployment/private configuration defines the allowed source IP or CIDR for 8788; by default in the owner's environment this is the same trusted network as the development/operator machine. The listener/firewall exposure enforces that boundary. The Web UI may later change Clients, projects, roots, modes and key rotation, but it is not required for first installation.
+
+Release download and first enrollment require only service-plane network reachability. No admin tunnel, manual credential relay or manual bootstrap editing is part of the normal onboarding path.
+
 Shared storage, NFS, SMB or centralized filesystems may be used by an operator but are **not** REACH architecture requirements.
 
 ---
@@ -177,11 +189,11 @@ flowchart TB
         HITL["Pending Proposal + HITL Approval"]
         LOG["Operational Log"]
         AUDIT["Audit Log"]
-        PRIV["/reach/reach-private"]
+        PRIV["Deployment-owned persistent configuration"]
     end
 
     subgraph CLIENTA["🟢 REACH Client — Host A"]
-        CA["WSS Client + Auth"]
+        CA["Persistent WebSocket Client\nEd25519 challenge auth"]
         DA["Typed Operation Dispatcher"]
         FSA["Filesystem Safety Engine"]
         RA["Locally Anchored Roots"]
@@ -189,7 +201,7 @@ flowchart TB
     end
 
     subgraph CLIENTB["🟢 REACH Client — Host B"]
-        CB["WSS Client + Auth"]
+        CB["Persistent WebSocket Client\nEd25519 challenge auth"]
         DB["Typed Operation Dispatcher"]
         FSB["Filesystem Safety Engine"]
         RB["Locally Anchored Roots"]
@@ -254,7 +266,7 @@ flowchart LR
 
     subgraph CLIENT["packages/client"]
         CWSS["WSS Connector"]
-        CAUTH["Client Auth"]
+        CAUTH["Ed25519 Identity + Challenge Auth"]
         CDISPATCH["Operation Dispatcher"]
         CQUEUE["Per-project Mutation Queue"]
         CROOT["Local Root Anchor"]
@@ -365,30 +377,35 @@ flowchart TB
 
 ## 3B. Critical sequence diagrams
 
-### Sequence — Client enrollment and first connection
+### Sequence — zero-touch Client enrollment and first connection
 
 ```mermaid
 sequenceDiagram
     actor O as 👤 Operator
-    participant UI as 🟡 Web UI
-    participant S as 🔥 REACH Server
+    participant A as 🤖 Authorized install agent
     participant C as 🟢 REACH Client
+    participant S as 🔥 REACH Server
 
-    rect rgb(255, 248, 220)
-        O->>UI: Create Client
-        UI->>S: Register client
-        S-->>UI: client_id + one-time credential
-        UI-->>O: Show credential once
-    end
-
-    rect rgb(232, 245, 233)
-        O->>C: Install/configure endpoint, id, token, local root anchors
-        C->>S: Open authenticated outbound WSS
-        S->>S: Validate identity + duplicate-session rule
-        S-->>C: Connection accepted
-        S->>S: Mark Client ONLINE
-    end
+    O->>A: Access machine X and install the Client
+    A->>S: GET release manifest + platform artifact
+    A->>A: Verify hash/size and install runtime
+    A->>C: Start first-run enrollment
+    C->>C: Generate client_id + Ed25519 keypair locally
+    C->>C: Keep private key local only
+    C->>S: Enrollment(public key + non-secret metadata)
+    S->>S: Auto-admit from trusted service network/default policy
+    S-->>C: Enrollment accepted + effective project/policy defaults
+    C->>C: Persist private key + local bootstrap/anchors with restrictive permissions
+    C->>S: Open persistent WebSocket
+    S-->>C: Random challenge
+    C-->>S: Ed25519 signature(challenge)
+    S->>S: Verify signature with stored public key
+    S-->>C: Connection accepted
+    S->>S: Mark Client ONLINE
+    A-->>O: Connected
 ```
+
+The Server never receives or stores the Client private key. The public key is the Server-side identity material and may be mirrored in the owner's private recovery/configuration repository. Authentication happens when a WebSocket connection is opened; ordinary messages on that established connection are not re-signed individually. Reconnection performs a fresh challenge/response.
 
 ### Sequence — Normal filesystem read/write request
 
@@ -542,21 +559,25 @@ The Client is intentionally thin.
 
 It:
 
-- establishes/re-establishes the outbound WSS connection;
-- authenticates with a unique client identity and credential;
+- generates and owns its unique Ed25519 private/public keypair;
+- keeps the private key local and never transmits it;
+- establishes/re-establishes the persistent outbound WebSocket connection;
+- proves identity once per connection by signing a Server challenge with Ed25519;
 - receives typed filesystem operations;
 - executes them locally;
 - enforces non-negotiable code-level safety invariants.
 
-The Client is an execution/enforcement point, not an independent configuration authority.
+The Client is an execution/enforcement point and identity-key owner, not an independent operational policy authority.
 
 ### Local root anchor
 
-The Server remains the operational configuration authority, but each Client has one minimal local safety boundary established during enrollment: the set of physical base roots that this Client is ever allowed to expose.
+The Server remains the operational configuration authority, but each Client has one minimal local safety boundary established during onboarding: the set of physical base roots that this Client is ever allowed to expose.
 
-The Server may define logical projects, modes, allowlists, deny rules and limits only inside those locally authorized roots. The Client refuses any Server configuration or request that resolves outside that local root set.
+For the normal zero-touch install, the authorized agent proposes the directory in which it is operating as the initial project/root when that is unambiguous. If confirmation is needed, the only normal question is whether that proposed directory should be the initial root. Controlled write access initially remains limited to `temp/**`; everything else follows the configured mode and safety rules.
 
-This is not a second policy system. It is a host-level blast-radius boundary stored in the same local env-style configuration used for Server endpoint, client identity and credential.
+The Server may define logical projects, modes, allowlists, deny rules and limits only inside locally authorized roots. The Client refuses any Server configuration or request that resolves outside that local root set.
+
+This is not a second policy system. It is a host-level blast-radius boundary stored in the Client's protected local state together with the Server endpoint, client identity and private key. Private environment defaults and recovery metadata belong to deployment/private configuration, not public source.
 
 When Server configuration changes, the effective project/root policy is sent to the Client. The Client validates the received policy against its local root anchors before accepting it; any policy that escapes those anchors is rejected.
 
@@ -649,35 +670,45 @@ Targeted `edit_file`-style mutation remains the preferred mechanism when safe ma
 
 ---
 
-## 7. Client identity, enrollment and credentials
+## 7. Client identity, enrollment and keys
 
 Each Client has:
 
 - a unique `client_id`;
-- a unique strong random credential generated by Server/Web UI.
+- one Ed25519 keypair generated locally by that Client;
+- one private key that never leaves the Client machine;
+- one public key stored by the Server as the Client authentication identity.
 
-### MVP enrollment
+### Zero-touch enrollment
 
-1. operator creates/registers the Client in Web UI;
-2. Server generates `client_id` + credential;
-3. credential is displayed exactly once during enrollment/rotation and is not recoverable afterward;
-4. operator/installer/Claude places Server endpoint, `client_id` and credential on the target Client;
-5. Client stores them in a private local env-style `KEY=VALUE` configuration file with restrictive filesystem permissions where supported;
-6. the same local file records the physical base root(s) that this Client is allowed to expose;
-7. Client establishes authenticated outbound WSS.
+Normal enrollment is automatic when an authorized agent can access the target machine and the machine can reach the Server service plane:
 
-Manual/explicit first enrollment is intentional. No automatic remote enrollment is required for MVP.
+1. the agent downloads the correct platform Client artifact from the Server and verifies the release manifest/hash;
+2. the Client generates its `client_id` and Ed25519 keypair locally;
+3. the Client keeps the private key in protected local state and sends only its public key plus non-secret enrollment metadata to the Server;
+4. the Server auto-admits the first connection according to the configured trusted-network/default-onboarding policy;
+5. the Server stores the Client identity/public key and returns effective logical project/policy defaults;
+6. the Client stores the Server endpoint, local private key and physical root anchors in protected local state;
+7. the Client opens a persistent outbound WebSocket;
+8. the Server sends a fresh random challenge and the Client signs it with Ed25519;
+9. the Server verifies the signature with the stored public key and accepts the connection.
 
-### Credential rotation
+The normal operator interaction is one instruction: access machine X and install the Client. No Web UI data entry, manual credential copy/paste, admin-port tunnel or hand-written bootstrap is part of first enrollment.
+
+The default initial project/root may be proposed from the install agent's current working directory. Any required confirmation is about that root choice only, not about identity or credentials. Controlled write access starts at `temp/**` unless private deployment configuration says otherwise.
+
+### Key rotation
 
 KISS flow:
 
-1. generate new credential;
-2. update Client;
-3. verify reconnection;
-4. revoke old credential.
+1. the operator requests rotation through the administrative UI;
+2. the Server asks the connected Client to generate a fresh Ed25519 keypair locally;
+3. the Client keeps the new private key local and sends only the new public key;
+4. the Server atomically replaces the stored public key;
+5. the Client reconnects and proves possession of the new private key;
+6. the old keypair is no longer accepted.
 
-No dual-credential grace window is required for MVP.
+There is no Server-generated Client secret to display, copy or recover.
 
 ---
 
@@ -685,15 +716,18 @@ No dual-credential grace window is required for MVP.
 
 Exactly one active connection is allowed per `client_id`.
 
+- Client opens one persistent outbound WebSocket to the Server;
+- authentication occurs once per connection with a fresh Server challenge and Ed25519 signature;
+- ordinary messages on an authenticated connection are not individually re-signed;
 - second simultaneous connection for the same `client_id` is rejected explicitly;
 - heartbeat/keepalive determines healthy vs stale;
 - stale/closed connection marks Client offline;
 - while running, Client retries with bounded backoff;
 - if Client/container is stopped, Server simply shows it offline;
-- when Client starts again, it reconnects with the same identity/credential;
+- when Client starts again, it reconnects with the same identity and performs a new challenge/response;
 - exact heartbeat/retry intervals are configuration/implementation details, not architecture constants.
 
-The Server is authority for admission, routing, heartbeat state and lifecycle policy.
+The Client owns its private identity key. The Server owns admission, the Client public-key registry, routing, heartbeat state and lifecycle policy.
 
 The Client initiates transport because the Server may not be able to open an inbound connection through NAT/firewall.
 
@@ -717,7 +751,7 @@ The source repository, private operator material and installed Client runtime ar
 
 ### Server
 
-Production runs from a built Server artifact/image and does not require Git metadata or a working source checkout. Server configuration/proposals and operational logs are explicit deployment inputs/mounts; no generic state directory is required.
+Production runs from a built Server artifact/image and does not require Git metadata or a working source checkout. Server configuration, proposal state, operational logs and tunnel material are explicit deployment inputs/mounts derived from an operator-selected persistent root; no source repository path is part of the product contract.
 
 ### Private configuration
 
@@ -734,7 +768,7 @@ Both are explicitly overridable by the operator. The bootstrap file is separate 
 
 ### Persistence
 
-Persistence is explicit and deployment-owned. Server private configuration and logs may be mounted/persisted by the deployment; the Client bootstrap remains a protected operator file. REACH does not invent a generic `runtime`/state volume as a product abstraction.
+Persistence is explicit and deployment-owned. Production accepts an operator-selected persistent root as an installation input, then mounts only the concrete files/directories each service needs. The root may be empty on first boot (setup mode) or pre-seeded from operator backup/recovery material. The Client bootstrap remains a separate protected operator file. REACH does not require any particular storage backend or private repository.
 
 ---
 
@@ -747,7 +781,7 @@ If required private configuration is missing/incomplete:
 - MCP endpoint remains reachable enough to report that setup is required and provide the setup location/instructions;
 - project operations remain unavailable until setup completes.
 
-The administrative Web UI/API is served over HTTP as a separate exposure boundary from the ChatGPT MCP tunnel and is not published through the ChatGPT tunnel path by default.
+The administrative Web UI/API is served over HTTP under `/admin/...` of the private 8788 listener and is not published through the ChatGPT tunnel path, which routes only `/mcp`.
 
 Web UI is the canonical production configuration path.
 
@@ -1066,7 +1100,7 @@ Do not hide limitations and do not overstate maturity.
 
 1. **Security baseline**
    - authenticated WSS;
-   - unique Client credentials;
+   - unique Client Ed25519 identities with Client-held private keys;
    - root confinement;
    - symlink refusal;
    - default secret protection;
@@ -1116,9 +1150,9 @@ Public repository/history must contain no real secrets, credentials, private key
 
 ---
 
-## 24. Private repository boundary
+## 24. Private operator recovery boundary
 
-`reach-private` is private, GitLab-only recovery/configuration material for the Product Owner environment.
+The public product has no dependency on an operator's private repository. An operator may maintain separate private recovery/configuration material and use it to seed or restore the deployment-owned persistent root.
 
 It may contain:
 
@@ -1135,7 +1169,7 @@ Do not force Vault/KMS/SOPS or another secret subsystem unless later requested.
 
 Rules:
 
-- never mirror `reach-private` to public GitHub;
+- never publish operator-private recovery/configuration material to public GitHub;
 - public `reach-mcp` must not contain real secrets;
 - normal GPT/Claude workflows should not print secret values;
 - logs/CI must not echo secrets.

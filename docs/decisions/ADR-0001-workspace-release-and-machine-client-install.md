@@ -12,7 +12,7 @@ The design must keep one source of truth for shared security primitives, avoid S
 
 2. **Filesystem remove remains single-owned.** `FilesystemWriter` remains the only remove-to-trash owner. Each physical writable root owns its own managed `.lixeira`; cross-filesystem moves use rename first and an EXDEV-only safe copy-then-remove fallback.
 
-3. **Admin is API-first.** Server-side config/proposal/auth owners remain authoritative. The browser is a thin consumer. Release manifest/Client artifact retrieval is an authenticated non-MCP admin API using the existing bearer owner and an explicit construction-time artifact catalog.
+3. **Admin is API-first.** Server-side config/proposal/auth owners remain authoritative. The browser is a thin consumer. **Artifact exposure portion superseded by ADR-0003:** release manifest/Client artifact retrieval remains authenticated, non-MCP and catalog-gated, but is served from the dedicated read-only artifact distribution plane rather than the private admin listener.
 
 4. **One coordinated release identity.** One release build produces a Linux x64 Server runtime, Linux x64 Client `.tgz`, Windows x64 Client `.zip` and manifest v1 from one opaque build id/repository commit. Manifest v1 requires exactly those three role/platform artifacts, hashes final bytes and declares exact compatibility: `client_build == server_build`.
 

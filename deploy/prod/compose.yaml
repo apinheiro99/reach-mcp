@@ -1,0 +1,44 @@
+# Production Server. It runs an image already built by deploy/prod/build-image.mjs; Compose never builds from source.
+# The three host paths below must already exist (Docker would create a missing path as a directory) and be set by the operator:
+#   REACH_CONFIG_FILE    a file the container user (uid 1000) can read and write: the Server stores its configuration there
+#   REACH_PROPOSAL_FILE  a file the container user can read and write
+#   REACH_LOG_DIR        a directory the container user can write
+# The Secure MCP Tunnel is the second service of the same stack. It is an operator-provided static binary plus a private directory holding
+# its configuration and credentials, never baked into an image:
+#   REACH_TUNNEL_BINARY  the tunnel-client executable (a regular file)
+#   REACH_TUNNEL_DIR     a directory readable by uid 1000 with tunnel-client.yaml, api-key and mcp.auth (rotating them needs no rebuild)
+# The container is named reach-server (override with REACH_CONTAINER_NAME); the Compose project name stays the controller's.
+# Two published ports: 8787 serves MCP, Client WSS, health and the public release downloads and is published on all host addresses by
+# default so Client machines can reach it (REACH_BIND narrows it); 8788 serves only the Web UI and admin API, has no login of its own and
+# is published on host loopback by default (REACH_ADMIN_BIND, never a broad address). Nothing else listens.
+services:
+  reach-server:
+    container_name: ${REACH_CONTAINER_NAME:-reach-server}
+    image: ${REACH_IMAGE:?set REACH_IMAGE to the tag produced by build-image.mjs}
+    restart: unless-stopped
+    volumes:
+      - ${REACH_CONFIG_FILE:?absolute path of the config file}:/run/reach/config.json
+      - ${REACH_PROPOSAL_FILE:?absolute path of the proposal file}:/run/reach/proposal.json
+      - ${REACH_LOG_DIR:?absolute path of the log directory}:/var/log/reach
+    ports:
+      - "${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787"
+      - "${REACH_ADMIN_BIND:-127.0.0.1}:${REACH_ADMIN_PORT:-8788}:8788"
+
+  # Only /mcp is routed (reach-server:8787 over the internal Compose network, set in tunnel-client.yaml); the admin
+  # routes are never a tunnel route. The Server does not depend on the tunnel: it stays healthy while the tunnel restarts.
+  reach-tunnel:
+    container_name: ${REACH_TUNNEL_CONTAINER_NAME:-reach-tunnel}
+    image: ${REACH_TUNNEL_BASE_IMAGE:-node:24-bookworm-slim}
+    restart: unless-stopped
+    user: "1000:1000"
+    # Wait until the Server answers before starting: the tunnel checks the target once at startup and would stay not-ready if it started first
+    # (Docker restarts containers after a reboot without any ordering). The Server never waits for the tunnel.
+    command:
+      - sh
+      - -c
+      - "until node -e 'fetch(\"http://reach-server:8787/health\").then(() => process.exit(0), () => process.exit(1))'; do sleep 2; done; exec /usr/local/bin/tunnel-client run --config /run/reach-tunnel/tunnel-client.yaml"
+    volumes:
+      - ${REACH_TUNNEL_BINARY:?absolute path of the tunnel-client binary}:/usr/local/bin/tunnel-client:ro
+      - ${REACH_TUNNEL_DIR:?absolute path of the tunnel config and credentials directory}:/run/reach-tunnel:ro
+      # The slim base image has no CA store and the Go tunnel-client verifies TLS against the system roots: share the host's.
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro

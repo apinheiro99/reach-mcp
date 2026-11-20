@@ -1,12 +1,18 @@
 # Baseline CI: every validation job is blocking. Validation logic lives in package.json scripts.
+# Every validation job publishes a compact always-on summary artifact, including on failure.
 # The tag stage is self-contained and records the aggregate result directly in this repository.
 # Tag contract: vYYYY.MM.NNNNNN[-fail].
 # GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
+# Production delivery: the release is built only from a passing default-branch or Task-branch pipeline. The default branch deploys automatically after it; a Task branch deploys by itself
+# as Deploy Candidate, for the exact pipeline SHA (live acceptance before merge); rollback stays manual; the logic lives in
+# deploy/prod/deploy.mjs, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
 image: node:24-bookworm
 
 stages:
   - validate
   - tag
+  - release
+  - deploy
 
 default:
   tags:
@@ -21,41 +27,60 @@ default:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push"'
 
+.validation-summary:
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - ci-summary/
+
 "Public Release Check":
-  extends: .branch-push-only
+  extends:
+    - .branch-push-only
+    - .validation-summary
   stage: validate
   script:
-    - npm run check:public-surface
+    - node scripts/validation-summary.mjs "Public Release Check" npm run check:public-surface
 
 "Lint":
-  extends: .branch-push-only
+  extends:
+    - .branch-push-only
+    - .validation-summary
   stage: validate
   script:
-    - npm run lint
+    - node scripts/validation-summary.mjs "Lint" npm run lint
 
 "Type Check":
-  extends: .branch-push-only
+  extends:
+    - .branch-push-only
+    - .validation-summary
   stage: validate
   script:
-    - npm run typecheck
+    - node scripts/validation-summary.mjs "Type Check" npm run typecheck
 
 "Automated Tests":
-  extends: .branch-push-only
+  extends:
+    - .branch-push-only
+    - .validation-summary
   stage: validate
   script:
-    - npm test
+    - node scripts/validation-summary.mjs "Automated Tests" npm test
 
 "Package Check":
-  extends: .branch-push-only
+  extends:
+    - .branch-push-only
+    - .validation-summary
   stage: validate
   script:
-    - npm run check:package
+    - node scripts/validation-summary.mjs "Package Check" npm run check:package
 
 "Release Check":
-  extends: .branch-push-only
+  extends:
+    - .branch-push-only
+    - .validation-summary
   stage: validate
   script:
-    - npm run check:release
+    - node scripts/validation-summary.mjs "Release Check" npm run check:release
 
 .ci-tag:
   stage: tag
@@ -91,3 +116,82 @@ ci-tag-red:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push"'
       when: on_failure
+
+.release-push:
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^feature\/task-/'
+
+"Build Release":
+  extends: .release-push
+  stage: release
+  needs:
+    - "Public Release Check"
+    - "Lint"
+    - "Type Check"
+    - "Automated Tests"
+    - "Package Check"
+    - "Release Check"
+  script:
+    - node scripts/release.mjs build --build-id "$CI_COMMIT_SHORT_SHA" --repository-commit "$CI_COMMIT_SHA" --out release
+    - node scripts/release.mjs verify --out release
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - release/
+
+.deploy-job:
+  stage: deploy
+  before_script: []
+  interruptible: false
+  resource_group: production
+  tags:
+    - docker-prod
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - deploy-evidence/
+
+# The one deployment script: the release built by "Build Release" for this pipeline's SHA goes through the controller.
+.deploy-release:
+  extends: .deploy-job
+  needs:
+    - job: "Build Release"
+      artifacts: true
+  script:
+    - npm ci
+    - export REACH_ROOT="$HOME/reach-prod"
+    - mkdir -p "$REACH_ROOT/config" "$REACH_ROOT/logs" deploy-evidence
+    - node deploy/prod/deploy.mjs deploy --release release --state "$REACH_ROOT/state" --config "$REACH_ROOT/config/server.json" --proposal "$REACH_ROOT/config/proposal.json" --logs "$REACH_ROOT/logs" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --evidence deploy-evidence/evidence.json
+
+"Deploy Production":
+  extends: .deploy-release
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+# Live acceptance of one validated Task-branch SHA before merge (PO order: no button): runs by itself only once "Build Release" (which needs every validation job) has passed.
+"Deploy Candidate":
+  extends: .deploy-release
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH =~ /^feature\/task-/'
+
+"Rollback Production":
+  extends: .deploy-job
+  needs: []
+  script:
+    - npm ci
+    - export REACH_ROOT="$HOME/reach-prod"
+    - mkdir -p "$REACH_ROOT/logs" deploy-evidence
+    - node deploy/prod/deploy.mjs rollback --state "$REACH_ROOT/state" --logs "$REACH_ROOT/logs" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --evidence deploy-evidence/evidence.json
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
