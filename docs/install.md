@@ -41,35 +41,23 @@ server/
 
 ## Client installation
 
-A REACH Client is installed once per machine, not once per project. The bootstrap file is separate from the installed binaries and remains the operator-owned protected file containing endpoint, Client identity, credential and local physical root anchors.
+A REACH Client is installed once per machine, not once per project. Normal installation is zero-touch from an authorized target-host agent: the installer obtains and verifies the canonical artifact, the Client generates its own `client_id` and Ed25519 keypair locally, enrollment sends only the public key to the Server, protected local state is created automatically, the service is installed, and the persistent outbound connection is proven. The Client private key never leaves the machine.
 
 ### Linux
 
 Default install directory: `/opt/reach-mcp-client`.
 
-```sh
-deploy/client/install-linux.sh \
-  --archive <release-dir>/artifacts/reach-client-linux-x64.tgz \
-  --bootstrap <absolute-protected-bootstrap-file> \
-  --build <build-id> \
-  --user <service-user> \
-  --enable
-```
+The supported normal path is one non-interactive onboarding command executed by an authorized agent on the target host. It resolves the Server endpoint from deployment/private defaults or explicit invocation context, downloads and verifies `reach-client-linux-x64.tgz`, creates protected local identity/state, enrolls automatically, installs the runtime and systemd service, starts it, and verifies connection. The low-level artifact installer remains an internal building block, not the operator workflow.
 
-`--install-dir` explicitly overrides the default. The installer stages/replaces the runtime and generates a systemd unit that runs the installed `reach-client.mjs`. `--allow-insecure-ws` exists only as an explicit DEV/test option.
+`--install-dir` may explicitly override the default. Insecure `ws://` remains an explicit development/test choice; normal secure deployments use the configured transport policy.
 
 ### Windows
 
 Default install directory: `C:\\Program Files\\REACH\\Client`.
 
-```powershell
-.\deploy\client\install-windows.ps1 \
-  -Archive <release-dir>\artifacts\reach-client-win32-x64.zip \
-  -Bootstrap <absolute-protected-bootstrap-file> \
-  -Build <build-id>
-```
+Windows follows the same zero-touch onboarding contract as Linux: one authorized target-host action resolves/downloads/verifies the canonical Windows artifact, creates the Client identity and protected local state, enrolls automatically, installs the machine-level service/task, starts it and verifies connection. Platform-specific packaging differs; identity, admission, policy and operator experience do not.
 
-`-InstallDir` explicitly overrides the default. The installer registers one machine-level Scheduled Task that starts Node with the installed `reach-client.mjs`. Native Windows execution of this installer remains to be proven on a Windows host; the current repository validation proves its structure and release layout only.
+`-InstallDir` may explicitly override the default. Native Windows execution still requires real-host proof before general availability.
 
 ## Server distribution
 
