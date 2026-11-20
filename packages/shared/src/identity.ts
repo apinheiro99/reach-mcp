@@ -17,7 +17,8 @@ const publicKeyOf = (key: KeyObject): string => Buffer.from(String(createPublicK
 export function generateIdentityKey(): { privateKey: string; publicKey: string } {
   const { privateKey } = generateKeyPairSync("ed25519");
   const der = privateKey.export({ format: "der", type: "pkcs8" });
-  return { privateKey: der.toString("base64url"), publicKey: publicKeyOf(privateKey) };
+  const enc = der.toString("base64url");
+  return { privateKey: enc, publicKey: publicKeyOf(privateKey) };
 }
 
 /** Parses a stored private key; throws a fixed message that never contains the input. */
