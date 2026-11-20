@@ -1,13 +1,12 @@
 // The Server's runtime configuration: one strict JSON document turned into one in-memory snapshot. A reload builds a
 // complete candidate first and swaps it in only when everything validated, so an invalid file never replaces the last
-// good configuration. The file format is an implementation detail. Only a SHA-256 digest of each Client credential is
-// stored. Physical roots belong to the remote Client host and are never checked against this machine's filesystem.
-import { randomBytes } from "node:crypto";
+// good configuration. The file format is an implementation detail. Each Client is stored with its Ed25519 PUBLIC key
+// only; the private key never reaches the Server. Physical roots belong to the remote Client host and are never checked against this machine's filesystem.
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { hashCredential } from "./auth.ts";
-import { ClientId, EffectiveProjectPolicy } from "@reach-mcp/shared/wire";
+import { ClientId, EffectiveProjectPolicy, PublicKey } from "@reach-mcp/shared/wire";
 
 /** SHA-256 of a credential, lowercase hex. */
 const Digest = z.string().regex(/^[0-9a-f]{64}$/, "must be 64 lowercase hex characters");
@@ -16,8 +15,8 @@ const ClientEntry = z.strictObject({
   client_id: ClientId,
   display_name: z.string().min(1).max(100).optional(),
   enabled: z.boolean(),
-  /** SHA-256 of the Client credential, lowercase hex. Required while the Client is enabled. */
-  credential_sha256: Digest.optional(),
+  /** The Client's Ed25519 public key (base64url). Required while the Client is enabled; the private key is never here. */
+  public_key: PublicKey.optional(),
   projects: z.array(EffectiveProjectPolicy).max(200),
 });
 
@@ -35,10 +34,13 @@ export const ServerConfig = z
   })
   .superRefine((config, ctx) => {
     const seen = new Set<string>();
+    const keys = new Set<string>();
     config.clients.forEach((client, c) => {
       if (seen.has(client.client_id)) ctx.addIssue({ code: "custom", path: ["clients", c, "client_id"], message: "duplicate client_id" });
       seen.add(client.client_id);
-      if (client.enabled && !client.credential_sha256) ctx.addIssue({ code: "custom", path: ["clients", c, "credential_sha256"], message: "an enabled client needs a credential digest" });
+      if (client.enabled && !client.public_key) ctx.addIssue({ code: "custom", path: ["clients", c, "public_key"], message: "an enabled client needs a public key" });
+      if (client.public_key && keys.has(client.public_key)) ctx.addIssue({ code: "custom", path: ["clients", c, "public_key"], message: "duplicate public key" });
+      if (client.public_key) keys.add(client.public_key);
       const projects = new Set<string>();
       client.projects.forEach((project, p) => {
         if (projects.has(project.project_id)) ctx.addIssue({ code: "custom", path: ["clients", c, "projects", p, "project_id"], message: "duplicate project_id within a client" });
@@ -48,17 +50,17 @@ export const ServerConfig = z
   });
 export type ServerConfig = z.infer<typeof ServerConfig>;
 
-/** What a human edits through the admin UI: the Clients without digests, and a plaintext MCP bearer only when it changes. */
+/** What a human edits through the admin UI: the Clients without public keys, and a plaintext MCP bearer only when it changes. */
 const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
   logging: LoggingSettings.optional(),
-  clients: z.array(ClientEntry.omit({ credential_sha256: true })).max(500),
+  clients: z.array(ClientEntry.omit({ public_key: true })).max(500),
 });
-/** The shape of editableView(): Clients with their policies and a credential flag, never a digest. Strict, for readers of stored copies. */
+/** The shape of editableView(): Clients with their policies and an enrollment flag, never the key. Strict, for readers of stored copies. */
 export const EditableView = z.strictObject({
   configured: z.boolean(),
   logging: LoggingSettings,
-  clients: z.array(ClientEntry.omit({ credential_sha256: true }).extend({ has_credential: z.boolean() })).max(500),
+  clients: z.array(ClientEntry.omit({ public_key: true }).extend({ has_public_key: z.boolean() })).max(500),
 });
 export type EditableView = z.infer<typeof EditableView>;
 
@@ -66,10 +68,10 @@ export type EditableView = z.infer<typeof EditableView>;
 export const ProposedEdit = AdminEdit.omit({ mcp_bearer: true, logging: true });
 export type ProposedEdit = z.infer<typeof ProposedEdit>;
 
-/** What a caller may read of one Client: never the credential digest. */
+/** What a caller may read of one Client: never its key. */
 export type PublicClient = { client_id: string; display_name?: string; enabled: boolean; projects: EffectiveProjectPolicy[] };
-/** The editable view of one Client: whether a credential exists, never the credential or its digest. */
-export type EditableClient = PublicClient & { has_credential: boolean };
+/** The editable view of one Client: whether it is enrolled (has a public key), never the key itself. */
+export type EditableClient = PublicClient & { has_public_key: boolean };
 
 /** Problems name a path and a rule, never a value from the file. */
 export class ConfigError extends Error {
@@ -124,7 +126,7 @@ export class ServerConfigStore {
     this.#active = parsed.data;
   }
 
-  /** A human edit of the Clients and, optionally, a new MCP bearer: stored digests are carried over by client_id. */
+  /** A human edit of the Clients and, optionally, a new MCP bearer: stored public keys are carried over by client_id. */
   applyEdit(input: unknown): void {
     const parsed = AdminEdit.safeParse(input);
     if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
@@ -142,19 +144,17 @@ export class ServerConfigStore {
     return parsed.data;
   }
 
-  /** Generates a Client credential, stores only its digest and returns the plaintext, which exists nowhere else. */
-  issueCredential(clientId: string): string {
+  /** Registers a previously unknown Client with its public key as one atomic write; the entry has no project until a human or proposal adds one. */
+  enrollClient(clientId: string, publicKey: string, displayName?: string): void {
     const active = this.#requireActive();
-    if (!active.clients.some((c) => c.client_id === clientId)) throw new ConfigError(["client_id: unknown client"]);
-    const credential = randomBytes(32).toString("base64url");
-    this.activateCandidate({ ...active, clients: active.clients.map((c) => (c.client_id === clientId ? { ...c, credential_sha256: hashCredential(credential) } : c)) });
-    return credential;
+    if (active.clients.some((c) => c.client_id === clientId)) throw new ConfigError(["client_id: already enrolled"]);
+    this.activateCandidate({ ...active, clients: [...active.clients, { client_id: clientId, ...(displayName ? { display_name: displayName } : {}), enabled: true, public_key: publicKey, projects: [] }] });
   }
 
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
   editableView(): EditableView {
     if (!this.#active) return { configured: false, logging: { ...DEFAULT_LOGGING }, clients: [] };
-    return structuredClone({ configured: true, logging: this.#active.logging, clients: this.#active.clients.map(({ credential_sha256, ...client }) => ({ ...client, has_credential: credential_sha256 !== undefined })) });
+    return structuredClone({ configured: true, logging: this.#active.logging, clients: this.#active.clients.map(({ public_key, ...client }) => ({ ...client, has_public_key: public_key !== undefined })) });
   }
 
   /** The log size and retention in force; the defaults while no configuration is active. */
@@ -166,7 +166,7 @@ export class ServerConfigStore {
     return this.#active !== null;
   }
 
-  /** A copy of the active configuration without credential digests. */
+  /** A copy of the active configuration without public keys. */
   snapshot(): { clients: PublicClient[] } {
     const clients = this.#requireActive().clients.map(({ client_id, display_name, enabled, projects }) => ({ client_id, display_name, enabled, projects }));
     return structuredClone({ clients });
@@ -183,14 +183,19 @@ export class ServerConfigStore {
     return this.#requireActive().mcp_bearer_sha256;
   }
 
-  /** The stored digest of an enabled Client, for the admission check; null for an unknown or disabled one. */
-  credentialDigestFor(clientId: string): string | null {
-    return this.#enabledClient(clientId)?.credential_sha256 ?? null;
+  /** The stored public key of an enabled Client, for admission; null for an unknown, disabled or not yet keyed one. */
+  publicKeyFor(clientId: string): string | null {
+    return this.#enabledClient(clientId)?.public_key ?? null;
+  }
+
+  /** True when the client_id is in the configuration, enabled or not. */
+  isKnownClient(clientId: string): boolean {
+    return this.#requireActive().clients.some((c) => c.client_id === clientId);
   }
 
   #editCandidate(clients: ProposedEdit["clients"], mcp_bearer_sha256: string, logging: LoggingSettings | undefined) {
-    const digests = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, c.credential_sha256]));
-    return { mcp_bearer_sha256, logging, clients: clients.map((c) => ({ ...c, credential_sha256: digests.get(c.client_id) })) };
+    const keys = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, c.public_key]));
+    return { mcp_bearer_sha256, logging, clients: clients.map((c) => ({ ...c, public_key: keys.get(c.client_id) })) };
   }
 
   #persist(config: ServerConfig): void {

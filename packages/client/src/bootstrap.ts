@@ -1,22 +1,28 @@
-// The Client's only local configuration: one private KEY=VALUE file with endpoint, client_id, credential and the
-// physical root anchors. The file is data, not shell: no interpolation, includes, multiline values or env fallback.
+// The Client's only local configuration: one private KEY=VALUE file with endpoint, client_id, Ed25519 private key and the
+// physical root anchors. On first run the Client generates its own client_id and key pair and writes them back into this
+// file; the private key never leaves it and the Server only ever learns the public key. The file is data, not shell: no interpolation, includes, multiline values or env fallback.
 // Operational project policy (modes, allowlists, deny rules, limits) is owned by the Server and never read here.
 // POSIX: a file readable or writable by group/others is refused, never auto-fixed. Windows: mode bits do not apply, so
 // that check is skipped and the operator must protect the file with an ACL.
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { randomUUID, type KeyObject } from "node:crypto";
+import { readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { ClientId, Credential } from "@reach-mcp/shared/wire";
+import { generateIdentityKey, importPrivateKey, publicKeyFromPrivate, signChallenge } from "@reach-mcp/shared/identity";
+import { ClientId } from "@reach-mcp/shared/wire";
 
-export const BOOTSTRAP_KEYS = ["REACH_SERVER_URL", "REACH_CLIENT_ID", "REACH_CLIENT_CREDENTIAL", "REACH_ROOTS"] as const;
+export const BOOTSTRAP_KEYS = ["REACH_SERVER_URL", "REACH_CLIENT_ID", "REACH_CLIENT_IDENTITY_KEY", "REACH_ROOTS"] as const;
+const IDENTITY_KEYS = ["REACH_CLIENT_ID", "REACH_CLIENT_IDENTITY_KEY"] as const;
 
 export type BootstrapOptions = {
   /** Development and tests only: accept ws:// besides wss://. Never inferred from the host name. */
   allowInsecureWs?: boolean;
+  /** First run: when the file holds no identity, generate one and write it back. Off by default so tests and tools never mutate a file. */
+  createIdentity?: boolean;
   /** Overridable so the Windows branch is testable on any host. */
   platform?: NodeJS.Platform;
 };
 
-/** Every problem names a key or a line, never a value, so no message can carry the credential. */
+/** Every problem names a key or a line, never a value, so no message can carry the private key. */
 export class BootstrapError extends Error {
   readonly problems: readonly string[];
 
@@ -28,23 +34,28 @@ export class BootstrapError extends Error {
 
 export type PublicBootstrap = { endpoint: string; clientId: string; anchors: readonly string[] };
 
-/** Holds the credential in a private field: JSON, inspect and spread of this object never show it. */
+/** Holds the private key in a private field: JSON, inspect and spread of this object never show it. */
 export class Bootstrap {
   readonly endpoint: string;
   readonly clientId: string;
   readonly anchors: readonly string[];
-  readonly #credential: string;
+  readonly #identityKey: KeyObject;
 
-  constructor(endpoint: string, clientId: string, credential: string, anchors: readonly string[]) {
+  constructor(endpoint: string, clientId: string, identityKey: KeyObject, anchors: readonly string[]) {
     this.endpoint = endpoint;
     this.clientId = clientId;
-    this.#credential = credential;
+    this.#identityKey = identityKey;
     this.anchors = anchors;
   }
 
-  /** The only way to read the credential; used when authenticating to the Server. */
-  credential(): string {
-    return this.#credential;
+  /** The public key the Server stores as this Client's identity (base64url). */
+  publicKey(): string {
+    return publicKeyFromPrivate(this.#identityKey);
+  }
+
+  /** Proves possession of the private key for one Server challenge; the key itself is never exposed. */
+  sign(nonce: string): string {
+    return signChallenge(this.#identityKey, nonce, this.clientId);
   }
 
   publicView(): PublicBootstrap {
@@ -120,10 +131,17 @@ export function parseBootstrap(text: string, options: BootstrapOptions = {}, per
   const get = (key: (typeof BOOTSTRAP_KEYS)[number]) => values.get(key) ?? "";
   if (values.has("REACH_SERVER_URL")) checkEndpoint(get("REACH_SERVER_URL"), options.allowInsecureWs === true, problems);
   if (values.has("REACH_CLIENT_ID")) checkSchema("REACH_CLIENT_ID", ClientId, get("REACH_CLIENT_ID"), problems);
-  if (values.has("REACH_CLIENT_CREDENTIAL")) checkSchema("REACH_CLIENT_CREDENTIAL", Credential, get("REACH_CLIENT_CREDENTIAL"), problems);
+  let identityKey: KeyObject | undefined;
+  if (values.has("REACH_CLIENT_IDENTITY_KEY")) {
+    try {
+      identityKey = importPrivateKey(get("REACH_CLIENT_IDENTITY_KEY"));
+    } catch {
+      problems.push("REACH_CLIENT_IDENTITY_KEY is invalid");
+    }
+  }
   const anchors = values.has("REACH_ROOTS") ? canonicalAnchors(get("REACH_ROOTS"), problems) : [];
-  if (problems.length > 0) throw new BootstrapError(problems);
-  return new Bootstrap(get("REACH_SERVER_URL"), get("REACH_CLIENT_ID"), get("REACH_CLIENT_CREDENTIAL"), anchors);
+  if (problems.length > 0 || !identityKey) throw new BootstrapError(problems);
+  return new Bootstrap(get("REACH_SERVER_URL"), get("REACH_CLIENT_ID"), identityKey, anchors);
 }
 
 export function loadBootstrap(file: string, options: BootstrapOptions = {}): Bootstrap {
@@ -137,5 +155,20 @@ export function loadBootstrap(file: string, options: BootstrapOptions = {}): Boo
   } catch {
     throw new BootstrapError(["bootstrap file is missing or unreadable"]);
   }
+  if (options.createIdentity && !permissionProblem && !IDENTITY_KEYS.some((key) => new RegExp(`^\\s*${key}\\s*=`, "m").test(text))) text = writeNewIdentity(file, text);
   return parseBootstrap(text, options, permissionProblem);
+}
+
+/** Generates this Client's id and key pair and appends them to the bootstrap file (temporary file, mode 0600, rename). Returns the new text. */
+function writeNewIdentity(file: string, text: string): string {
+  const generated = generateIdentityKey();
+  const next = `${text.endsWith("\n") || text === "" ? text : `${text}\n`}REACH_CLIENT_ID=${randomUUID()}\nREACH_CLIENT_IDENTITY_KEY=${generated.privateKey}\n`;
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileSync(temporary, next, { mode: 0o600 });
+    renameSync(temporary, file);
+  } catch {
+    throw new BootstrapError(["could not write the Client identity to the bootstrap file"]);
+  }
+  return next;
 }

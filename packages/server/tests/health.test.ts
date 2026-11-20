@@ -10,7 +10,7 @@ const getHealth = (port: number, token: string | null = MCP_MARKER) => fetch(`ht
 test("active runtime: /health with the bearer returns the minimal snapshot and nothing private", async () => {
   const rt = await startRuntime();
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const res = await getHealth(rt.port);
   assert.equal(res.status, 200);
   const text = await res.text();
@@ -62,7 +62,7 @@ test("inactive config: /health is a controlled 503 with no body, with or without
 test("counters live in the registry and change exactly at request lifecycle boundaries", async () => {
   const rt = await startRuntime();
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const counters = () => rt.connections.requestCounters();
   const ok = rt.connections.route("laptop", "web", { op: "fs_list" }, { requestId: "ok-1" });
   await until(() => requestsOf(client).length === 1, "sent");
@@ -85,7 +85,7 @@ test("counters live in the registry and change exactly at request lifecycle boun
 test("a timed-out request is counted once as timed_out, and its response carries the id that was sent", async () => {
   const rt = await startRuntime({ requestTimeoutMs: 40 });
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const response = await rt.connections.route("laptop", "web", { op: "fs_list" }, { requestId: "slow-1" });
   assert.ok(!response.ok && response.request_id === "slow-1");
   assert.equal(requestsOf(client)[0]!.request_id, "slow-1");

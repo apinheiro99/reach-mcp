@@ -65,7 +65,7 @@ export function createHttpServer(deps: HttpServerDeps): Server {
       socket.destroy();
       return;
     }
-    clients.handleUpgrade(req, socket, head, (ws) => deps.connections.accept(ws, req.headers));
+    clients.handleUpgrade(req, socket, head, (ws) => deps.connections.accept(ws, req.socket.remoteAddress));
   });
   server.on("close", () => clients.close());
   return server;

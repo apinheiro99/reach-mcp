@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Machine-level REACH Client install for Linux, from the release artifact (reach-client-linux-x64.tgz): one Client per machine,
 # never per project. The install directory and the bootstrap file are separate: binaries go to the install directory, while the
-# endpoint, Client id, credential and root anchors stay only in the operator's protected bootstrap file, which this script never
+# endpoint, Client id, private key and root anchors stay only in the operator's protected bootstrap file, which this script never
 # reads or copies. Install and update are explicit operator actions; nothing here updates itself.
 set -eu
 
@@ -124,7 +124,7 @@ fi
 
 unit="$unit_dir/$UNIT_NAME"
 {
-  echo "# REACH MCP Client, installed from a release artifact. The endpoint, Client id, credential and root anchors live only in the bootstrap file."
+  echo "# REACH MCP Client, installed from a release artifact. The endpoint, Client id, private key and root anchors live only in the bootstrap file."
   echo "[Unit]"
   echo "Description=REACH MCP Client"
   echo "After=network-online.target"

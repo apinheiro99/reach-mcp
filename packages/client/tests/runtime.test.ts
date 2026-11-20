@@ -1,3 +1,4 @@
+import { generateIdentityKey } from "@reach-mcp/shared/identity";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -8,12 +9,13 @@ import { BootstrapError } from "../src/bootstrap.ts";
 import { parseClientArgs, startClient } from "../src/runtime.ts";
 import { CliError } from "@reach-mcp/shared/cli";
 
-const CREDENTIAL = "client-credential-" + "Mn40Xp";
+const KEY = generateIdentityKey();
+const CREDENTIAL = KEY.privateKey;
 
 function bootstrapFile(endpoint: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "reach-client-rt-"));
   const file = path.join(dir, "bootstrap.env");
-  writeFileSync(file, `REACH_SERVER_URL=${endpoint}\nREACH_CLIENT_ID=laptop\nREACH_CLIENT_CREDENTIAL=${CREDENTIAL}\nREACH_ROOTS=${JSON.stringify([dir])}\n`);
+  writeFileSync(file, `REACH_SERVER_URL=${endpoint}\nREACH_CLIENT_ID=laptop\nREACH_CLIENT_IDENTITY_KEY=${CREDENTIAL}\nREACH_ROOTS=${JSON.stringify([dir])}\n`);
   chmodSync(file, 0o600);
   return file;
 }

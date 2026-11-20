@@ -5,17 +5,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
 import { ClientConnectionRegistry, hashCredential, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
+import { DESKTOP, LAPTOP, newIdentity, signedHello, type TestIdentity } from "./identity-fixture.ts";
 
-const MARKER = "cred-marker-" + "Lq72Vn";
-const OTHER = "cred-marker-" + "Rt19Xe";
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-conn-"));
 const configFile = path.join(dir, "config.json");
 const baseConfig = () => ({
   mcp_bearer_sha256: hashCredential("mcp-marker-" + "Kd40"),
   clients: [
-    { client_id: "laptop", enabled: true, credential_sha256: hashCredential(MARKER), projects: [{ project_id: "web", physical_root: "/srv/web", mode: "read_write" }, { project_id: "api", physical_root: "/srv/api", mode: "read_only" }] },
-    { client_id: "desktop", enabled: true, credential_sha256: hashCredential(OTHER), projects: [{ project_id: "web", physical_root: "/home/u/web", mode: "read_only" }] },
-    { client_id: "off", enabled: false, credential_sha256: hashCredential(MARKER), projects: [{ project_id: "p", physical_root: "/x", mode: "read_only" }] },
+    { client_id: "laptop", enabled: true, public_key: LAPTOP.publicKey, projects: [{ project_id: "web", physical_root: "/srv/web", mode: "read_write" }, { project_id: "api", physical_root: "/srv/api", mode: "read_only" }] },
+    { client_id: "desktop", enabled: true, public_key: DESKTOP.publicKey, projects: [{ project_id: "web", physical_root: "/home/u/web", mode: "read_only" }] },
+    { client_id: "off", enabled: false, public_key: newIdentity().publicKey, projects: [{ project_id: "p", physical_root: "/x", mode: "read_only" }] },
   ],
 });
 const writeConfig = (config: unknown) => writeFileSync(configFile, JSON.stringify(config));
@@ -45,7 +44,7 @@ function clock() {
   };
 }
 
-type Frame = { kind: string; request_id?: string; server_build?: string; error?: { code: string; message: string; details?: unknown }; policies?: { project_id: string }[] };
+type Frame = { kind: string; nonce?: string; request_id?: string; server_build?: string; error?: { code: string; message: string; details?: unknown }; policies?: { project_id: string }[] };
 async function setup(extra: Partial<ConnectionOptions> = {}) {
   writeConfig(baseConfig());
   const config = new ServerConfigStore(configFile);
@@ -53,21 +52,25 @@ async function setup(extra: Partial<ConnectionOptions> = {}) {
   const c = clock();
   const registry = new ClientConnectionRegistry({ config, serverBuild: "srv-1", isBuildCompatible: (b) => b.startsWith("ok-"), now: c.now, schedule: c.schedule, requestTimeoutMs: 5000, maxPendingRequests: 3, ...extra });
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-  wss.on("connection", (socket, req) => registry.accept(socket, req.headers));
+  wss.on("connection", (socket, req) => registry.accept(socket, req.socket.remoteAddress));
   await new Promise<void>((r) => wss.once("listening", () => r()));
   const url = `ws://127.0.0.1:${(wss.address() as { port: number }).port}`;
   const clients: WebSocket[] = [];
-  const connect = async (opts: { bearer?: string | null; id?: string; credential?: string; build?: string; hello?: unknown } = {}) => {
-    const bearer = opts.bearer === undefined ? MARKER : opts.bearer;
-    const ws = new WebSocket(url, { headers: bearer === null ? {} : { Authorization: bearer.startsWith("Basic") ? bearer : `Bearer ${bearer}` } });
+  const connect = async (opts: { id?: string; identity?: TestIdentity; build?: string; hello?: unknown; extra?: Record<string, unknown> } = {}) => {
+    const ws = new WebSocket(url);
     clients.push(ws);
     const frames: Frame[] = [];
     const closed = new Promise<void>((r) => ws.on("close", () => r()));
-    ws.on("message", (d) => frames.push(JSON.parse(d.toString())));
+    const id = opts.id ?? "laptop";
+    ws.on("message", (d) => {
+      const frame = JSON.parse(d.toString()) as Frame;
+      frames.push(frame);
+      if (frame.kind !== "challenge" || opts.hello === null) return;
+      const hello = opts.hello ?? signedHello(opts.identity ?? LAPTOP, id, frame.nonce!, { client_build: opts.build ?? "ok-1", ...opts.extra });
+      ws.send(typeof hello === "string" || Buffer.isBuffer(hello) ? hello : JSON.stringify(hello));
+    });
     ws.on("error", () => undefined);
     await new Promise<void>((r) => ws.once("open", () => r()));
-    const hello = opts.hello ?? { kind: "hello", client_id: opts.id ?? "laptop", credential: opts.credential ?? MARKER, client_build: opts.build ?? "ok-1" };
-    if (hello !== null) ws.send(typeof hello === "string" || Buffer.isBuffer(hello) ? hello : JSON.stringify(hello));
     return { ws, frames, closed };
   };
   const done = async () => {
@@ -87,36 +90,98 @@ const answer = (client: { ws: WebSocket; frames: Frame[] }, request: { request_i
 const requests = (client: { frames: Frame[] }) => client.frames.filter((f) => f.kind === "request");
 const code = (frames: Frame[]) => frames.find((f) => f.kind === "reject")?.error?.code;
 
-test("admission: welcome first, then the full policy snapshot; the session is online", async () => {
+test("admission: challenge first, then welcome and the full policy snapshot; the session is online", async () => {
   const t = await setup();
   const c = await t.connect();
-  await until(() => c.frames.length === 2, "welcome and policy");
-  assert.deepEqual(c.frames[0], { kind: "welcome", server_build: "srv-1", compatible: true });
-  assert.equal(c.frames[1]!.kind, "policy_sync");
-  assert.deepEqual(c.frames[1]!.policies!.map((p) => p.project_id), ["web", "api"]);
+  await until(() => c.frames.length === 3, "welcome and policy");
+  assert.equal(c.frames[0]!.kind, "challenge");
+  assert.deepEqual(c.frames[1], { kind: "welcome", server_build: "srv-1", compatible: true });
+  assert.equal(c.frames[2]!.kind, "policy_sync");
+  assert.deepEqual(c.frames[2]!.policies!.map((p) => p.project_id), ["web", "api"]);
   assert.deepEqual(t.registry.status().map((s) => [s.client_id, s.client_build, s.online]), [["laptop", "ok-1", true]]);
   await t.done();
 });
 
-test("authentication failures: missing/malformed bearer, mismatch, wrong credential, unknown and disabled clients", async () => {
+test("authentication failures: wrong key, foreign key, bad signature, replayed signature, unknown and disabled clients", async () => {
   const t = await setup();
-  const cases = [
-    { bearer: null },
-    { bearer: "Basic abc" },
-    { bearer: OTHER },
-    { credential: OTHER },
-    { bearer: OTHER, credential: OTHER },
-    { id: "nobody" },
+  const stranger = newIdentity();
+  const first = await t.connect();
+  await until(() => first.frames.length === 3, "a real session to replay from");
+  const captured = signedHello(LAPTOP, "laptop", first.frames[0]!.nonce!);
+  first.ws.close();
+  await first.closed;
+  await until(() => t.registry.status().length === 0, "closed");
+  const cases: { id?: string; identity?: TestIdentity; hello?: unknown }[] = [
+    { identity: DESKTOP },
+    { identity: stranger },
+    { hello: { ...captured, signature: "A".repeat(86) } },
+    { hello: captured },
+    { id: "nobody", identity: stranger },
     { id: "off" },
   ];
   for (const opts of cases) {
     const c = await t.connect(opts);
     await c.closed;
     assert.equal(code(c.frames), "AUTH_FAILED", JSON.stringify(Object.keys(opts)));
-    assert.ok(!JSON.stringify(c.frames).includes(MARKER) && !JSON.stringify(c.frames).includes(OTHER));
+    assert.ok(!JSON.stringify(c.frames).includes(LAPTOP.privateKey) && !JSON.stringify(c.frames).includes(DESKTOP.privateKey));
   }
   assert.deepEqual(t.registry.status(), []);
   await t.done();
+});
+
+test("every connection gets a fresh unpredictable challenge", async () => {
+  const t = await setup();
+  const nonces = new Set<string>();
+  for (let i = 0; i < 5; i++) {
+    const c = await t.connect({ hello: null });
+    await until(() => c.frames.length === 1, "challenge");
+    assert.match(c.frames[0]!.nonce!, /^[A-Za-z0-9_-]{43}$/);
+    nonces.add(c.frames[0]!.nonce!);
+  }
+  assert.equal(nonces.size, 5);
+  await t.done();
+});
+
+test("first enrollment: an unknown client_id on a trusted source is registered with its public key only, then reconnects by challenge", async () => {
+  const t = await setup({ canEnrollFrom: (address) => address === "127.0.0.1" || address === "::ffff:127.0.0.1" });
+  const fresh = newIdentity();
+  const c = await t.connect({ id: "newbox", identity: fresh, extra: { display_name: "New box" } });
+  await until(() => c.frames.length === 3, "enrolled and admitted");
+  assert.equal(c.frames[1]!.kind, "welcome");
+  assert.equal(t.config.publicKeyFor("newbox"), fresh.publicKey);
+  assert.deepEqual(t.config.effectivePoliciesFor("newbox"), [], "no project until the Server's policy owner adds one");
+  const stored = readFileSync(configFile, "utf8");
+  assert.ok(stored.includes(fresh.publicKey) && !stored.includes(fresh.privateKey), "the file holds only the public key");
+  c.ws.close();
+  await c.closed;
+  await until(() => t.registry.status().length === 0, "closed");
+  const again = await t.connect({ id: "newbox", identity: fresh });
+  await until(() => again.frames.length === 3, "reconnect re-authenticated");
+  assert.notEqual(again.frames[0]!.nonce, c.frames[0]!.nonce);
+  await t.done();
+});
+
+test("enrollment is refused off the trusted network, by default, for another key on a known id, and for a reused key", async () => {
+  const t = await setup();
+  const fresh = newIdentity();
+  const refused = await t.connect({ id: "newbox", identity: fresh });
+  await refused.closed;
+  assert.equal(code(refused.frames), "AUTH_FAILED", "no trusted source is configured by default");
+  assert.equal(t.config.isKnownClient("newbox"), false);
+  await t.done();
+  const open = await setup({ canEnrollFrom: () => true });
+  const takeover = await open.connect({ id: "laptop", identity: newIdentity() });
+  await takeover.closed;
+  assert.equal(code(takeover.frames), "AUTH_FAILED", "a known id never takes a new key through enrollment");
+  const reused = await open.connect({ id: "another", identity: LAPTOP });
+  await reused.closed;
+  assert.equal(code(reused.frames), "AUTH_FAILED", "a public key already registered cannot enroll a second client_id");
+  assert.equal(open.config.isKnownClient("another"), false);
+  const wrongBuild = await open.connect({ id: "oldbox", identity: newIdentity(), build: "old-9" });
+  await wrongBuild.closed;
+  assert.equal(code(wrongBuild.frames), "INCOMPATIBLE_BUILD");
+  assert.equal(open.config.isKnownClient("oldbox"), false, "an incompatible build is never enrolled");
+  await open.done();
 });
 
 test("build gate: an incompatible opaque build is refused with both identifiers and no protocol number", async () => {
@@ -135,7 +200,7 @@ test("build gate: an incompatible opaque build is refused with both identifiers 
 test("one active session: a duplicate is refused and the original keeps working; a closed one can reconnect", async () => {
   const t = await setup();
   const first = await t.connect();
-  await until(() => first.frames.length === 2, "first admitted");
+  await until(() => first.frames.length === 3, "first admitted");
   const second = await t.connect();
   await second.closed;
   assert.equal(code(second.frames), "DUPLICATE_CLIENT");
@@ -148,7 +213,7 @@ test("one active session: a duplicate is refused and the original keeps working;
   await first.closed;
   await until(() => t.registry.status().length === 0, "session removed");
   const third = await t.connect();
-  await until(() => third.frames.length === 2, "reconnect admitted");
+  await until(() => third.frames.length === 3, "reconnect admitted");
   await t.done();
 });
 
@@ -169,13 +234,13 @@ test("a socket that never completes the handshake, or sends garbage first, is no
 test("stale sessions go offline, are swept, and are replaced by a fresh connection", async () => {
   const t = await setup();
   const first = await t.connect();
-  await until(() => first.frames.length === 2, "admitted");
+  await until(() => first.frames.length === 3, "admitted");
   t.clock.advance(46_000);
   assert.equal(t.registry.status()[0]!.online, false);
   const refused = await t.registry.route("laptop", "web", { op: "fs_list" });
   assert.ok(!refused.ok && refused.error.code === "NOT_FOUND" && /offline/.test(refused.error.message));
   const second = await t.connect();
-  await until(() => second.frames.length === 2, "stale session replaced");
+  await until(() => second.frames.length === 3, "stale session replaced");
   await first.closed;
   assert.equal(t.registry.status().length, 1);
   t.clock.advance(46_000);
@@ -188,14 +253,14 @@ test("stale sessions go offline, are swept, and are replaced by a fresh connecti
 test("syncPolicy sends the new full snapshot after a reload; a removed project disappears", async () => {
   const t = await setup();
   const c = await t.connect();
-  await until(() => c.frames.length === 2, "admitted");
+  await until(() => c.frames.length === 3, "admitted");
   const next = baseConfig();
   next.clients[0]!.projects = [{ project_id: "only", physical_root: "/srv/only", mode: "read_only" }];
   writeConfig(next);
   t.config.reload();
   t.registry.syncAllPolicies();
-  await until(() => c.frames.length === 3, "second snapshot");
-  assert.deepEqual(c.frames[2]!.policies!.map((p) => p.project_id), ["only"]);
+  await until(() => c.frames.length === 4, "second snapshot");
+  assert.deepEqual(c.frames[3]!.policies!.map((p) => p.project_id), ["only"]);
   assert.equal(t.registry.syncPolicy("desktop"), false, "not connected");
   assert.equal((await t.registry.route("laptop", "web", { op: "fs_list" })).ok, false, "the removed project is no longer routable");
   await t.done();
@@ -204,7 +269,7 @@ test("syncPolicy sends the new full snapshot after a reload; a removed project d
 test("routing fails before sending for unknown or disabled clients, unknown projects and offline clients", async () => {
   const t = await setup();
   const c = await t.connect();
-  await until(() => c.frames.length === 2, "admitted");
+  await until(() => c.frames.length === 3, "admitted");
   const fail = async (client: string, project: string) => {
     const r = await t.registry.route(client, project, { op: "fs_list" });
     assert.ok(!r.ok);
@@ -222,8 +287,8 @@ test("routing fails before sending for unknown or disabled clients, unknown proj
 test("out-of-order responses settle the right request; foreign, unknown and wrong-session responses settle nothing", async () => {
   const t = await setup();
   const laptop = await t.connect();
-  const desktop = await t.connect({ id: "desktop", bearer: OTHER, credential: OTHER });
-  await until(() => laptop.frames.length === 2 && desktop.frames.length === 2, "both admitted");
+  const desktop = await t.connect({ id: "desktop", identity: DESKTOP });
+  await until(() => laptop.frames.length === 3 && desktop.frames.length === 3, "both admitted");
   const a = t.registry.route("laptop", "web", { op: "fs_list" }, { requestId: "A" });
   const b = t.registry.route("laptop", "api", { op: "fs_read", path: "x" }, { requestId: "B" });
   await until(() => requests(laptop).length === 2, "both sent");
@@ -242,7 +307,7 @@ test("out-of-order responses settle the right request; foreign, unknown and wron
 test("a lost session fails its requests (a mutation as indeterminate) and nothing is replayed after reconnecting", async () => {
   const t = await setup();
   const first = await t.connect();
-  await until(() => first.frames.length === 2, "admitted");
+  await until(() => first.frames.length === 3, "admitted");
   const read = t.registry.route("laptop", "web", { op: "fs_list" });
   const write = t.registry.route("laptop", "web", { op: "fs_write", path: "a", content: "x" });
   await until(() => requests(first).length === 2, "sent");
@@ -251,7 +316,7 @@ test("a lost session fails its requests (a mutation as indeterminate) and nothin
   assert.ok(!r.ok && r.error.code === "INTERNAL");
   assert.ok(!w.ok && w.error.code === "MUTATION_INDETERMINATE");
   const second = await t.connect();
-  await until(() => second.frames.length === 2, "reconnected");
+  await until(() => second.frames.length === 3, "reconnected");
   await new Promise((r2) => setTimeout(r2, 30));
   assert.equal(requests(second).length, 0, "no request was replayed on the new connection");
   await t.done();
@@ -260,7 +325,7 @@ test("a lost session fails its requests (a mutation as indeterminate) and nothin
 test("timeouts never resend: a read gets a fixed error, a mutation is indeterminate", async () => {
   const t = await setup();
   const c = await t.connect();
-  await until(() => c.frames.length === 2, "admitted");
+  await until(() => c.frames.length === 3, "admitted");
   const read = t.registry.route("laptop", "web", { op: "fs_list" });
   const write = t.registry.route("laptop", "web", { op: "fs_remove", path: "a" });
   await until(() => requests(c).length === 2, "sent");
@@ -278,7 +343,7 @@ test("timeouts never resend: a read gets a fixed error, a mutation is indetermin
 test("the pending bound and duplicate in-flight ids are refused deterministically", async () => {
   const t = await setup();
   const c = await t.connect();
-  await until(() => c.frames.length === 2, "admitted");
+  await until(() => c.frames.length === 3, "admitted");
   const held = ["1", "2", "3"].map((id) => t.registry.route("laptop", "web", { op: "fs_list" }, { requestId: id }));
   const over = await t.registry.route("laptop", "web", { op: "fs_list" }, { requestId: "4" });
   assert.ok(!over.ok && /too many pending/.test(over.error.message));
@@ -300,5 +365,5 @@ test("an invalid option is refused, and the connection registry keeps to routing
   const src = path.join(import.meta.dirname, "..", "src");
   const text = readFileSync(path.join(src, "connections.ts"), "utf8");
   assert.ok(!/node:fs|node:child_process|sqlite|express|fastify|\/mcp\b/.test(text));
-  assert.ok(!/credential_sha256|console\./.test(text));
+  assert.ok(!/credential|console\./.test(text));
 });

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startClient } from "../../client/src/runtime.ts";
@@ -26,6 +26,8 @@ test("server args: required flags, loopback defaults for both listeners, valid p
   assert.equal(parseServerArgs(argv(d, ["--repository-commit", "abc"])).repositoryCommit, "abc");
   assert.equal(parseServerArgs(argv(d)).artifacts, undefined, "no artifacts directory unless one is given");
   assert.equal(parseServerArgs(argv(d, ["--artifacts", "/srv/releases"])).artifacts, "/srv/releases");
+  assert.equal(parseServerArgs(argv(d)).enrollFrom, undefined, "nobody may enroll unless a trusted source is given");
+  assert.equal(parseServerArgs(argv(d, ["--enroll-from", "203.0.113.0/24,127.0.0.1"])).enrollFrom, "203.0.113.0/24,127.0.0.1");
   for (const bad of [[], argv(d).slice(2), [...argv(d), "--config", SECRET], [...argv(d), "--bearer", SECRET], argv(d).map((v) => (v === "0" ? "70000" : v)), argv(d).filter((v, i, a) => v !== "--admin-port" && a[i - 1] !== "--admin-port"), [...argv(d), "--host"]]) {
     assert.throws(() => parseServerArgs(bad), (e: unknown) => e instanceof CliError && !e.message.includes(SECRET));
   }
@@ -69,30 +71,42 @@ test("--artifacts wires the public release routes on the service listener of the
   await withoutFlag.stop();
 });
 
-test("Server and Client runtimes handshake over loopback from temporary private files, with the same build id", async () => {
+test("Server and Client runtimes enroll over loopback from temporary private files, then reconnect by a fresh challenge", async () => {
   const d = dirs();
-  const server: RunningServer = await startServer(parseServerArgs(argv(d)));
+  const server: RunningServer = await startServer(parseServerArgs(argv(d, ["--enroll-from", "127.0.0.1"])));
   const data = `http://127.0.0.1:${server.port}`;
   const admin = `http://127.0.0.1:${server.adminPort}`;
   const root = mkdtempSync(path.join(tmpdir(), "reach-anchor-"));
-  const put = (body: unknown) => fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify(body) });
-  const project = { project_id: "web", physical_root: root, mode: "read_only" };
-  assert.equal((await put({ mcp_bearer: BEARER, clients: [{ client_id: "laptop", enabled: false, projects: [project] }] })).status, 200);
-  const credential = ((await (await fetch(`${admin}/admin/api/clients/laptop/credential`, { method: "POST" })).json()) as { result: { credential: string } }).result.credential;
-  assert.equal((await put({ clients: [{ client_id: "laptop", enabled: true, projects: [project] }] })).status, 200);
+  assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: BEARER, clients: [] }) })).status, 200);
   const file = path.join(d.base, "bootstrap.env");
-  writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:${server.port}/client\nREACH_CLIENT_ID=laptop\nREACH_CLIENT_CREDENTIAL=${credential}\nREACH_ROOTS=${JSON.stringify([root])}\n`);
+  writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:${server.port}/client\nREACH_ROOTS=${JSON.stringify([root])}\n`);
   chmodSync(file, 0o600);
-  const client = startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true });
   const connected = async () => ((await (await fetch(`${data}/health`, { headers: { Authorization: `Bearer ${BEARER}` } })).json()) as { clients: { connected: number } }).clients.connected;
-  for (let i = 0; i < 100 && (await connected()) !== 1; i++) await new Promise((r) => setTimeout(r, 50));
-  assert.equal(await connected(), 1, "the Client was admitted");
-  assert.ok(!JSON.stringify(client.transport.snapshot()).includes(credential));
+  const waitConnected = async (n: number) => {
+    for (let i = 0; i < 100 && (await connected()) !== n; i++) await new Promise((r) => setTimeout(r, 50));
+    return connected();
+  };
+  const client = startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true });
+  assert.equal(await waitConnected(1), 1, "the Client enrolled and was admitted with no credential and no admin step");
+  const stored = readFileSync(file, "utf8");
+  const identityText = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(stored)![1]!;
+  const clientId = /REACH_CLIENT_ID=(\S+)/.exec(stored)![1]!;
+  assert.equal(statSync(file).mode & 0o077, 0, "the identity file stays private");
+  const config = readFileSync(d.config, "utf8");
+  assert.ok(config.includes(clientId) && config.includes("public_key") && !config.includes(identityText), "the Server holds the public key only");
+  assert.ok(!JSON.stringify(client.transport.snapshot()).includes(identityText));
   client.stop();
+  assert.equal(await waitConnected(0), 0);
+  const again = startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true });
+  assert.equal(await waitConnected(1), 1, "reconnect re-authenticates with the same identity");
+  assert.equal(readFileSync(file, "utf8"), stored, "the identity is generated once");
+  again.stop();
   await server.stop();
   const logs = readdirSync(d.logs).map((f) => readFileSync(path.join(d.logs, f), "utf8")).join("\n");
-  assert.match(logs, /client connected client_id=laptop/);
-  assert.ok(![credential, BEARER].some((s) => logs.includes(s)));
+  assert.match(logs, new RegExp(`client enrolled client_id=${clientId}`));
+  assert.match(logs, new RegExp(`client connected client_id=${clientId}`));
+  assert.match(logs, /action=enroll/);
+  assert.ok(![identityText, BEARER].some((x) => logs.includes(x)));
 });
 
 test("the real Server process starts in setup mode and exits cleanly on SIGTERM", async () => {

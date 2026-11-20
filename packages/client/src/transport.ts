@@ -1,7 +1,7 @@
 // The Client's outbound connection lifecycle. The Client always dials out; the Server alone decides admission,
 // build compatibility and one-active-identity, so a rejection is only ever obeyed, never second-guessed or worked around.
-// Liveness uses ws ping/pong control frames. The credential travels in the upgrade Authorization header and in the typed
-// hello, never in the URL, and no state, error or log value built here contains it.
+// Liveness uses ws ping/pong control frames. The Server opens every connection with a fresh challenge; the Client answers
+// once with its public key and an Ed25519 signature, and nothing built here (state, error, log) ever holds the private key.
 import WebSocket from "ws";
 import type { RawData } from "ws";
 import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "@reach-mcp/shared/wire";
@@ -36,7 +36,7 @@ export type TransportOptions = {
   now?: () => number;
   schedule?: Schedule;
   random?: () => number;
-  createSocket?: (url: string, headers: Record<string, string>) => WebSocket;
+  createSocket?: (url: string) => WebSocket;
 };
 
 const DEFAULT_BACKOFF = { initialMs: 1000, maxMs: 60_000, jitter: 0.2 };
@@ -58,6 +58,7 @@ export class ClientTransport {
   #lastError: WireError | null = null;
   #lastHealthyAt: number | null = null;
   #attempts = 0;
+  #answered = false;
   #socket: WebSocket | null = null;
   #cancelRetry: (() => void) | null = null;
   #cancelHeartbeat: (() => void) | null = null;
@@ -71,7 +72,7 @@ export class ClientTransport {
   readonly #now: () => number;
   readonly #schedule: Schedule;
   readonly #random: () => number;
-  readonly #createSocket: (url: string, headers: Record<string, string>) => WebSocket;
+  readonly #createSocket: (url: string) => WebSocket;
 
   constructor(bootstrap: Bootstrap, options: TransportOptions) {
     this.#bootstrap = bootstrap;
@@ -84,10 +85,10 @@ export class ClientTransport {
     this.#now = options.now ?? Date.now;
     this.#schedule = options.schedule ?? realSchedule;
     this.#random = options.random ?? Math.random;
-    this.#createSocket = options.createSocket ?? ((url, headers) => new WebSocket(url, { headers, perMessageDeflate: false }));
+    this.#createSocket = options.createSocket ?? ((url) => new WebSocket(url, { perMessageDeflate: false }));
   }
 
-  /** Safe observable state: no credential and no socket internals. */
+  /** Safe observable state: no key material and no socket internals. */
   snapshot(): { state: TransportState; lastError: WireError | null; lastHealthyAt: number | null; attempts: number } {
     return { state: this.#state, lastError: this.#lastError, lastHealthyAt: this.#lastHealthyAt, attempts: this.#attempts };
   }
@@ -111,7 +112,8 @@ export class ClientTransport {
 
   #connect(): void {
     this.#state = "connecting";
-    const socket = this.#createSocket(this.#bootstrap.endpoint, { Authorization: `Bearer ${this.#bootstrap.credential()}` });
+    this.#answered = false;
+    const socket = this.#createSocket(this.#bootstrap.endpoint);
     this.#socket = socket;
     socket.on("open", () => this.#onOpen(socket));
     socket.on("message", (data, isBinary) => this.#onMessage(socket, data, isBinary));
@@ -124,8 +126,6 @@ export class ClientTransport {
     if (socket !== this.#socket) return;
     this.#state = "handshaking";
     this.#lastHealthyAt = this.#now();
-    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, credential: this.#bootstrap.credential(), client_build: this.#build });
-    socket.send(JSON.stringify(hello));
     this.#armHeartbeat(socket);
     this.#cancelHandshake = this.#schedule(() => {
       this.#cancelHandshake = null;
@@ -148,6 +148,8 @@ export class ClientTransport {
     if (this.#state !== "handshaking") return;
     const reply = parseWire(HandshakeReply, frame);
     if (!reply.ok) return this.#failClosed(socket, "invalid handshake reply");
+    if (reply.data.kind === "challenge") return this.#answerChallenge(socket, reply.data.nonce);
+    if (reply.data.kind === "welcome" && !this.#answered) return this.#failClosed(socket, "welcome before the challenge was answered");
     this.#stopHandshake();
     if (reply.data.kind === "welcome") {
       this.#state = "connected";
@@ -165,6 +167,14 @@ export class ClientTransport {
     } else {
       socket.terminate();
     }
+  }
+
+  /** The one answer to the connection's challenge: identity, public key and the signature. A second challenge is a protocol violation. */
+  #answerChallenge(socket: WebSocket, nonce: string): void {
+    if (this.#answered) return this.#failClosed(socket, "unexpected second challenge");
+    this.#answered = true;
+    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce) });
+    socket.send(JSON.stringify(hello));
   }
 
   /** After the welcome only a policy snapshot or a request is legal; anything else closes the socket. */
