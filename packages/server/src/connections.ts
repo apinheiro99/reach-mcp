@@ -1,10 +1,11 @@
 // Live Client sessions on the Server: admission, one active session per client_id, stale detection and request
-// routing. Registered Clients, projects and credential digests come only from the config store; nothing a Client says
-// about itself adds a project. One Map holds sessions, one Map holds requests awaiting a response, and a response can
+// routing. Registered Clients, projects and public keys come only from the config store; nothing a Client says
+// about itself adds a project. Every socket gets a fresh challenge first; the Client's hello proves possession of its
+// Ed25519 key, and only a hello from an unknown client_id on a trusted source enrolls it. One Map holds sessions, one Map holds requests awaiting a response, and a response can
 // only settle the request that was sent on the same session. A request is never sent twice.
 import { randomUUID } from "node:crypto";
-import type { IncomingHttpHeaders } from "node:http";
 import WebSocket from "ws";
+import { newNonce, verifyChallenge } from "@reach-mcp/shared/identity";
 import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 import {
   ClientHello,
@@ -18,10 +19,10 @@ import {
   type Operation,
   type WireError,
 } from "@reach-mcp/shared/wire";
-import { bearerCredential, hashCredential, sameDigest } from "./auth.ts";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import type { ServerConfigStore } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
+import { NO_TRUSTED_SOURCES, type SourcePolicy } from "./trusted-network.ts";
 
 export type ConnectionOptions = {
   config: ServerConfigStore;
@@ -29,6 +30,8 @@ export type ConnectionOptions = {
   serverBuild: string;
   /** The whole compatibility rule: true or false for a Client's opaque build identifier. */
   isBuildCompatible: (clientBuild: string) => boolean;
+  /** Whether a first enrollment may come from this peer address; default: nobody. */
+  canEnrollFrom?: SourcePolicy;
   /** Time a new socket has to deliver its hello. */
   handshakeTimeoutMs?: number;
   /** A session silent for this long is stale. */
@@ -101,9 +104,9 @@ export class ClientConnectionRegistry {
     this.#cancelSweep = null;
   }
 
-  /** Takes over a freshly upgraded socket. It is unauthenticated until a valid hello is admitted. */
-  accept(socket: WebSocket, headers: IncomingHttpHeaders): void {
-    const bearer = bearerCredential(headers);
+  /** Takes over a freshly upgraded socket and challenges it. It is unauthenticated until a valid hello is admitted. */
+  accept(socket: WebSocket, remoteAddress: string | undefined): void {
+    const nonce = newNonce();
     let session: Session | null = null;
     const cancelHandshake = this.#schedule(() => {
       if (!session) socket.terminate();
@@ -120,9 +123,10 @@ export class ClientConnectionRegistry {
         session.lastSeen = this.#now();
         return this.#onResponse(session, data, isBinary);
       }
-      session = this.#admit(socket, bearer, data, isBinary);
+      session = this.#admit(socket, nonce, remoteAddress, data, isBinary);
       if (session) cancelHandshake();
     });
+    socket.send(JSON.stringify({ kind: "challenge", nonce }));
   }
 
   /** Sends the current full policy snapshot to one connected, enabled Client. */
@@ -227,8 +231,8 @@ export class ClientConnectionRegistry {
     return null;
   }
 
-  /** Checks the first frame of a socket; returns the new session, or null after refusing it. */
-  #admit(socket: WebSocket, bearer: string | null, data: WebSocket.RawData, isBinary: boolean): Session | null {
+  /** Checks the first frame of a socket against its own challenge; returns the new session, or null after refusing it. */
+  #admit(socket: WebSocket, nonce: string, remoteAddress: string | undefined, data: WebSocket.RawData, isBinary: boolean): Session | null {
     let frame: unknown;
     try {
       if (isBinary) throw new Error("binary");
@@ -238,19 +242,16 @@ export class ClientConnectionRegistry {
     }
     const hello = parseWire(ClientHello, frame);
     if (!hello.ok) return this.#reject(socket, hello.error);
-    const { client_id: clientId, credential, client_build: build } = hello.data;
-    const presented = hashCredential(credential);
-    let expected: string | null;
-    try {
-      expected = this.#options.config.credentialDigestFor(clientId);
-    } catch {
-      expected = null;
-    }
-    // The header and the hello are two channels for one credential; they must agree before the digest is compared.
-    if (bearer === null || !sameDigest(hashCredential(bearer), presented) || expected === null || !sameDigest(presented, expected)) return this.#reject(socket, AUTH_FAILED);
+    const { client_id: clientId, client_build: build, public_key: publicKey, signature, display_name: displayName } = hello.data;
+    // A known client must present its stored key; an unknown one proves possession of the key it offers.
+    const { known, key: stored } = this.#identityOf(clientId);
+    const key = known ? stored : publicKey;
+    if (key === null || key !== publicKey || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
+    if (!known && !(this.#options.canEnrollFrom ?? NO_TRUSTED_SOURCES)(remoteAddress)) return this.#reject(socket, AUTH_FAILED);
     if (!this.#options.isBuildCompatible(build)) return this.#reject(socket, incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
     const existing = this.#sessions.get(clientId);
     if (existing && !this.#isStale(existing)) return this.#reject(socket, { code: "DUPLICATE_CLIENT", message: "client is already connected" });
+    if (!known && !this.#enroll(clientId, publicKey, displayName)) return this.#reject(socket, AUTH_FAILED);
     if (existing) {
       this.#drop(existing);
       existing.socket.terminate();
@@ -262,6 +263,27 @@ export class ClientConnectionRegistry {
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true });
     this.syncPolicy(clientId);
     return session;
+  }
+
+  /** Whether the client_id is registered and its stored key; with no active configuration it reads as known and keyless, so nobody is enrolled or admitted. */
+  #identityOf(clientId: string): { known: boolean; key: string | null } {
+    try {
+      return { known: this.#options.config.isKnownClient(clientId), key: this.#options.config.publicKeyFor(clientId) };
+    } catch {
+      return { known: true, key: null };
+    }
+  }
+
+  /** The one enrollment write; logs and audits it without any key material. */
+  #enroll(clientId: string, publicKey: string, displayName: string | undefined): boolean {
+    try {
+      this.#options.config.enrollClient(clientId, publicKey, displayName);
+    } catch {
+      return false;
+    }
+    this.#logger.log("INFO", "connections", `client enrolled client_id=${clientId}`);
+    this.#audit.record({ actor: "client", action: "enroll", client_id: clientId, result: "ok" });
+    return true;
   }
 
   #onResponse(session: Session, data: WebSocket.RawData, isBinary: boolean): void {

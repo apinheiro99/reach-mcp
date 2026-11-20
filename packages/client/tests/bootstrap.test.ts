@@ -1,13 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { acceptEffectivePolicy, BootstrapError, loadBootstrap, parseBootstrap } from "../src/index.ts";
 import { EffectiveProjectPolicy } from "@reach-mcp/shared/wire";
+import { generateIdentityKey, verifyChallenge } from "@reach-mcp/shared/identity";
 import { FsError } from "@reach-mcp/shared/filesystem";
 
-const CRED = "cred-marker-" + "Zq72nVx";
+const KEY = generateIdentityKey();
+/** The Client private key: it must never appear in an error, view or dump. */
+const CRED = KEY.privateKey;
 const base = mkdtempSync(path.join(tmpdir(), "reach-client-"));
 const anchor = path.join(base, "safe", "root");
 const evil = path.join(base, "safe", "root-evil");
@@ -19,7 +22,7 @@ const aliasOfAnchor = path.join(base, "alias");
 symlinkSync(anchor, aliasOfAnchor);
 
 const file = (over: Record<string, string | undefined> = {}) =>
-  Object.entries({ REACH_SERVER_URL: "wss://server.example/ws", REACH_CLIENT_ID: "laptop-1", REACH_CLIENT_CREDENTIAL: CRED, REACH_ROOTS: JSON.stringify([anchor]), ...over })
+  Object.entries({ REACH_SERVER_URL: "wss://server.example/ws", REACH_CLIENT_ID: "laptop-1", REACH_CLIENT_IDENTITY_KEY: CRED, REACH_ROOTS: JSON.stringify([anchor]), ...over })
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
@@ -28,17 +31,18 @@ const problems = (text: string, opts = {}) => {
     parseBootstrap(text, opts);
   } catch (err) {
     assert.ok(err instanceof BootstrapError);
-    assert.ok(!err.message.includes(CRED), "credential leaked into the error");
+    assert.ok(!err.message.includes(CRED), "private key leaked into the error");
     return err.problems.join(" | ");
   }
   return "";
 };
 
-test("a valid file loads; comments and blanks are fine; the public view omits the credential", () => {
+test("a valid file loads; comments and blanks are fine; the public view omits the private key", () => {
   const b = parseBootstrap(`# comment\n\n${file({ REACH_ROOTS: JSON.stringify([anchor, evil]) })}\n`);
   assert.equal(b.clientId, "laptop-1");
   assert.deepEqual(b.anchors, [anchor, evil]);
-  assert.equal(b.credential(), CRED);
+  assert.equal(b.publicKey(), KEY.publicKey);
+  assert.equal(verifyChallenge(KEY.publicKey, "n".repeat(43), "laptop-1", b.sign("n".repeat(43))), true, "it signs without exposing the key");
   for (const dump of [JSON.stringify(b), JSON.stringify(b.publicView()), String(Object.keys(b)), JSON.stringify({ ...b })]) assert.ok(!dump.includes(CRED));
 });
 
@@ -46,7 +50,7 @@ test("grammar: duplicates, unknown keys, malformed lines and missing fields are 
   assert.match(problems(file() + "\nREACH_CLIENT_ID=other"), /duplicate key REACH_CLIENT_ID/);
   assert.match(problems(file() + "\nEXTRA=1"), /unknown key/);
   assert.match(problems(file() + "\nnot a pair"), /expected KEY=VALUE/);
-  assert.match(problems(file({ REACH_SERVER_URL: undefined, REACH_CLIENT_CREDENTIAL: undefined })), /missing REACH_SERVER_URL.*missing REACH_CLIENT_CREDENTIAL/);
+  assert.match(problems(file({ REACH_SERVER_URL: undefined, REACH_CLIENT_IDENTITY_KEY: undefined })), /missing REACH_SERVER_URL.*missing REACH_CLIENT_IDENTITY_KEY/);
   assert.match(problems(file({ REACH_ROOTS: "[" })), /not valid JSON/);
   assert.match(problems(file({ REACH_ROOTS: "[]" })), /non-empty/);
   assert.match(problems(file({ REACH_ROOTS: `${anchor}:${evil}` })), /not valid JSON/);
@@ -68,7 +72,7 @@ test("endpoint: wss only; ws needs the explicit option; no other scheme, userinf
 
 test("identity values use the shared schemas", () => {
   assert.match(problems(file({ REACH_CLIENT_ID: "a\u0001b" })), /REACH_CLIENT_ID is invalid/);
-  assert.match(problems(file({ REACH_CLIENT_CREDENTIAL: "x".repeat(1025) })), /REACH_CLIENT_CREDENTIAL is invalid/);
+  assert.match(problems(file({ REACH_CLIENT_IDENTITY_KEY: "x".repeat(64) })), /REACH_CLIENT_IDENTITY_KEY is invalid/);
 });
 
 test("anchors: relative, missing, file-valued and duplicate (also via symlink) are rejected; realpath is stored", () => {
@@ -140,4 +144,22 @@ test("physical_root must be an explicit absolute host path: relative roots never
   } finally {
     process.chdir(before);
   }
+});
+
+test("first run: createIdentity generates the client_id and Ed25519 key once, writes them 0600 into the bootstrap file and never again", () => {
+  const f = path.join(mkdtempSync(path.join(tmpdir(), "reach-first-run-")), "bootstrap.env");
+  writeFileSync(f, `REACH_SERVER_URL=wss://server.example/ws\nREACH_ROOTS=${JSON.stringify([anchor])}\n`, { mode: 0o600 });
+  assert.throws(() => loadBootstrap(f), (e: unknown) => e instanceof BootstrapError && /missing REACH_CLIENT_ID/.test(e.message), "without the first-run option nothing is generated or written");
+  const first = loadBootstrap(f, { createIdentity: true });
+  const text = readFileSync(f, "utf8");
+  assert.match(text, /REACH_CLIENT_ID=\S+\nREACH_CLIENT_IDENTITY_KEY=\S+\n$/);
+  assert.equal(statSync(f).mode & 0o077, 0, "the identity file stays private");
+  const second = loadBootstrap(f, { createIdentity: true });
+  assert.equal(readFileSync(f, "utf8"), text, "the identity is generated once");
+  assert.deepEqual([second.clientId, second.publicKey()], [first.clientId, first.publicKey()]);
+  assert.ok(!JSON.stringify(first.publicView()).includes(/REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(text)![1]!));
+  const open = path.join(path.dirname(f), "open.env");
+  writeFileSync(open, readFileSync(f, "utf8").split("\n").filter((l) => !l.startsWith("REACH_CLIENT")).join("\n"), { mode: 0o644 });
+  assert.throws(() => loadBootstrap(open, { createIdentity: true }), (e: unknown) => e instanceof BootstrapError && /group or others/.test(e.message), "a file open to others never receives a key");
+  assert.ok(!readFileSync(open, "utf8").includes("REACH_CLIENT_IDENTITY_KEY"));
 });

@@ -1,13 +1,20 @@
 // Frames of the Server-Client conversation. Compatibility is a gate on the two actual build identifiers carried in
 // the handshake; there is no protocol number, no SemVer parsing and no negotiation: the Server either accepts the
-// client build or rejects it with INCOMPATIBLE_BUILD. After the handshake the credential is never sent again.
+// client build or rejects it with INCOMPATIBLE_BUILD. Identity is an Ed25519 key owned by the Client: the Server opens
+// every connection with a fresh challenge, the Client answers once with its public key and a signature, and nothing is
+// signed again after the welcome.
 import { z } from "zod";
 import { WireError } from "./errors.ts";
-import { BuildId, ClientId, Credential, ProjectId, RequestId } from "./ids.ts";
+import { BuildId, ClientId, Nonce, ProjectId, PublicKey, RequestId, Signature } from "./ids.ts";
 import { Operation, OperationResult } from "./operations.ts";
 import { PolicySync } from "./policy.ts";
 
-export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, credential: Credential, client_build: BuildId });
+/** Server -> Client, first frame of every connection: the fresh challenge the Client must sign. */
+export const ServerChallenge = z.strictObject({ kind: z.literal("challenge"), nonce: Nonce });
+export type ServerChallenge = z.infer<typeof ServerChallenge>;
+
+/** Client -> Server, once per connection: identity, public key and the signature of the challenge. A first connection from an unknown client_id is its enrollment. */
+export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, display_name: z.string().min(1).max(100).optional() });
 export type ClientHello = z.infer<typeof ClientHello>;
 
 export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true) });
@@ -17,7 +24,7 @@ export type ServerWelcome = z.infer<typeof ServerWelcome>;
 export const ServerReject = z.strictObject({ kind: z.literal("reject"), server_build: BuildId.optional(), error: WireError });
 export type ServerReject = z.infer<typeof ServerReject>;
 
-export const HandshakeReply = z.discriminatedUnion("kind", [ServerWelcome, ServerReject]);
+export const HandshakeReply = z.discriminatedUnion("kind", [ServerChallenge, ServerWelcome, ServerReject]);
 export type HandshakeReply = z.infer<typeof HandshakeReply>;
 
 export const RequestEnvelope = z.strictObject({ kind: z.literal("request"), request_id: RequestId, project_id: ProjectId, operation: Operation });
@@ -38,7 +45,7 @@ export const ClientMessage = z.union([ClientHello, ...ResponseEnvelope.options])
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
 /** Server -> Client: the handshake answer, the policy snapshot, and the requests the Client executes. */
-export const ServerMessage = z.union([ServerWelcome, ServerReject, PolicySync, RequestEnvelope]);
+export const ServerMessage = z.union([ServerChallenge, ServerWelcome, ServerReject, PolicySync, RequestEnvelope]);
 export type ServerMessage = z.infer<typeof ServerMessage>;
 
 /** What the Server may send once the Client is admitted. */
@@ -49,7 +56,7 @@ export type WireParse<T> = { ok: true; data: T } | { ok: false; error: WireError
 
 /**
  * Validates an unknown frame. A failure is the compact BAD_REQUEST error built from issue paths and codes only, so no
- * submitted value (a credential in particular) can appear in it.
+ * submitted value (a key or signature in particular) can appear in it.
  */
 export function parseWire<T>(schema: z.ZodType<T>, input: unknown): WireParse<T> {
   const parsed = schema.safeParse(input);

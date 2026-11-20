@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { newIdentity } from "./identity-fixture.ts";
 import { ClientConnectionRegistry, createAdminHandler, createHttpServer, hashCredential, ProposalStore, ServerConfigStore } from "../src/index.ts";
 
 const MCP_BEARER = "mcp-bearer-" + "Vt29Qw71";
@@ -72,22 +73,20 @@ test("autosave: a valid edit persists and syncs policies once, an invalid one ch
   await rt.close();
 });
 
-test("no response carries a digest, a bearer or a credential; a generated credential is shown once", async () => {
+test("no response carries a key, digest or bearer; there is no credential route; an enrolled Client keeps its key through admin edits", async () => {
   const rt = await start(true);
-  await rt.put({ clients: [{ client_id: "laptop", enabled: true, projects: [] }] }).then((r) => assert.equal(r.status, 422, "enabled without a credential is refused"));
-  const issued = await fetch(`${rt.a}/admin/api/clients/laptop/credential`, { method: "POST" });
-  assert.equal(issued.status, 200);
-  const credential = ((await issued.json()) as { result: { credential: string } }).result.credential;
-  assert.ok(credential.length >= 40);
-  assert.equal(rt.config.credentialDigestFor("laptop"), null, "still disabled, so no admission digest");
-  assert.equal((await rt.put({ clients: [{ client_id: "laptop", enabled: true, projects: [] }] })).status, 200, "now enabled, the stored digest was kept");
-  assert.equal(rt.config.credentialDigestFor("laptop"), hashCredential(credential));
+  await rt.put({ clients: [{ client_id: "laptop", enabled: true, projects: [] }] }).then((r) => assert.equal(r.status, 422, "enabled without an enrolled key is refused"));
+  assert.equal((await fetch(`${rt.a}/admin/api/clients/laptop/credential`, { method: "POST" })).status, 404, "the shared-credential route is gone");
+  const identity = newIdentity();
+  rt.config.enrollClient("box", identity.publicKey);
+  assert.equal(rt.config.publicKeyFor("box"), identity.publicKey);
+  assert.equal((await rt.put({ clients: [{ client_id: "laptop", enabled: false, projects: [] }, { client_id: "box", enabled: true, projects: [] }] })).status, 200, "the stored key was kept");
+  assert.equal(rt.config.publicKeyFor("box"), identity.publicKey);
   for (const p of ["/admin/api/config", "/admin/api/state", "/admin"]) {
     const text = await (await fetch(`${rt.a}${p}`)).text();
-    for (const leaked of [credential, MCP_BEARER, hashCredential(credential), hashCredential(MCP_BEARER), "sha256"]) assert.ok(!text.includes(leaked), `${p} leaked a secret`);
+    for (const leaked of [identity.publicKey, identity.privateKey, MCP_BEARER, hashCredential(MCP_BEARER), "sha256"]) assert.ok(!text.includes(leaked), `${p} leaked a secret`);
   }
-  assert.equal((await fetch(`${rt.a}/admin/api/clients/nobody/credential`, { method: "POST" })).status, 422);
-  assert.equal(readFileSync(rt.file, "utf8").includes(credential), false);
+  assert.equal(readFileSync(rt.file, "utf8").includes(identity.privateKey), false);
   await rt.close();
 });
 

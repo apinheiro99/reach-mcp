@@ -49,6 +49,8 @@ Normal enrollment is zero-touch:
 7. the Client opens one persistent WebSocket and proves possession of the private key by signing a fresh Server challenge;
 8. the Server verifies the signature and marks the Client online.
 
+Implemented contract (Task #73): the enrollment exchange is the first frame of the persistent `/client` WebSocket, so no extra route or port exists. The Server opens every connection with `challenge{nonce}`; the Client answers once with `hello{client_id, client_build, public_key, signature}`, where the signature covers that nonce and the `client_id`. A known `client_id` must present its stored public key. An unknown `client_id` is enrolled only when the direct socket peer is inside the deployment-owned `--enroll-from` list (addresses or CIDRs, never forwarded headers; no list means nobody can enroll) and its build is compatible; enrollment is one atomic `ServerConfigStore` write of the `client_id` and public key with no project, and a public key can belong to only one `client_id`. A different key for a known `client_id` is refused and never replaces the stored one. Failures are `AUTH_FAILED` and never say which check failed. The Client writes its generated `client_id` and private key into its 0600 bootstrap file on first run; nothing is signed again after the welcome.
+
 The installer may propose the current working/project directory as the initial root. If that choice is not unambiguous, the normal installer may ask only for confirmation of the proposed root. Controlled write access initially remains limited to `temp/**` unless private deployment defaults explicitly choose otherwise.
 
 ### Key rotation

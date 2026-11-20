@@ -1,6 +1,6 @@
 // The Server process composition, and the only place that builds one: it constructs each existing owner exactly once and
 // wires them together. The command line carries only runtime values (paths, bind addresses, build metadata); projects,
-// Clients, credentials, policies and logging settings come from the config file through ServerConfigStore, and a missing
+// Clients, public keys, policies and logging settings come from the config file through ServerConfigStore, and a missing
 // or invalid config simply leaves the Server inactive so the admin listener can serve setup mode. Two listeners: the service
 // listener (MCP, Client WSS, health, public release downloads) and the private admin listener (Web UI and admin API).
 import { createServer, type Server } from "node:http";
@@ -14,6 +14,7 @@ import { ClientConnectionRegistry } from "./connections.ts";
 import { createHttpServer } from "./http-server.ts";
 import { createReleaseHandler } from "./release.ts";
 import { OperationalLogger } from "./logging.ts";
+import { parseTrustedSources } from "./trusted-network.ts";
 import { ProposalStore } from "./proposals.ts";
 import { RotatingTextWriter } from "./rotating-text.ts";
 
@@ -27,6 +28,8 @@ export type ServerArgs = {
   adminPort: number;
   build: string;
   repositoryCommit?: string;
+  /** Peer addresses or CIDRs (comma separated) that may enroll a new Client; omitted means nobody can enroll. */
+  enrollFrom?: string;
   /** Optional directory holding the release manifest and Client artifacts that the public release routes serve. */
   artifacts?: string;
 };
@@ -34,7 +37,7 @@ export type ServerArgs = {
 const LOOPBACK = "127.0.0.1";
 
 export const SERVER_USAGE =
-  "usage: server --config <file> --proposal <file> --logs <dir> --port <n> --admin-port <n> --build <id> [--host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>]";
+  "usage: server --config <file> --proposal <file> --logs <dir> --port <n> --admin-port <n> --build <id> [--host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>] [--enroll-from <addr-or-cidr,...>]";
 
 export function parseServerArgs(argv: readonly string[]): ServerArgs {
   const flags = parseFlags(argv, {
@@ -48,6 +51,7 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     build: { required: true },
     "repository-commit": {},
     artifacts: {},
+    "enroll-from": {},
   });
   const text = (name: string) => flags[name] as string;
   return {
@@ -61,6 +65,7 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     build: text("build"),
     ...(flags["repository-commit"] === undefined ? {} : { repositoryCommit: text("repository-commit") }),
     ...(flags.artifacts === undefined ? {} : { artifacts: text("artifacts") }),
+    ...(flags["enroll-from"] === undefined ? {} : { enrollFrom: text("enroll-from") }),
   };
 }
 
@@ -89,7 +94,7 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
     if (!(error instanceof ConfigError)) throw error;
     logger.log("ERROR", "runtime", `configuration is not active, setup mode: ${error.problems.join("; ")}`);
   }
-  const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, logger, audit });
+  const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, ...(args.enrollFrom === undefined ? {} : { canEnrollFrom: parseTrustedSources(args.enrollFrom) }), logger, audit });
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
   const admin = createServer(createAdminHandler({ ...common, logger, audit }));

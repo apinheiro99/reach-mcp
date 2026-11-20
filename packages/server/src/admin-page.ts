@@ -51,7 +51,7 @@ function save() {
   saving = saving.then(async () => {
     say("Saving…");
     const bearer = document.getElementById("bearer").value;
-    const edit = { logging: model.logging, clients: model.clients.map(({ has_credential, ...c }) => c) };
+    const edit = { logging: model.logging, clients: model.clients.map(({ has_public_key, ...c }) => c) };
     if (bearer) edit.mcp_bearer = bearer;
     const r = await api("PUT", "/admin/api/config", edit);
     if (r.ok) { document.getElementById("bearer").value = ""; say("Saved", "good"); await refresh(false); }
@@ -86,23 +86,13 @@ function renderClient(client) {
   enabled.addEventListener("change", () => { client.enabled = enabled.checked; schedule(); });
   const addProject = el("button", { type: "button", textContent: "Add project" });
   addProject.addEventListener("click", () => { client.projects.push({ project_id: "", physical_root: "", mode: "read_only" }); render(); schedule(); });
-  const issue = el("button", { type: "button", textContent: client.has_credential ? "Replace credential" : "Generate credential" });
-  const shown = el("div", {});
-  issue.addEventListener("click", async () => {
-    await save();
-    const r = await api("POST", "/admin/api/clients/" + encodeURIComponent(client.client_id) + "/credential");
-    if (!r.ok) return say("No credential: " + (r.json.problems || ["unexpected error"]).join("; "), "bad");
-    client.has_credential = true;
-    shown.replaceChildren(el("div", {}, "Shown once, copy it now: ", el("code", { textContent: r.json.result.credential })));
-    say("Credential generated", "good");
-  });
   const remove = el("button", { type: "button", textContent: "Remove Client" });
   remove.addEventListener("click", () => { model.clients.splice(model.clients.indexOf(client), 1); render(); schedule(); });
   return el("fieldset", {}, el("legend", { textContent: client.client_id || "new Client" }),
     field("Client id", client.client_id, (v) => (client.client_id = v)),
     field("Name", client.display_name || "", (v) => (client.display_name = v || undefined)),
     el("label", {}, enabled, " enabled"),
-    el("span", { textContent: client.has_credential ? " credential set" : " no credential yet" }), issue, shown,
+    el("span", { textContent: client.has_public_key ? " enrolled" : " not enrolled yet" }),
     ...client.projects.map((p) => renderProject(client, p)), addProject, remove);
 }
 
@@ -147,7 +137,7 @@ document.getElementById("bearer").addEventListener("input", schedule);
 for (const [id, key] of [["log-bytes", "max_bytes"], ["log-days", "retention_days"]]) {
   document.getElementById(id).addEventListener("input", (e) => { model.logging[key] = Number(e.target.value); schedule(); });
 }
-document.getElementById("add-client").addEventListener("click", () => { model.clients.push({ client_id: "", enabled: false, projects: [], has_credential: false }); render(); schedule(); });
+document.getElementById("add-client").addEventListener("click", () => { model.clients.push({ client_id: "", enabled: false, projects: [], has_public_key: false }); render(); schedule(); });
 refresh(true).then(loadProposal).then(() => say("Ready"));
 setInterval(() => { refresh(false); loadProposal(); }, 5000);
 </script></body></html>`;

@@ -17,7 +17,7 @@ export function parseClientArgs(argv: readonly string[]): ClientArgs {
 export type RunningClient = { transport: ClientTransport; stop(): void };
 
 export function startClient(args: ClientArgs): RunningClient {
-  const bootstrap = loadBootstrap(args.bootstrap, { allowInsecureWs: args.allowInsecureWs });
+  const bootstrap = loadBootstrap(args.bootstrap, { allowInsecureWs: args.allowInsecureWs, createIdentity: true });
   const dispatcher = new ClientDispatcher({ anchors: bootstrap.anchors });
   const transport = new ClientTransport(bootstrap, { build: args.build, handler: dispatcher });
   transport.start();
