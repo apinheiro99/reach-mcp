@@ -61,13 +61,15 @@ Installer contract:
 
 1. detect platform/architecture;
 2. read the Server release manifest;
-3. download the correct prebuilt Client artifact;
+3. select the one `client` artifact whose `os`/`arch` match and download it from its relative `download_path` under the Server origin used to fetch the manifest;
 4. verify SHA-256;
 5. install the native service;
 6. generate Client-owned Ed25519 identity locally;
 7. register with the Server as **Pending**;
 8. wait for human **Enable** through the Admin UI/API;
 9. connect over **WS** and prove the private key.
+
+The release manifest (schema v2, owned by `scripts/release/manifest.mjs`) is the only discovery contract: each artifact declares `role`, `platform`, `os`, `arch`, `name`, `sha256`, `size_bytes` and `download_path`. Installers select by `role`/`os`/`arch` (currently `linux`/`x64` and `win32`/`x64`), never by filename or by parsing `platform`. `download_path` is relative (`/release/artifacts/<name>`) and is `null` for the Server archive, which is not publicly served. The manifest holds no origin, root, credential or other environment data.
 
 The private key never leaves the Client. V1 does not require TLS/WSS, trusted-network auto-admission, manual bootstrap or end-user compilation.
 

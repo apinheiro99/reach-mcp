@@ -1023,7 +1023,7 @@ Do **not** introduce:
 
 At connection time, Server and Client report their actual running opaque build identifier for observability and troubleshooting.
 
-For manifest schema v1 and the runtime gate, compatibility is deliberately exact: `client_build == server_build`. The release manifest records the same build id for release, Server and Client and declares `compatibility.strategy = "exact"` with exactly that Client build accepted. An incompatible Client is rejected explicitly. This deliberately means a Server upgrade can leave older Clients offline until they are explicitly upgraded; that is accepted MVP behavior, not a signal to add version negotiation.
+For manifest schema v2 and the runtime gate, compatibility is deliberately exact: `client_build == server_build`. The release manifest records the same build id for release, Server and Client and declares `compatibility.strategy = "exact"` with exactly that Client build accepted. An incompatible Client is rejected explicitly. This deliberately means a Server upgrade can leave older Clients offline until they are explicitly upgraded; that is accepted MVP behavior, not a signal to add version negotiation.
 
 No independent protocol number, negotiation framework, SemVer layer or version-range parser is introduced.
 
