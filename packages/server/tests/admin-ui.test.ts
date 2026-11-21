@@ -105,6 +105,17 @@ test("background: one fixed network layer covers the whole viewport behind shell
   assert.ok((page.match(/<circle /g)?.length ?? 0) > 20 && (page.match(/<line /g)?.length ?? 0) > 20, "nodes and connections exist");
 });
 
+test("background: the constellation covers the whole viewport height, not just the top (the old y = 600 * u^2.2 put 72% of the nodes in the top third)", () => {
+  const nodes = [...page.matchAll(/<circle cx="([\d.]+)" cy="([\d.]+)"/g)].map((m) => ({ x: Number(m[1]), y: Number(m[2]) }));
+  assert.ok(nodes.length >= 40, "the existing density is kept");
+  assert.ok(nodes.every((n) => n.x >= 0 && n.x <= 1000 && n.y >= 0 && n.y <= 600), "every node is inside the viewBox, none off screen");
+  const share = (from: number, to: number) => nodes.filter((n) => n.y >= from && n.y < to).length / nodes.length;
+  assert.ok(share(0, 200) >= 0.2 && share(0, 200) <= 0.5, "top third holds a fair share, not most of the nodes");
+  assert.ok(share(200, 400) >= 0.2, "middle third has nodes");
+  assert.ok(share(400, 601) >= 0.2, "lower third has nodes");
+  assert.ok(share(450, 601) >= 0.15, "lower quarter has nodes");
+});
+
 test("Overview shows only API facts: what the Server does not expose is an explicit unavailable state", () => {
   const overview = uiSource["overview.ts"] as string;
   assert.equal(overview.match(/UI\.unavailable\(/g)?.length, 5, "failed state request, empty activity list, tunnel, mount and actions");

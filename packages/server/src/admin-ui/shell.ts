@@ -7,7 +7,7 @@ import { NAV_ITEMS } from "./nav.ts";
 function network(): string {
   let seed = 7;
   const next = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-  const nodes = Array.from({ length: 46 }, () => ({ x: next() * 1000, y: Math.pow(next(), 2.2) * 600 }));
+  const nodes = Array.from({ length: 46 }, () => ({ x: next() * 1000, y: next() * 600 }));
   const lines = nodes.flatMap((a, i) =>
     nodes
       .map((b, j) => ({ j, d: Math.hypot(a.x - b.x, a.y - b.y) }))
