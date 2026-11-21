@@ -345,6 +345,8 @@ test("the real one-line install: the Server's own install.sh and manifest-select
     assert.doesNotMatch(unit, /REACH_CLIENT|IDENTITY_KEY|Environment=/);
     assert.ok(!(first.stdout + first.stderr).includes("REACH_CLIENT_IDENTITY_KEY"));
 
+    // The service user is not the owner: the installed tree must stay readable and traversable by others, whatever umask the one-liner used for the bootstrap.
+    assert.equal(statSync(m.install).mode & 0o055, 0o055, "the install directory is world readable and searchable");
     // Start the installed Client exactly as the unit would, and let it generate its own identity.
     client = spawn(process.execPath, [path.join(m.install, "reach-client.mjs"), "--bootstrap", bootstrap, "--build", BUILD_ID, "--allow-insecure-ws"], { stdio: ["ignore", "pipe", "pipe"] });
     let clientOutput = "";

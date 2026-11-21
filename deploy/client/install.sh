@@ -158,8 +158,8 @@ if [ -f "$bootstrap" ]; then
     mv "$bootstrap.tmp.$$" "$bootstrap"
   fi
 else
-  umask 077
-  printf 'REACH_SERVER_URL=%s\nREACH_ROOTS=["%s"]\n' "$ws" "$root" >"$bootstrap"
+  # The restrictive umask is only for the bootstrap: it must not leak into the low-level installer, whose extracted tree the service user has to read.
+  (umask 077; printf 'REACH_SERVER_URL=%s\nREACH_ROOTS=["%s"]\n' "$ws" "$root" >"$bootstrap")
 fi
 if [ "$system" = 1 ]; then chown -R "$SERVICE_USER:$SERVICE_USER" "$state_dir"; fi
 
