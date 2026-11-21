@@ -3,11 +3,10 @@
 import { Buffer } from "node:buffer";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { spawnSync } from "node:child_process";
 import { deploy, parseArgs, rollback, status } from "../deploy/prod/deploy.mjs";
 import { buildManifest, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.mjs";
 
@@ -71,6 +70,8 @@ function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = 
     },
     sleep: async () => {},
     now: () => "2026-11-16T00:00:00.000Z",
+    uid: () => process.getuid(),
+    chown: () => assert.fail("a deployer that already owns the root never chowns"),
   };
   return { deps, log, urls, docker: dockerBin };
 }
@@ -259,26 +260,18 @@ test("deploy and rollback hand the explicit Admin bind and allowlist to Compose,
 });
 
 test("the deployment sources define no private target and run no background updater", () => {
-  for (const name of ["deploy.mjs", "remote-deploy.sh"]) {
+  for (const name of ["deploy.mjs"]) {
     const src = readFileSync(path.join(import.meta.dirname, "..", "deploy", "prod", name), "utf8").replace(/^\s*(#|\/\/).*$/gm, "");
     assert.doesNotMatch(src, /192\.168\.|\.lab\b|reach-private|setInterval|watchtower|cron|auto-?update|docker\.sock/i, name);
   }
   assert.ok(process.env.PATH !== undefined);
 });
 
-test("the CI transport script refuses to run without the operator's target variables and has no defaults for them", () => {
-  const script = path.join(import.meta.dirname, "..", "deploy", "prod", "remote-deploy.sh");
-  const run = (args, env) => spawnSync("bash", [script, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, ...env } });
-  assert.equal(run(["bogus"], {}).status, 2);
-  const noTarget = run(["rollback"], {});
-  assert.notEqual(noTarget.status, 0);
-  assert.match(noTarget.stderr, /DEPLOY_HOST/);
-  const unsafe = run(["rollback"], { DEPLOY_HOST: "h;x", DEPLOY_USER: "u", DEPLOY_SSH_KEY: "/k", DEPLOY_KNOWN_HOSTS: "/kh", DEPLOY_DIR: "/d", DEPLOY_LOGS: "/l" });
-  assert.equal(unsafe.status, 2);
-  assert.match(unsafe.stderr, /outside letters/);
-  const src = readFileSync(script, "utf8");
-  assert.ok(!/DEPLOY_[A-Z_]+:-/.test(src), "no ${DEPLOY_*:-default}");
-  assert.match(src, /StrictHostKeyChecking=yes/);
+test("one controller contract: nothing under deploy/prod or the pipeline still calls deploy.mjs with the removed --config, --proposal or --logs flags", () => {
+  const dir = path.join(import.meta.dirname, "..", "deploy", "prod");
+  const callers = [...readdirSync(dir).map((name) => path.join(dir, name)), path.join(import.meta.dirname, "..", ".gitlab-ci.yml")];
+  for (const file of callers) assert.doesNotMatch(readFileSync(file, "utf8").replace(/^\s*(#|\/\/).*$/gm, ""), /deploy\.mjs[^\n]*--(config|proposal|logs)\b/, file);
+  assert.ok(!existsSync(path.join(dir, "remote-deploy.sh")), "the stale SSH wrapper is gone");
 });
 
 /** A valid two-record state written by hand, then damaged in one way. */
@@ -376,16 +369,111 @@ test("a manifest that is malformed, or names another build, never promotes the c
 
 const record = (id, privatePath) => ({ ...goodRecord(id), private_path: privatePath });
 
-test("a schema 1 state (separate config and proposal paths) is migrated on read: those paths are dropped, the private root is unknown, and the next deploy writes schema 2", async () => {
-  const w = world();
+/** The previous deployment's layout on the host: <old>/config/{server.json,proposal.json} and <old>/logs/, recorded in a schema 1 state. */
+function legacyHost({ proposalDir = "config" } = {}) {
+  const old = path.join(base, `legacy-${counter++}`);
+  mkdirSync(path.join(old, "config"), { recursive: true });
+  mkdirSync(path.join(old, "logs", "sub"), { recursive: true });
+  mkdirSync(path.join(old, proposalDir), { recursive: true });
+  writeFileSync(path.join(old, "config", "server.json"), '{"mcp_bearer":"legacy-bytes"}');
+  writeFileSync(path.join(old, proposalDir, "proposal.json"), '{"proposal":1}');
+  writeFileSync(path.join(old, "logs", "server.log"), "line 1\n");
+  writeFileSync(path.join(old, "logs", "sub", "audit.log"), "audit\n");
   const state = stateDir();
-  const legacy = (id) => ({ ...goodRecord(id), private_path: undefined, config: "/c", proposal: "/p" });
-  writeState(state, JSON.stringify({ schema_version: 1, current: legacy("b1"), previous: null }));
+  const rec = (id) => ({ ...goodRecord(id), private_path: undefined, config: path.join(old, "config", "server.json"), proposal: path.join(old, proposalDir, "proposal.json") });
+  writeState(state, JSON.stringify({ schema_version: 1, current: rec("b1"), previous: null }));
+  return { old, state };
+}
+const fresh = () => path.join(base, `new-root-${counter++}`);
+
+test("a schema 1 state is read as schema 2 (legacy paths dropped from the records, private root unknown) and its legacy paths are never written back", async () => {
+  const { state } = legacyHost();
   const read = status({ state });
   assert.deepEqual([read.schema_version, read.current.private_path, "config" in read.current, "proposal" in read.current], [2, null, false, false]);
-  assert.equal((await deploy(opts(w, make("b2").dir, state), w.deps)).exit, 0);
+  const w = world();
+  const root = fresh();
+  assert.equal((await deploy(opts(w, make("b2").dir, state, { privatePath: root }), w.deps)).exit, 0);
   const after = JSON.parse(readFileSync(path.join(state, "state.json"), "utf8"));
-  assert.deepEqual([after.schema_version, after.current.private_path, after.previous.private_path], [2, PRIVATE, null]);
+  assert.deepEqual([after.schema_version, after.current.private_path, after.previous.private_path, "legacy" in after], [2, root, null, false]);
+  assert.ok(!/server\.json|proposal\.json/.test(JSON.stringify(after)), "no legacy path persisted");
+});
+
+test("first upgrade from the canonical legacy layout copies config, proposal and logs byte for byte into the private root BEFORE Compose, keeps the source, and update and rollback then reuse the root", async () => {
+  const { old, state } = legacyHost();
+  const root = fresh();
+  const w = world();
+  const seen = [];
+  const run = w.deps.run;
+  w.deps.run = (cmd, args, env) => {
+    seen.push([readFileSync(path.join(root, "config.json"), "utf8"), readFileSync(path.join(root, "proposal.json"), "utf8"), readFileSync(path.join(root, "logs", "sub", "audit.log"), "utf8")]);
+    return run(cmd, args, env);
+  };
+  assert.equal((await deploy(opts(w, make("b2").dir, state, { privatePath: root }), w.deps)).exit, 0);
+  assert.deepEqual(seen[0], ['{"mcp_bearer":"legacy-bytes"}', '{"proposal":1}', "audit\n"], "the data was already in place when Compose ran");
+  assert.equal(readFileSync(path.join(root, "logs", "server.log"), "utf8"), "line 1\n");
+  assert.equal(readFileSync(path.join(old, "config", "server.json"), "utf8"), '{"mcp_bearer":"legacy-bytes"}', "the legacy source is left intact");
+  assert.ok(!existsSync(path.join(root, ".legacy-migration")), "no staging directory is left behind");
+  writeFileSync(path.join(root, "config.json"), '{"edited":"after migration"}');
+  assert.equal((await deploy(opts(w, make("b3").dir, state, { privatePath: root }), w.deps)).exit, 0);
+  assert.equal((await rollback(opts(w, "", state, { privatePath: root }), w.deps)).exit, 0);
+  assert.equal(readFileSync(path.join(root, "config.json"), "utf8"), '{"edited":"after migration"}', "later runs never re-migrate over the live data");
+});
+
+test("a failed first candidate leaves the schema 1 state untouched and the retry is accepted again over its own identical copy", async () => {
+  const { state } = legacyHost();
+  const root = fresh();
+  const w = world({ unhealthy: new Set(["reach-server:b2"]) });
+  const first = await deploy(opts(w, make("b2").dir, state, { privatePath: root }), w.deps);
+  assert.equal(first.exit, 1);
+  assert.equal(JSON.parse(readFileSync(path.join(state, "state.json"), "utf8")).schema_version, 1, "not promoted, not rewritten");
+  const w2 = world();
+  assert.equal((await deploy(opts(w2, make("b2").dir, state, { privatePath: root }), w2.deps)).exit, 0);
+});
+
+test("an ambiguous, incomplete or conflicting legacy migration fails before Docker and promotes nothing", async () => {
+  const cases = {
+    "config and proposal in different directories": [legacyHost({ proposalDir: "elsewhere" }), (root) => root, /not siblings/],
+    "legacy config file missing": [(() => { const h = legacyHost(); rmSync(path.join(h.old, "config", "server.json")); return h; })(), (root) => root, /is missing/],
+    "private root already holds a different config": [legacyHost(), (root) => { mkdirSync(root, { recursive: true }); writeFileSync(path.join(root, "config.json"), "{}"); return root; }, /refusing to overwrite/],
+    "private root already holds logs": [legacyHost(), (root) => { mkdirSync(path.join(root, "logs"), { recursive: true }); writeFileSync(path.join(root, "logs", "x.log"), "x"); return root; }, /refusing to overwrite/],
+  };
+  for (const [label, [{ state }, prepare, expected]] of Object.entries(cases)) {
+    const w = world();
+    const root = prepare(fresh());
+    const before = readFileSync(path.join(state, "state.json"), "utf8");
+    await assert.rejects(() => deploy(opts(w, make("b2").dir, state, { privatePath: root }), w.deps), expected, label);
+    assert.equal(w.log.length, 0, `${label}: compose never ran`);
+    assert.equal(readFileSync(path.join(state, "state.json"), "utf8"), before, `${label}: state untouched`);
+    assert.ok(!existsSync(path.join(root, ".legacy-migration")), `${label}: no staging left`);
+  }
+});
+
+test("a missing private root is created only when it can be handed to the container user safely: same uid, or root chowning just the new directory; otherwise nothing is created", async () => {
+  const me = process.getuid();
+  const attempt = async (deployerUid, root, extra = {}) => {
+    const w = world();
+    const chowned = [];
+    w.deps.uid = () => deployerUid;
+    w.deps.chown = (file, uid) => chowned.push([file, uid]);
+    const run = () => deploy(opts(w, make("b4").dir, stateDir(), { privatePath: root, ...extra }), w.deps);
+    return { w, chowned, run };
+  };
+  const same = await attempt(me, fresh());
+  assert.equal((await same.run()).exit, 0);
+  assert.deepEqual(same.chowned, [], "the container user created it: nothing to chown");
+  const rootRoot = fresh();
+  const privileged = await attempt(0, rootRoot, { containerUid: me });
+  assert.equal((await privileged.run()).exit, 0);
+  assert.deepEqual(privileged.chowned, [[rootRoot, me]], "exactly the new root is handed over, never recursively");
+  const foreign = fresh();
+  const unprivileged = await attempt(me + 7, foreign);
+  await assert.rejects(unprivileged.run, /cannot create a directory owned by uid/);
+  assert.ok(!existsSync(foreign) && unprivileged.w.log.length === 0, "nothing was created and Compose never ran");
+  const existing = fresh();
+  mkdirSync(existing, { mode: 0o700 });
+  const wrongOwner = await attempt(0, existing, { containerUid: me + 7 });
+  await assert.rejects(wrongOwner.run, /owned by uid .* writes as uid/);
+  assert.deepEqual(wrongOwner.chowned, [], "an existing foreign-owned directory is refused, never chowned");
 });
 
 test("the private root: a missing one is created owner-only, an existing one is reused with its data, and deploy, update and rollback all mount that same root", async () => {
