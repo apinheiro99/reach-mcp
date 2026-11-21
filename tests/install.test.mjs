@@ -167,7 +167,7 @@ test("Windows public installer (structural only, no PowerShell runs here): expli
 });
 
 test("PowerShell scripts: no double-quoted string puts a scope-like ':' right after a variable (a parse error on Windows PowerShell 5.1, found natively)", () => {
-  for (const file of ["install.ps1", "install-windows.ps1"]) {
+  for (const file of ["install.ps1", "install-windows.ps1", "uninstall-windows.ps1"]) {
     const text = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", file), "utf8");
     const risky = text.split("\n").filter((line) => /"[^"]*\$(?!env:)[A-Za-z_][A-Za-z0-9_]*:[^"]*"/.test(line) && !/^\s*#/.test(line));
     assert.deepEqual(risky, [], `${file}: use \${name} or $($name) before a colon`);
@@ -180,4 +180,20 @@ test("Windows low-level installer (structural): a running Client is stopped befo
   assert.ok(stop > 0 && stop < ps.indexOf("Move-Item -LiteralPath $InstallDir -Destination $Old"), "the task is stopped before the old tree is moved");
   assert.match(ps, /Stop-Process -Force/, "a node.exe started from the install is stopped too");
   assert.equal([...ps.matchAll(/Start-ScheduledTask -TaskName \$TaskName -ErrorAction SilentlyContinue/g)].length, 2, "restarted after a failed move and after a failed swap");
+});
+
+test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-driven uninstaller removes only the REACH-owned task, runtime and state and keeps a custom root", () => {
+  const dir = path.join(import.meta.dirname, "..", "deploy", "client");
+  const un = readFileSync(path.join(dir, "uninstall-windows.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
+  assert.match(un, /install-receipt\.json/, "driven by the receipt");
+  assert.match(un, /Unregister-ScheduledTask/);
+  assert.match(un, /-notlike "\*\$InstallDir\\reach-client\.mjs\*"/, "a task that does not run the REACH launcher is refused");
+  assert.match(un, /StartsWith\(\$InstallDir \+ '\\'/, "only Node processes under the recorded install directory are stopped");
+  assert.match(un, /if \(\[bool\]\$R\.owned\.root\) \{ Remove-IfEmpty \$Root \}/, "the root goes only when REACH created it and it is empty");
+  assert.doesNotMatch(un, /Remove-Item[^\n]*\$Root[^\n]*-Recurse/, "no recursive deletion of a root");
+  const ps = readFileSync(path.join(dir, "install.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
+  assert.match(ps, /\$OwnRoot = -not \(Test-Path -LiteralPath \$Root\)/, "ownership is decided before the first change");
+  assert.match(ps, /uninstall first to change it/, "a conflicting root fails before any change");
+  assert.match(ps, /install-receipt\.json/);
+  assert.match(readFileSync(PS1, "utf8"), /is not a REACH Client task: refusing to replace it/, "a foreign Scheduled Task is refused before any change");
 });

@@ -37,6 +37,12 @@ if ((Test-Path -LiteralPath $InstallDir) -and (Get-ChildItem -LiteralPath $Insta
   throw "$InstallDir exists, is not empty and is not a REACH Client install: refusing to replace it"
 }
 
+# The task name is REACH's, but a task that does not run the REACH launcher belongs to someone else: refuse before any change.
+$Occupant = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($null -ne $Occupant -and (($Occupant.Actions | ForEach-Object { "$($_.Arguments)" }) -join ' ') -notlike "*$Top.mjs*") {
+  throw "scheduled task '$TaskName' exists and is not a REACH Client task: refusing to replace it"
+}
+
 $Stage = "$InstallDir.new"
 $Old = "$InstallDir.old"
 foreach ($leftover in @($Stage, $Old)) { if (Test-Path -LiteralPath $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force } }

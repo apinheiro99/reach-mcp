@@ -8,6 +8,7 @@
 $ErrorActionPreference = 'Stop'
 $StateDir = if ($env:REACH_STATE_DIR) { $env:REACH_STATE_DIR } else { 'C:\ProgramData\REACH\Client' }
 $InstallDir = if ($env:REACH_INSTALL_DIR) { $env:REACH_INSTALL_DIR } else { 'C:\Program Files\REACH\Client' }
+$RootGiven = [bool]$env:REACH_ROOT
 $Root = if ($env:REACH_ROOT) { $env:REACH_ROOT } else { Join-Path $StateDir 'root' }
 $Origin = "$env:REACH_SERVER_ORIGIN".TrimEnd('/')
 
@@ -26,6 +27,22 @@ $Arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { 
 if ($Arch -ne 'AMD64') { Fail "unsupported architecture ${Arch}: only x64 is supported" }
 $Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Fail 'run this in an elevated (Administrator) PowerShell' }
+
+# Ownership is decided before the first change: what this installer creates is recorded as owned, anything that already existed is never claimed.
+# A rerun keeps the original flags and the root of the first install; a different REACH_ROOT has to wait for an uninstall.
+$Receipt = Join-Path $StateDir 'install-receipt.json'
+$Bootstrap = Join-Path $StateDir 'bootstrap.env'
+if (Test-Path -LiteralPath $Receipt -PathType Leaf) {
+  try { $Prior = Get-Content -LiteralPath $Receipt -Raw | ConvertFrom-Json } catch { Fail "the install receipt $Receipt is unreadable" }
+  if ($Prior.schema_version -ne 1 -or $Prior.platform -ne 'win32' -or $Prior.root -isnot [string] -or $null -eq $Prior.owned) { Fail "the install receipt $Receipt is not a REACH receipt" }
+  if ($RootGiven -and $Prior.root.TrimEnd('\') -ne $Root.TrimEnd('\')) { Fail "this machine is already installed with root $($Prior.root): uninstall first to change it" }
+  $Root = $Prior.root
+  $OwnState = [bool]$Prior.owned.state_dir
+  $OwnRoot = [bool]$Prior.owned.root
+} else {
+  $OwnState = -not (Test-Path -LiteralPath $StateDir)
+  $OwnRoot = -not (Test-Path -LiteralPath $Root)
+}
 
 $Work = Join-Path ([IO.Path]::GetTempPath()) ("reach-install-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Work | Out-Null
@@ -75,9 +92,10 @@ try {
   } finally { $Zip.Dispose() }
 
   # Machine changes start here, after everything above was validated.
-  $Bootstrap = Join-Path $StateDir 'bootstrap.env'
   $Endpoint = "ws://$Authority/client"
-  New-Item -ItemType Directory -Path $StateDir, $Root -Force | Out-Null
+  # An older install without a receipt keeps its bootstrap and its root untouched: no new path is created for it.
+  if (-not (Test-Path -LiteralPath $Bootstrap -PathType Leaf) -or (Test-Path -LiteralPath $Receipt -PathType Leaf)) { New-Item -ItemType Directory -Path $StateDir, $Root -Force | Out-Null }
+  else { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
   & icacls.exe $StateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail 'could not restrict the ACL of the state directory' }
   $Utf8 = New-Object Text.UTF8Encoding($false)
@@ -95,6 +113,11 @@ try {
   $Shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
   & $Shell -NoProfile -ExecutionPolicy Bypass -File $LowLevel -Archive $ArchiveFile -Bootstrap $Bootstrap -Build $Build -InstallDir $InstallDir -AllowInsecureWs -Start
   if ($LASTEXITCODE -ne 0) { Fail 'the machine installer failed; see its message above' }
+  # The receipt is written only after a successful install and holds no identity or secret: it is what the uninstaller trusts.
+  $ReceiptBody = [ordered]@{ schema_version = 1; platform = 'win32'; install_dir = $InstallDir; state_dir = $StateDir; bootstrap = $Bootstrap; root = $Root.TrimEnd('\'); task_name = 'REACH Client'; owned = [ordered]@{ state_dir = $OwnState; root = $OwnRoot } }
+  [IO.File]::WriteAllText("$Receipt.tmp", ($ReceiptBody | ConvertTo-Json -Depth 4), $Utf8)
+  Move-Item -LiteralPath "$Receipt.tmp" -Destination $Receipt -Force
+  Write-Output "To remove it later (elevated): powershell -NoProfile -ExecutionPolicy Bypass -File `"$InstallDir\deploy\uninstall-windows.ps1`" -StateDir `"$StateDir`""
   Write-Output "REACH Client installed. It registers with $Origin as Pending; an administrator must Enable it in the Admin UI."
 } finally {
   Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue

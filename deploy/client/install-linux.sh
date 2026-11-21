@@ -106,6 +106,11 @@ if [ -e "$install_dir" ] && [ -n "$(ls -A "$install_dir")" ] && [ ! -f "$install
   die "$install_dir exists, is not empty and is not a REACH Client install: refusing to replace it"
 fi
 
+# The unit name is REACH's, but a file already there that does not run the REACH launcher belongs to someone else: refuse before any change.
+if [ -e "$unit_dir/$UNIT_NAME" ] && ! grep -q "$TOP\\.mjs" "$unit_dir/$UNIT_NAME"; then
+  die "$unit_dir/$UNIT_NAME exists and is not a REACH Client unit: refusing to overwrite it"
+fi
+
 parent="$(dirname "$install_dir")"
 mkdir -p "$parent" "$unit_dir"
 stage="$install_dir.new.$$"

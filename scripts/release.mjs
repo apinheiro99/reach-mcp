@@ -80,10 +80,12 @@ function stage(target, buildDir) {
     // The public install.sh runs this low-level installer out of the verified archive: it stays the one owner of the swap and the unit.
     mkdirSync(path.join(root, "deploy"));
     copyFileSync(path.join(REPO, "deploy", "client", "install-linux.sh"), path.join(root, "deploy", "install-linux.sh"));
+    copyFileSync(path.join(REPO, "deploy", "client", "uninstall-linux.sh"), path.join(root, "deploy", "uninstall-linux.sh"));
   }
   if (target.role === "client" && target.os === "win32") {
     mkdirSync(path.join(root, "deploy"));
     copyFileSync(path.join(REPO, "deploy", "client", "install-windows.ps1"), path.join(root, "deploy", "install-windows.ps1"));
+    copyFileSync(path.join(REPO, "deploy", "client", "uninstall-windows.ps1"), path.join(root, "deploy", "uninstall-windows.ps1"));
     mkdirSync(path.join(root, "runtime"));
     copyFileSync(windowsNode(), path.join(root, "runtime", "node.exe"));
   }
