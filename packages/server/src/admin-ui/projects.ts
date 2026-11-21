@@ -61,7 +61,7 @@ async function renderProjects(view) {
 
   const row = ({ c, p }) => {
     const status = statusOfClient(c);
-    const who = UI.identity({ icon: "box", title: c.display_name || c.client_id, subtitle: c.client_id });
+    const who = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: c.display_name || c.client_id, subtitle: c.client_id });
     const toggle = UI.toggle("", c.enabled, (on) => setAccess(c, on));
     toggle.title = c.enabled ? "Disable this client" : "Enable this client";
     const access = UI.el("div", { className: "pj-actions" }, toggle, status === "pending" ? UI.pill("Pending", "warn") : "");
