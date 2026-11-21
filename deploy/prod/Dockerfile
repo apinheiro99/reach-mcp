@@ -1,6 +1,6 @@
 # Production Server image. It only wraps a verified canonical release (scripts/release.mjs): the context is staged by
 # deploy/prod/build-image.mjs and holds the Server archive, the exact artifacts/ tree and the entrypoint. Nothing is compiled or
-# installed here and no source, Git metadata or private file is copied. Mutable inputs (config, proposal, logs) are bind mounts.
+# installed here and no source, Git metadata or private file is copied. All mutable Server state (config, proposal, logs) lives under the one /reach-private bind mount.
 FROM node:24-bookworm-slim
 ARG REACH_BUILD_ID
 ARG REACH_REPOSITORY_COMMIT
@@ -8,10 +8,9 @@ LABEL org.opencontainers.image.title="REACH MCP Server" \
       org.opencontainers.image.version="${REACH_BUILD_ID}" \
       org.opencontainers.image.revision="${REACH_REPOSITORY_COMMIT}"
 COPY server/runtime.tgz /tmp/reach-server.tgz
-RUN mkdir -p /opt/reach/server /var/log/reach \
+RUN mkdir -p /opt/reach/server \
  && tar -xzf /tmp/reach-server.tgz -C /opt/reach/server --strip-components=1 --no-same-owner \
- && rm /tmp/reach-server.tgz \
- && chown node:node /var/log/reach
+ && rm /tmp/reach-server.tgz
 COPY artifacts/ /opt/reach/artifacts/
 COPY entrypoint.mjs healthcheck.mjs /opt/reach/
 USER node

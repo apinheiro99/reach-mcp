@@ -52,7 +52,7 @@ test("the Dockerfile only wraps release bytes: no install/build/test, no source 
   assert.match(df, /org\.opencontainers\.image\.version="\$\{REACH_BUILD_ID\}"/);
   assert.match(df, /org\.opencontainers\.image\.revision="\$\{REACH_REPOSITORY_COMMIT\}"/);
   assert.match(df, /^ENTRYPOINT \["node", "\/opt\/reach\/entrypoint\.mjs"\]$/m);
-  assert.doesNotMatch(df, /reach-private|\/reach\/reach-|192\.168\.|\.lab\b/);
+  assert.doesNotMatch(df, /(?<![/\w-])reach-private|\/reach\/reach-|192\.168\.|\.lab\b/);
 });
 
 const PRIVATE_LAN = new RegExp(["192", "168"].join("\\.") + "\\.|\\b10\\.\\d+\\.\\d+\\.\\d+|\\b172\\.(1[6-9]|2\\d|3[01])\\.");
@@ -64,7 +64,7 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
   const flag = (name) => args[args.indexOf(`--${name}`) + 1];
   assert.equal(args[0], "/opt/reach/server/reach-server.mjs");
   assert.deepEqual([flag("build"), flag("repository-commit")], [BUILD_ID, COMMIT]);
-  assert.deepEqual([flag("config"), flag("proposal"), flag("logs"), flag("artifacts")], ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach", layout.artifacts]);
+  assert.deepEqual([flag("config"), flag("proposal"), flag("logs"), flag("artifacts")], ["/reach-private/config.json", "/reach-private/proposal.json", "/reach-private/logs", layout.artifacts]);
   assert.deepEqual([flag("port"), flag("host"), flag("admin-port"), flag("admin-host")], ["8787", "0.0.0.0", "8788", "0.0.0.0"]);
   assert.ok(!args.includes("--data-port"), "two listeners only: service and admin");
   assert.ok(!args.includes("--admin-allow-from") && !args.some((a) => PRIVATE_LAN.test(a)), "no allowlist and no LAN value is invented by default; the Server then refuses the non-loopback Admin host");
@@ -77,15 +77,16 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
   assert.ok(!/BUILD|COMMIT/.test(text("entrypoint.mjs").replace(/build_id|repository_commit|--build|--repository-commit/g, "")), "no build identity is read from the environment");
 });
 
-test("Compose runs a built image and mounts exactly config file, proposal file and log dir, with exactly two published ports (service reachable, admin on loopback) and a restart policy", () => {
+test("Compose runs a built image and mounts exactly ONE private directory at /reach-private, with exactly two published ports and a restart policy", () => {
   const yaml = text("compose.yaml").replace(/^\s*#.*$/gm, "").split(/^\s{2}reach-tunnel:$/m)[0];
   assert.doesNotMatch(yaml, /^\s*build:/m, "Compose never builds from source");
   assert.match(yaml, /image: \$\{REACH_IMAGE:\?/);
   assert.match(yaml, /restart: unless-stopped/);
   assert.match(yaml, /container_name: \$\{REACH_CONTAINER_NAME:-reach-server\}/, "the container has the clean name reach-server by default");
-  const volumes = [...yaml.matchAll(/^\s+- (\$\{REACH_[A-Z_]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split(":").pop());
-  assert.deepEqual(volumes, ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach"]);
-  assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 3, "no other mount");
+  const volumes = [...yaml.matchAll(/^\s+- (\$\{REACH_[A-Z_]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].replace(/\$\{(REACH_[A-Z_]+):\?[^}]*\}/, "$1"));
+  assert.deepEqual(volumes, ["REACH_PRIVATE_PATH:/reach-private"], "one Server persistence mount, no legacy config, proposal or log mounts");
+  assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 1, "no other mount");
+  assert.doesNotMatch(yaml, /REACH_(CONFIG_FILE|PROPOSAL_FILE|LOG_DIR)|\/run\/reach|\/var\/log\/reach/, "no legacy Server storage path");
   assert.doesNotMatch(yaml, /docker\.sock|privileged|network_mode: host|volumes:\s*\n\s*\w+:|\s- \/:|\s- \/\w+:\/\w+/);
   const ports = [...yaml.matchAll(/^\s+- "([^"]+:8[0-9]{3})"$/gm)].map((m) => m[1]);
   assert.deepEqual(ports, ["${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787", "${REACH_ADMIN_BIND:?host address to publish the Admin plane on}:${REACH_ADMIN_PORT:-8788}:8788"], "service reachable by default; the Admin publication is whatever the deployment sets in REACH_ADMIN_BIND, with no default");
@@ -170,6 +171,16 @@ test("the CLI requires a release and a tag, and refuses a bad release with a non
 
 test("the production assets carry no self-update, downloader or private topology", () => {
   for (const name of ["Dockerfile", "entrypoint.mjs", "healthcheck.mjs", "compose.yaml", "build-image.mjs"]) {
-    assert.doesNotMatch(text(name).replace(/^\s*(#|\/\/).*$/gm, ""), /curl|wget|auto-?update|watchtower|docker\.sock|reach-private|192\.168\.|\.lab\b/i, name);
+    assert.doesNotMatch(text(name).replace(/^\s*(#|\/\/).*$/gm, ""), /curl|wget|auto-?update|watchtower|docker\.sock|(?<![/\w-])reach-private|\/reach\/reach-private|192\.168\.|\.lab\b/i, name);
   }
+});
+
+test("the root .env contract: .env.example is tracked and names the private path and Admin policy with no value, and a local .env stays ignored", () => {
+  const root = path.join(import.meta.dirname, "..");
+  const example = readFileSync(path.join(root, ".env.example"), "utf8");
+  for (const name of ["REACH_PRIVATE_PATH", "REACH_IMAGE", "REACH_ADMIN_BIND", "REACH_ADMIN_ALLOW_FROM", "REACH_TUNNEL_BINARY", "REACH_TUNNEL_DIR"]) assert.match(example, new RegExp(`^${name}=$`, "m"), `${name} is declared empty`);
+  assert.doesNotMatch(example, PRIVATE_LAN, "no private network value");
+  const ignored = (file) => spawnSync("git", ["check-ignore", "-q", file], { cwd: root }).status === 0;
+  assert.equal(ignored(".env"), true, "the local .env is ignored");
+  assert.equal(ignored(".env.example"), false, ".env.example is not ignored");
 });

@@ -36,9 +36,9 @@ End users do not compile REACH.
 
 ## Persistent root
 
-The operator supplies one durable host path mounted into the Server as `/reach-private`. It is the single top-level persistent/private mount for installation-specific runtime data.
+The operator supplies one durable host path, `REACH_PRIVATE_PATH` (root `.env`, see `.env.example`; a GitLab variable in the pipeline), mounted into the Server as `/reach-private`. It is the single persistent/private mount for installation-specific runtime data: the Server keeps `config.json`, `proposal.json` and `logs/` there. The tunnel inputs (`REACH_TUNNEL_BINARY`, `REACH_TUNNEL_DIR`) stay separate and are never part of it.
 
-If the path does not exist and can be created, create it. If it is unusable, fail clearly. Never silently use ephemeral storage.
+The deployment controller (`deploy.mjs`, `--private-path` on `deploy` and `rollback`) is the owner of the root: an existing directory is reused, a missing one is created owner-only, and anything else stops the command before Docker. The container writes as uid 1000, so the directory must be owned by that uid; it is refused otherwise, never widened with chmod. Deploy, update, automatic restore and rollback all use the same root, and the controller refuses to switch a running deployment to a different one. Never silently use ephemeral storage.
 
 An empty persistent root is a supported first-run condition and places REACH in setup mode until valid configuration exists.
 

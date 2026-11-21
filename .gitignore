@@ -12,6 +12,7 @@ ci-summary/
 # Real configuration and secrets never belong here (see reach-private)
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 

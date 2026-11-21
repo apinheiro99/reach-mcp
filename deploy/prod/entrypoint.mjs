@@ -1,5 +1,5 @@
 // Deployment argument composition only: the build id and repository commit come from the baked canonical manifest, the layout is
-// fixed by the image and the two ports plus the Admin allowlist (REACH_ADMIN_ALLOW_FROM, required while REACH_ADMIN_HOST is not
+// fixed by the image (everything the Server persists is under the one /reach-private mount) and the two ports plus the Admin allowlist (REACH_ADMIN_ALLOW_FROM, required while REACH_ADMIN_HOST is not
 // loopback, which is the default) are the only settings. Then it hands over to the canonical Server launcher.
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -10,9 +10,9 @@ import process from "node:process";
 export const LAYOUT = {
   server: "/opt/reach/server/reach-server.mjs",
   artifacts: "/opt/reach/artifacts",
-  config: "/run/reach/config.json",
-  proposal: "/run/reach/proposal.json",
-  logs: "/var/log/reach",
+  config: "/reach-private/config.json",
+  proposal: "/reach-private/proposal.json",
+  logs: "/reach-private/logs",
 };
 
 /** The Server command line for one container start. `layout` is overridable only so tests can run it outside an image. */

@@ -3,7 +3,7 @@
 import { Buffer } from "node:buffer";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -25,7 +25,8 @@ const TD = path.join(base, "tunnel");
 mkdirSync(TD, { recursive: true });
 const ADMIN_BIND = "127.0.0.1";
 const ADMIN_ALLOW = "203.0.113.0/24,127.0.0.1";
-const [C1, P1, C2, P2] = ["c1.json", "p1.json", "c2.json", "p2.json"].map(inputFile);
+const NOT_A_DIR = inputFile("not-a-dir.json");
+const PRIVATE = path.join(base, "reach-private");
 
 /** A valid canonical release for one build id. */
 function release(buildId, commit) {
@@ -53,7 +54,7 @@ function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = 
   const deps = {
     run: (cmd, args, env) => {
       assert.deepEqual(args.slice(0, 2), ["compose", "-p"]);
-      log.push({ image: env.REACH_IMAGE, config: env.REACH_CONFIG_FILE, proposal: env.REACH_PROPOSAL_FILE, logs: env.REACH_LOG_DIR, adminBind: env.REACH_ADMIN_BIND, adminAllowFrom: env.REACH_ADMIN_ALLOW_FROM });
+      log.push({ image: env.REACH_IMAGE, privatePath: env.REACH_PRIVATE_PATH, adminBind: env.REACH_ADMIN_BIND, adminAllowFrom: env.REACH_ADMIN_ALLOW_FROM });
       if (failImages.has(env.REACH_IMAGE)) throw new Error("compose up failed");
       running = env.REACH_IMAGE;
     },
@@ -81,7 +82,7 @@ const make = (id) => {
 };
 
 const opts = (w, rel, state, extra = {}) => ({
-  release: rel, state, config: C1, proposal: P1, logs: "/srv/logs", docker: w.docker, tunnelBinary: TB, tunnelDir: TD, project: "reach", imageRepo: "reach-server",
+  release: rel, state, privatePath: PRIVATE, containerUid: process.getuid(), docker: w.docker, tunnelBinary: TB, tunnelDir: TD, project: "reach", imageRepo: "reach-server",
   port: 8787, adminPort: 8788, adminBind: ADMIN_BIND, adminAllowFrom: ADMIN_ALLOW, retries: 2, intervalMs: 0, ...extra,
 });
 const stateDir = () => path.join(base, `state-${counter++}`);
@@ -97,28 +98,29 @@ test("first deploy builds the canonical image, starts it and promotes it only af
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.current.repository_commit, s.current.image], ["b1", r.commit, "reach-server:b1"]);
   assert.equal(s.previous, null);
-  assert.deepEqual([s.current.config, s.current.proposal], [C1, P1]);
+  assert.equal(s.current.private_path, PRIVATE);
+  assert.ok(statSync(PRIVATE).isDirectory(), "a missing private root is created before Docker");
 });
 
 test("a second deploy keeps the first as the previous known-good", async () => {
   const w = world();
   const state = stateDir();
   await deploy(opts(w, make("b1").dir, state), w.deps);
-  await deploy(opts(w, make("b2").dir, state, { config: C2 }), w.deps);
+  await deploy(opts(w, make("b2").dir, state), w.deps);
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.previous.build_id], ["b2", "b1"]);
-  assert.equal(s.previous.config, C1, "the previous deployment keeps its own config reference");
+  assert.equal(s.previous.private_path, PRIVATE, "both deployments name the one private root");
 });
 
-test("a candidate that fails health restores the previous image with its config and proposal, exits non-zero and leaves state untouched", async () => {
+test("a candidate that fails health restores the previous image on the same private root, exits non-zero and leaves state untouched", async () => {
   const w = world({ unhealthy: new Set(["reach-server:b2"]) });
   const state = stateDir();
   await deploy(opts(w, make("b1").dir, state), w.deps);
   w.log.length = 0;
-  const { exit, evidence } = await deploy(opts(w, make("b2").dir, state, { config: C2, proposal: P2 }), w.deps);
+  const { exit, evidence } = await deploy(opts(w, make("b2").dir, state), w.deps);
   assert.equal(exit, 1);
   assert.deepEqual([evidence.result, evidence.rollback], ["candidate-failed", "restored"]);
-  assert.deepEqual(w.log.map((l) => [l.image, l.config, l.proposal]), [["reach-server:b2", C2, P2], ["reach-server:b1", C1, P1]]);
+  assert.deepEqual(w.log.map((l) => [l.image, l.privatePath]), [["reach-server:b2", PRIVATE], ["reach-server:b1", PRIVATE]]);
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.previous], ["b1", null], "the failed candidate never became known-good");
 });
@@ -166,7 +168,7 @@ test("explicit rollback restores the previous deployment and swaps current and p
   const { exit, evidence } = await rollback(opts(w, "", state), w.deps);
   assert.equal(exit, 0);
   assert.equal(evidence.result, "restored");
-  assert.deepEqual(w.log.map((l) => [l.image, l.config]), [["reach-server:b1", C1]]);
+  assert.deepEqual(w.log.map((l) => [l.image, l.privatePath]), [["reach-server:b1", PRIVATE]]);
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.previous.build_id], ["b1", "b2"]);
 });
@@ -196,12 +198,13 @@ test("a second deployment while one holds the lock is refused, and the lock is r
 test("state and evidence hold identities, paths and results only, never file contents or a bearer", async () => {
   const w = world();
   const state = stateDir();
-  const cfg = path.join(base, "private-config.json");
-  writeFileSync(cfg, JSON.stringify({ mcp_bearer: BEARER }));
-  const { evidence } = await deploy(opts(w, make("b1").dir, state, { config: cfg }), w.deps);
+  const root = path.join(base, `private-${counter++}`);
+  mkdirSync(root, { mode: 0o700 });
+  writeFileSync(path.join(root, "config.json"), JSON.stringify({ mcp_bearer: BEARER }));
+  const { evidence } = await deploy(opts(w, make("b1").dir, state, { privatePath: root }), w.deps);
   const written = readFileSync(path.join(state, "state.json"), "utf8") + readFileSync(path.join(state, "evidence.json"), "utf8") + JSON.stringify(evidence);
   assert.ok(!written.includes(BEARER));
-  assert.ok(written.includes(cfg), "the config is referenced by path only");
+  assert.ok(written.includes(root), "the private root is referenced by path only");
 });
 
 test("a custom evidence path is honoured and the state file is replaced atomically (no temp file left)", async () => {
@@ -215,25 +218,27 @@ test("a custom evidence path is honoured and the state file is replaced atomical
 
 test("the command line requires the operator's target inputs and has no defaults for them", () => {
   assert.throws(() => parseArgs(["deploy", "--state", "/s"]), /missing --release/);
-  assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p"]), /missing --logs/);
-  assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l"]), /missing --tunnel-binary/);
+  assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r"]), /missing --tunnel-binary/);
+  assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--tunnel-binary", "/tb", "--tunnel-dir", "/td", "--admin-bind", "127.0.0.1", "--admin-allow-from", "127.0.0.1"]), /missing --private-path/);
   assert.throws(() => parseArgs(["frobnicate", "--state", "/s"]), /usage/);
-  const base = ["--state", "/s", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"];
-  const deployBase = [...base, "--release", "/r", "--config", "/c", "--proposal", "/p"];
-  const admin = ["--admin-bind", "127.0.0.1", "--admin-allow-from", "203.0.113.0/24"];
+  const base = ["--state", "/s", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"];
+  const deployBase = [...base, "--release", "/r"];
+  const admin = ["--admin-bind", "127.0.0.1", "--admin-allow-from", "203.0.113.0/24", "--private-path", "/p"];
   const a = parseArgs(["deploy", ...deployBase, ...admin]);
-  assert.deepEqual([a.port, a.adminPort, a.docker, a.project, a.adminBind, a.adminAllowFrom], [8787, 8788, "docker", "reach", "127.0.0.1", "203.0.113.0/24"]);
+  assert.deepEqual([a.port, a.adminPort, a.docker, a.project, a.adminBind, a.adminAllowFrom, a.privatePath], [8787, 8788, "docker", "reach", "127.0.0.1", "203.0.113.0/24", "/p"]);
   assert.deepEqual([parseArgs(["rollback", ...base, ...admin]).command, parseArgs(["rollback", ...base, ...admin]).adminAllowFrom], ["rollback", "203.0.113.0/24"]);
 });
 
-test("the Admin exposure policy is explicit: deploy and rollback refuse a missing or empty bind or allowlist, and status needs neither", () => {
-  const base = ["--state", "/s", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"];
-  const deployBase = [...base, "--release", "/r", "--config", "/c", "--proposal", "/p"];
+test("the deployment policy is explicit: deploy and rollback refuse a missing or empty Admin bind, Admin allowlist or private root, and status needs none", () => {
+  const base = ["--state", "/s", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"];
+  const deployBase = [...base, "--release", "/r"];
   for (const command of [["deploy", deployBase], ["rollback", base]]) {
     assert.throws(() => parseArgs([command[0], ...command[1]]), /missing --admin-bind/);
     assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "127.0.0.1"]), /missing --admin-allow-from/);
     assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "", "--admin-allow-from", "127.0.0.1"]), /--admin-bind must not be empty/);
     assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "127.0.0.1", "--admin-allow-from", ""]), /--admin-allow-from must not be empty/);
+    assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "127.0.0.1", "--admin-allow-from", "127.0.0.1"]), /missing --private-path/);
+    assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "127.0.0.1", "--admin-allow-from", "127.0.0.1", "--private-path", ""]), /--private-path must not be empty/);
   }
   assert.equal(parseArgs(["status", "--state", "/s"]).command, "status");
 });
@@ -277,7 +282,7 @@ test("the CI transport script refuses to run without the operator's target varia
 });
 
 /** A valid two-record state written by hand, then damaged in one way. */
-const goodRecord = (id) => ({ build_id: id, repository_commit: "a".repeat(40), image: `reach-server:${id}`, config: "/c", proposal: "/p", deployed_at: "2026-11-16T00:00:00.000Z" });
+const goodRecord = (id) => ({ build_id: id, repository_commit: "a".repeat(40), image: `reach-server:${id}`, private_path: PRIVATE, deployed_at: "2026-11-16T00:00:00.000Z" });
 const writeState = (state, content) => {
   mkdirSync(state, { recursive: true });
   writeFileSync(path.join(state, "state.json"), content);
@@ -288,13 +293,13 @@ test("an existing state that is malformed, unsupported or incomplete stops deplo
     "malformed json": "{ not json",
     "empty file": "",
     "not an object": "[]",
-    "unsupported schema": JSON.stringify({ schema_version: 2, current: null, previous: null }),
+    "unsupported schema": JSON.stringify({ schema_version: 3, current: null, previous: null }),
     "missing schema": JSON.stringify({ current: null, previous: null }),
-    "missing current key": JSON.stringify({ schema_version: 1, previous: null }),
-    "truncated record": JSON.stringify({ schema_version: 1, current: { build_id: "b1" }, previous: null }),
-    "bad commit": JSON.stringify({ schema_version: 1, current: { ...goodRecord("b1"), repository_commit: "abc" }, previous: null }),
-    "empty field": JSON.stringify({ schema_version: 1, current: goodRecord("b1"), previous: { ...goodRecord("b0"), config: "" } }),
-    "record is a string": JSON.stringify({ schema_version: 1, current: "b1", previous: null }),
+    "missing current key": JSON.stringify({ schema_version: 2, previous: null }),
+    "truncated record": JSON.stringify({ schema_version: 2, current: { build_id: "b1" }, previous: null }),
+    "bad commit": JSON.stringify({ schema_version: 2, current: { ...goodRecord("b1"), repository_commit: "abc" }, previous: null }),
+    "empty field": JSON.stringify({ schema_version: 2, current: goodRecord("b1"), previous: { ...goodRecord("b0"), private_path: "" } }),
+    "record is a string": JSON.stringify({ schema_version: 2, current: "b1", previous: null }),
   };
   for (const [label, content] of Object.entries(damaged)) {
     const w = world();
@@ -321,16 +326,16 @@ test("a state path that cannot be read as a file stops the command instead of be
 test("a valid two-record state is accepted and a missing state file is still a first deployment", async () => {
   const w = world();
   const state = stateDir();
-  writeState(state, JSON.stringify({ schema_version: 1, current: goodRecord("b2"), previous: goodRecord("b1") }));
+  writeState(state, JSON.stringify({ schema_version: 2, current: goodRecord("b2"), previous: goodRecord("b1") }));
   assert.equal(status({ state }).previous.build_id, "b1");
   const fresh = stateDir();
-  assert.deepEqual(status({ state: fresh }), { schema_version: 1, current: null, previous: null });
+  assert.deepEqual(status({ state: fresh }), { schema_version: 2, current: null, previous: null });
   assert.equal((await deploy(opts(w, make("b1").dir, fresh), w.deps)).exit, 0);
 });
 
-test("a missing or non-file deployment input is refused before anything is built or started", async () => {
+test("a missing or non-file tunnel input is refused before anything is built or started", async () => {
   const w = world();
-  for (const extra of [{ config: path.join(base, "absent.json") }, { proposal: base }, { tunnelBinary: path.join(base, "absent-tunnel") }, { tunnelDir: C1 }]) {
+  for (const extra of [{ tunnelBinary: path.join(base, "absent-tunnel") }, { tunnelDir: NOT_A_DIR }]) {
     const state = stateDir();
     const { exit, evidence } = await deploy(opts(w, make("b7").dir, state, extra), w.deps);
     assert.equal(exit, 1);
@@ -367,4 +372,57 @@ test("a manifest that is malformed, or names another build, never promotes the c
     assert.equal(evidence.rollback, "restored", label);
     assert.equal(status({ state }).current.build_id, "b1", label);
   }
+});
+
+const record = (id, privatePath) => ({ ...goodRecord(id), private_path: privatePath });
+
+test("a schema 1 state (separate config and proposal paths) is migrated on read: those paths are dropped, the private root is unknown, and the next deploy writes schema 2", async () => {
+  const w = world();
+  const state = stateDir();
+  const legacy = (id) => ({ ...goodRecord(id), private_path: undefined, config: "/c", proposal: "/p" });
+  writeState(state, JSON.stringify({ schema_version: 1, current: legacy("b1"), previous: null }));
+  const read = status({ state });
+  assert.deepEqual([read.schema_version, read.current.private_path, "config" in read.current, "proposal" in read.current], [2, null, false, false]);
+  assert.equal((await deploy(opts(w, make("b2").dir, state), w.deps)).exit, 0);
+  const after = JSON.parse(readFileSync(path.join(state, "state.json"), "utf8"));
+  assert.deepEqual([after.schema_version, after.current.private_path, after.previous.private_path], [2, PRIVATE, null]);
+});
+
+test("the private root: a missing one is created owner-only, an existing one is reused with its data, and deploy, update and rollback all mount that same root", async () => {
+  const w = world();
+  const state = stateDir();
+  const root = path.join(base, `fresh-${counter++}`, "nested", "reach-private");
+  await deploy(opts(w, make("b1").dir, state, { privatePath: root }), w.deps);
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  writeFileSync(path.join(root, "config.json"), "{}");
+  await deploy(opts(w, make("b2").dir, state, { privatePath: root }), w.deps);
+  await rollback(opts(w, "", state, { privatePath: root }), w.deps);
+  assert.equal(readFileSync(path.join(root, "config.json"), "utf8"), "{}", "the data is reused, never recreated");
+  assert.deepEqual(w.log.map((l) => l.privatePath), [root, root, root]);
+});
+
+test("an unusable private root stops deploy and rollback before any Docker action: a file, or a directory owned by another uid", async () => {
+  const w = world();
+  const state = stateDir();
+  writeState(state, JSON.stringify({ schema_version: 2, current: record("b2", null), previous: record("b1", null) }));
+  const other = stateDir();
+  for (const [label, extra, expected] of [["a file", { privatePath: NOT_A_DIR }, /not a usable directory/], ["another owner", { containerUid: process.getuid() + 1 }, /owned by uid .* writes as uid/]]) {
+    await assert.rejects(() => deploy(opts(w, make("b9").dir, other, extra), w.deps), expected, `deploy: ${label}`);
+    await assert.rejects(() => rollback(opts(w, "", state, extra), w.deps), expected, `rollback: ${label}`);
+  }
+  assert.equal(w.log.length, 0, "compose never ran");
+  assert.ok(!existsSync(path.join(other, "evidence.json")), "no evidence claims a deployment");
+});
+
+test("deploy and rollback refuse to switch a running deployment to another private root", async () => {
+  const w = world();
+  const state = stateDir();
+  await deploy(opts(w, make("b1").dir, state), w.deps);
+  await deploy(opts(w, make("b2").dir, state), w.deps);
+  w.log.length = 0;
+  const elsewhere = path.join(base, `elsewhere-${counter++}`);
+  await assert.rejects(() => deploy(opts(w, make("b3").dir, state, { privatePath: elsewhere }), w.deps), /refusing to switch/);
+  await assert.rejects(() => rollback(opts(w, "", state, { privatePath: elsewhere }), w.deps), /refusing to switch/);
+  assert.equal(w.log.length, 0);
+  assert.ok(!existsSync(elsewhere), "the other root was not even created");
 });
