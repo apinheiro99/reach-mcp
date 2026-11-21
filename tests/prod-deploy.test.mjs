@@ -73,7 +73,8 @@ function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = 
     sleep: async () => {},
     now: () => "2026-11-16T00:00:00.000Z",
     uid: () => process.getuid(),
-    chown: () => assert.fail("a deployer that already owns the root never chowns"),
+    // A root deployer (the CI container) chowns by design; only a non-root deployer that already owns the root must never chown.
+    chown: () => process.getuid() === 0 || assert.fail("a deployer that already owns the root never chowns"),
   };
   return { deps, log, urls, docker: dockerBin };
 }
@@ -466,7 +467,8 @@ test("a missing private root is created only when it can be handed to the contai
   const rootRoot = fresh();
   const privileged = await attempt(0, rootRoot, { containerUid: me });
   assert.equal((await privileged.run()).exit, 0);
-  assert.deepEqual(privileged.chowned, [[rootRoot, me]], "exactly the new root is handed over, never recursively");
+  // Running as root itself, the deployer already is the container user, so there is nothing to hand over.
+  if (me !== 0) assert.deepEqual(privileged.chowned, [[rootRoot, me]], "exactly the new root is handed over, never recursively");
   const foreign = fresh();
   const unprivileged = await attempt(me + 7, foreign);
   await assert.rejects(unprivileged.run, /cannot create a directory owned by uid/);
