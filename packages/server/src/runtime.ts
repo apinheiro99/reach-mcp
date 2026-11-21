@@ -6,7 +6,9 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { CliError, parseFlags, parsePort } from "@reach-mcp/shared/cli";
+import path from "node:path";
 import { createAdminHandler } from "./admin.ts";
+import { watchSources } from "./admin-ui/dev-reload.ts";
 import { DirectoryArtifactSource } from "./artifacts.ts";
 import { AuditWriter } from "./audit.ts";
 import { ConfigError, ServerConfigStore } from "./config.ts";
@@ -119,6 +121,7 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
   try {
     const [port, adminPort] = await Promise.all([listen(server, args.port, args.host), listen(admin, args.adminPort, args.adminHost)]);
     connections.start();
+    if (args.devLiveReload) watchSources([import.meta.dirname, path.join(import.meta.dirname, "..", "..", "shared", "src")], () => process.kill(process.pid, "SIGTERM"));
     logger.log("INFO", "runtime", `server started build=${args.build} port=${port} admin_port=${adminPort} active=${config.isActive()}`);
     return { port, adminPort, stop };
   } catch (error) {

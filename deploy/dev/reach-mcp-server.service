@@ -3,7 +3,8 @@
 # The admin routes (8788) have no login of their own, so this reference unit keeps that listener on loopback. Reviewing the UI from the
 # operator workstation is a private drop-in (reach-private/runtime/server/reach-mcp-server.lan-admin.conf) that sets --admin-host and
 # --admin-allow-from; no network address of this deployment belongs in this public file.
-# DEV only: node --watch restarts the process when a source file changes and --dev-live-reload makes an open admin page reload by itself.
+# DEV only: --dev-live-reload makes the process restart itself when a source file changes (it polls, because /reach is a network share) and an open
+# admin page reload by itself; Restart=always brings the process back.
 [Unit]
 Description=REACH MCP Server (DEV)
 After=network-online.target
@@ -13,8 +14,8 @@ Wants=network-online.target
 Type=simple
 User=dev
 WorkingDirectory=/reach/reach-mcp
-ExecStart=/usr/local/bin/node --watch packages/server/src/main.ts --config /reach/reach-private/runtime/server/config.json --proposal /reach/reach-private/runtime/server/proposal.json --logs /reach/reach-mcp/logs --host 127.0.0.1 --port 8787 --admin-host 127.0.0.1 --admin-port 8788 --dev-live-reload --build dev
-Restart=on-failure
+ExecStart=/usr/local/bin/node packages/server/src/main.ts --config /reach/reach-private/runtime/server/config.json --proposal /reach/reach-private/runtime/server/proposal.json --logs /reach/reach-mcp/logs --host 127.0.0.1 --port 8787 --admin-host 127.0.0.1 --admin-port 8788 --dev-live-reload --build dev
+Restart=always
 RestartSec=2
 
 [Install]

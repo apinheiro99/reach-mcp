@@ -4,13 +4,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ClientConnectionRegistry, createAdminHandler, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { renderAdminPage } from "../src/admin-page.ts";
 import { NAV_ITEMS } from "../src/admin-ui/nav.ts";
+import { watchSources } from "../src/admin-ui/dev-reload.ts";
 
 const SRC = path.join(import.meta.dirname, "..", "src");
 const UI_DIR = path.join(SRC, "admin-ui");
@@ -166,4 +167,19 @@ test("admin peers: with a peer policy an outside address gets 403 on every admin
   const open = await start({ allowFrom: (peer) => peer === "127.0.0.1" || peer === "::ffff:127.0.0.1" });
   assert.equal((await fetch(`${open.url}/admin`)).status, 200);
   await open.close();
+});
+
+test("DEV source watcher: one polling watcher fires once when a source file time changes, which is what a network share needs", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "reach-watch-"));
+  const file = path.join(dir, "a.ts");
+  writeFileSync(file, "x");
+  let fired = 0;
+  watchSources([dir], () => fired++);
+  const later = new Date(Date.now() + 60_000);
+  utimesSync(file, later, later);
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(fired, 1, "one change, one restart request");
+  utimesSync(file, new Date(Date.now() + 120_000), new Date(Date.now() + 120_000));
+  await new Promise((r) => setTimeout(r, 2200));
+  assert.equal(fired, 1, "never a second request from the same process");
 });

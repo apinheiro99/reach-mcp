@@ -160,12 +160,12 @@ test("DEV unit files: only the approved /reach layout, no credential, no obsolet
     const exec = text.split("\n").find((l) => l.startsWith("ExecStart="));
     assert.ok(exec, `${n} has an ExecStart`);
     const installed = n.includes("client");
-    assert.ok(exec.startsWith(installed ? "ExecStart=/usr/local/bin/node /opt/reach-mcp-client/reach-client.mjs " : "ExecStart=/usr/local/bin/node --watch packages/"), "runs node directly (server in watch mode), no shell; the Client runs the installed artifact, never the source tree");
+    assert.ok(exec.startsWith(installed ? "ExecStart=/usr/local/bin/node /opt/reach-mcp-client/reach-client.mjs " : "ExecStart=/usr/local/bin/node packages/"), "runs node directly, no shell; the Client runs the installed artifact, never the source tree");
     if (installed) assert.ok(!/packages\/|WorkingDirectory/.test(text.replace(/^#.*$/gm, "")), "no source checkout dependency in the Client unit");
     assert.ok(!/reach-private\/(client|server)\//.test(text), "private runtime files live under reach-private/runtime/");
     assert.ok(!/\/etc\/|\/var\/|\/reach\/runtime|reach\.env|client\.env|Environment|sh -c|credential=|token|password|secret/i.test(text.replace(/^#.*$/gm, "")), `${n}: no secret, env or obsolete path`);
     for (const p of exec.match(/(?<=\s)\/[A-Za-z0-9_./-]+/g) ?? []) assert.ok(p.startsWith("/reach/") || p === "/usr/local/bin/node" || p === "/opt/reach-mcp-client/reach-client.mjs", `${n}: ${p} is outside the approved layout`);
-    assert.match(text, /Restart=on-failure/);
+    assert.match(text, installed ? /Restart=on-failure/ : /Restart=always/, installed ? "the Client restarts on failure" : "the DEV Server also restarts itself on a source change");
     assert.match(text, /^User=dev$/m);
   }
   assert.match(units[0]?.text ?? "", /--host 127\.0\.0\.1 --port 8787 --admin-host 127\.0\.0\.1 --admin-port 8788/);
