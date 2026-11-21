@@ -15,6 +15,8 @@ import type { SourcePolicy } from "./trusted-network.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
+const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|rotate-key)$/;
+const ROTATION_HTTP = { rotated: 200, offline: 409, busy: 409, timeout: 504, refused: 422 } as const;
 const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
 export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & {
@@ -24,6 +26,8 @@ export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & {
   audit?: Audit;
   /** Direct socket peers allowed to use the admin surface. Omitted means no peer check, which is only safe on a loopback listener. */
   allowFrom?: SourcePolicy;
+  /** The operator label of the page header; the page's own default when omitted. */
+  adminUser?: string;
   /** DEV only: serve the reload event stream and add its script to the page. */
   devLiveReload?: boolean;
 };
@@ -53,7 +57,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
   const logger = deps.logger ?? NO_LOGGER;
   const audit = deps.audit ?? NO_AUDIT;
-  const page = renderAdminPage({ devLiveReload: deps.devLiveReload === true });
+  const page = renderAdminPage({ devLiveReload: deps.devLiveReload === true, ...(deps.adminUser === undefined ? {} : { adminUser: deps.adminUser }) });
   const devReload = deps.devLiveReload === true ? createDevReload() : undefined;
 
   /** Runs one config change; on success the Clients get the new policies exactly once, on a refusal nothing changed. Audited once either way. */
@@ -72,6 +76,15 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
       note("refused");
       send(res, 422, { ok: false, problems: error.problems });
     }
+  };
+
+  /** Every Client as the Clients screen reads it: config facts and live session facts joined, plus the counts that always add up. */
+  const clientsView = () => {
+    const sessions = connections.status();
+    const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), last_seen: connections.lastSeen(c.client_id) }));
+    const count = (status: string) => clients.filter((c) => c.status === status).length;
+    const online = clients.filter((c) => c.online).length;
+    return { clients, counts: { total: clients.length, enabled: count("enabled"), pending: count("pending"), disabled: count("disabled"), online, offline: clients.length - online } };
   };
 
   return (req, res) => {
@@ -109,6 +122,30 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
         return send(res, 400, { ok: false, problems: error instanceof ConfigError ? error.problems : ["unreadable request"] });
       }
       return change(res, "config_edit", undefined, () => config.applyEdit(edit));
+    }
+    if (pathname === "/admin/api/clients") {
+      if (method !== "GET") return send(res, 405);
+      return config.isActive() ? send(res, 200, clientsView()) : send(res, 200, { clients: [], counts: { total: 0, enabled: 0, pending: 0, disabled: 0, online: 0, offline: 0 } });
+    }
+    const lifecycle = CLIENT_ROUTE.exec(pathname);
+    if (lifecycle) {
+      if (method !== "POST") return send(res, 405);
+      let id: string;
+      try {
+        id = decodeURIComponent(lifecycle[1] as string);
+      } catch {
+        return send(res, 400);
+      }
+      const action = lifecycle[2];
+      if (action === "rotate-key") {
+        const result = await connections.rotateKey(id);
+        return send(res, ROTATION_HTTP[result], { ok: result === "rotated", result });
+      }
+      const enable = action === "enable";
+      return change(res, `client_${action}`, id, () => {
+        config.setClientEnabled(id, enable);
+        if (!enable) connections.disconnect(id);
+      });
     }
     if (pathname === "/admin/api/proposal") {
       if (method !== "GET") return send(res, 405);

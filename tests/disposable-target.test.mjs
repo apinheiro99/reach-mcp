@@ -64,7 +64,7 @@ test("lifecycle: fresh and isolated, canonical artifact installs with default pa
   mkdirSync(path.join(dir, "stage", "root"));
   harness("put", name, archive);
   harness("put", name, INSTALLER);
-  const server = await startServer(parseServerArgs(["--config", path.join(base, "cfg", "config.json"), "--proposal", path.join(base, "cfg", "proposal.json"), "--logs", path.join(base, "logs"), "--port", "0", "--admin-port", "0", "--build", "dev-1", "--enroll-from", "127.0.0.1"]));
+  const server = await startServer(parseServerArgs(["--config", path.join(base, "cfg", "config.json"), "--proposal", path.join(base, "cfg", "proposal.json"), "--logs", path.join(base, "logs"), "--port", "0", "--admin-port", "0", "--build", "dev-1"]));
   try {
     const bootstrapSource = path.join(base, "bootstrap.env");
     writeFileSync(bootstrapSource, `REACH_SERVER_URL=ws://127.0.0.1:${server.port}/client\nREACH_ROOTS=${JSON.stringify([root])}\n`, { mode: 0o600 });
@@ -76,7 +76,7 @@ test("lifecycle: fresh and isolated, canonical artifact installs with default pa
     assert.equal(existsSync("/etc/systemd/system/reach-mcp-client.service"), hostUnits, "the host unit directory is untouched");
     assert.ok(!readFileSync(path.join(dir, "stage", "bootstrap.env"), "utf8").includes("REACH_CLIENT_IDENTITY_KEY"), "no identity before the Client first runs");
 
-    // The installed Client reaches the real Server service plane and enrolls itself.
+    // The installed Client reaches the real Server service plane and registers itself.
     const admin = `http://127.0.0.1:${server.adminPort}`;
     const bearer = "disposable-bearer-" + "Hq48Tz21";
     assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: bearer, clients: [] }) })).status, 200);
@@ -87,7 +87,13 @@ test("lifecycle: fresh and isolated, canonical artifact installs with default pa
     };
     const pid = harness("run", name, "--detach", "--", "node", "/opt/reach-mcp-client/reach-client.mjs", "--bootstrap", "/mnt/bootstrap.env", "--build", "dev-1", "--allow-insecure-ws");
     assert.match(pid, /^\d+$/);
-    assert.equal(await waitFor(1), 1, "the Client inside the target enrolled and connected to the Server");
+    const listed = async () => (await (await fetch(`${admin}/admin/api/clients`)).json()).clients;
+    for (let i = 0; i < 160 && (await listed()).length === 0; i++) await sleep(50);
+    const [registered] = await listed();
+    assert.equal(registered?.status, "pending", "the Client inside the target registered itself and waits for a human");
+    assert.equal(await connected(), 0, "Pending has no session");
+    assert.equal((await fetch(`${admin}/admin/api/clients/${encodeURIComponent(registered.client_id)}/enable`, { method: "POST" })).status, 200);
+    assert.equal(await waitFor(1), 1, "after the human Enable the Client inside the target connected to the Server");
     assert.equal(harness("status", name), `${name} running=1`);
     const generated = readFileSync(path.join(dir, "stage", "bootstrap.env"), "utf8");
     assert.match(generated, /REACH_CLIENT_IDENTITY_KEY=\S+/, "the identity was generated inside the target only");

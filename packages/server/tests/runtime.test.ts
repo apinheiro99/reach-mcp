@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startClient } from "../../client/src/runtime.ts";
 import { CliError } from "@reach-mcp/shared/cli";
+import { importPrivateKey, publicKeyFromPrivate } from "@reach-mcp/shared/identity";
+import WebSocket from "ws";
+import { signedHello } from "./identity-fixture.ts";
 import { parseServerArgs, startServer, type RunningServer } from "../src/runtime.ts";
 
 const SRC = path.join(import.meta.dirname, "..", "src");
@@ -26,8 +29,9 @@ test("server args: required flags, loopback defaults for both listeners, valid p
   assert.equal(parseServerArgs(argv(d, ["--repository-commit", "abc"])).repositoryCommit, "abc");
   assert.equal(parseServerArgs(argv(d)).artifacts, undefined, "no artifacts directory unless one is given");
   assert.equal(parseServerArgs(argv(d, ["--artifacts", "/srv/releases"])).artifacts, "/srv/releases");
-  assert.equal(parseServerArgs(argv(d)).enrollFrom, undefined, "nobody may enroll unless a trusted source is given");
-  assert.equal(parseServerArgs(argv(d, ["--enroll-from", "203.0.113.0/24,127.0.0.1"])).enrollFrom, "203.0.113.0/24,127.0.0.1");
+  assert.equal(parseServerArgs(argv(d)).adminUser, undefined, "the operator label is the page default unless one is given");
+  assert.equal(parseServerArgs(argv(d, ["--admin-user", "Operator"])).adminUser, "Operator");
+  assert.throws(() => parseServerArgs(argv(d, ["--enroll-from", "127.0.0.1"])), CliError, "trusted-network admission is gone: there is no flag for it");
   for (const bad of [[], argv(d).slice(2), [...argv(d), "--config", SECRET], [...argv(d), "--bearer", SECRET], argv(d).map((v) => (v === "0" ? "70000" : v)), argv(d).filter((v, i, a) => v !== "--admin-port" && a[i - 1] !== "--admin-port"), [...argv(d), "--host"]]) {
     assert.throws(() => parseServerArgs(bad), (e: unknown) => e instanceof CliError && !e.message.includes(SECRET));
   }
@@ -82,9 +86,9 @@ test("--artifacts wires the public release routes on the service listener of the
   await withoutFlag.stop();
 });
 
-test("Server and Client runtimes enroll over loopback from temporary private files, then reconnect by a fresh challenge", async () => {
+test("Server and Client runtimes: unknown Client waits Pending, Enable admits it, Disable closes and refuses it, Rotate Key swaps the key and the old one is refused", async () => {
   const d = dirs();
-  const server: RunningServer = await startServer(parseServerArgs(argv(d, ["--enroll-from", "127.0.0.1"])));
+  const server: RunningServer = await startServer(parseServerArgs(argv(d)));
   const data = `http://127.0.0.1:${server.port}`;
   const admin = `http://127.0.0.1:${server.adminPort}`;
   const root = mkdtempSync(path.join(tmpdir(), "reach-anchor-"));
@@ -92,32 +96,72 @@ test("Server and Client runtimes enroll over loopback from temporary private fil
   const file = path.join(d.base, "bootstrap.env");
   writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:${server.port}/client\nREACH_ROOTS=${JSON.stringify([root])}\n`);
   chmodSync(file, 0o600);
-  const connected = async () => ((await (await fetch(`${data}/health`, { headers: { Authorization: `Bearer ${BEARER}` } })).json()) as { clients: { connected: number } }).clients.connected;
-  const waitConnected = async (n: number) => {
-    for (let i = 0; i < 100 && (await connected()) !== n; i++) await new Promise((r) => setTimeout(r, 50));
-    return connected();
+  const wait = async (cond: () => Promise<boolean>) => {
+    for (let i = 0; i < 160 && !(await cond()); i++) await new Promise((r) => setTimeout(r, 50));
+    return cond();
   };
+  const connected = async () => ((await (await fetch(`${data}/health`, { headers: { Authorization: `Bearer ${BEARER}` } })).json()) as { clients: { connected: number } }).clients.connected;
+  const list = async () => (await (await fetch(`${admin}/admin/api/clients`)).json()) as { clients: { client_id: string; status: string; online: boolean; fingerprint: string | null }[]; counts: Record<string, number> };
+  const post = (suffix: string) => fetch(`${admin}/admin/api/clients/${encodeURIComponent(clientId)}/${suffix}`, { method: "POST" });
   const client = startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true });
-  assert.equal(await waitConnected(1), 1, "the Client enrolled and was admitted with no credential and no admin step");
   const stored = readFileSync(file, "utf8");
-  const identityText = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(stored)![1]!;
+  const oldKey = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(stored)![1]!;
   const clientId = /REACH_CLIENT_ID=(\S+)/.exec(stored)![1]!;
   assert.equal(statSync(file).mode & 0o077, 0, "the identity file stays private");
+
+  assert.equal(await wait(async () => (await list()).clients.length === 1), true, "the valid unknown identity registered itself");
+  assert.deepEqual((await list()).counts, { total: 1, enabled: 0, pending: 1, disabled: 0, online: 0, offline: 1 });
+  assert.equal(await connected(), 0, "Pending has no operational session");
   const config = readFileSync(d.config, "utf8");
-  assert.ok(config.includes(clientId) && config.includes("public_key") && !config.includes(identityText), "the Server holds the public key only");
-  assert.ok(!JSON.stringify(client.transport.snapshot()).includes(identityText));
+  assert.ok(config.includes(clientId) && config.includes("public_key") && !config.includes(oldKey), "the Server holds the public key only");
+  assert.ok(!JSON.stringify(client.transport.snapshot()).includes(oldKey));
+  assert.equal((await post("rotate-key")).status, 409, "a Pending Client cannot rotate");
+
+  assert.equal((await post("enable")).status, 200);
+  assert.equal(await wait(async () => (await connected()) === 1), true, "Enable admits the same identity with no credential and no re-enrollment");
+  assert.equal((await list()).clients[0]?.online, true);
+  const firstFingerprint = (await list()).clients[0]!.fingerprint;
+
+  assert.equal((await post("rotate-key")).status, 200);
+  assert.equal(await wait(async () => (await list()).clients[0]?.fingerprint !== firstFingerprint), true, "the Server replaced the public key");
+  assert.equal(await wait(async () => (await connected()) === 1), true, "the Client reconnected and proved the new key");
+  const rotated = readFileSync(file, "utf8");
+  const newKey = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(rotated)![1]!;
+  assert.notEqual(newKey, oldKey);
+  assert.equal(rotated.replace(newKey, oldKey), stored, "only the private key line changed");
+  assert.equal(statSync(file).mode & 0o077, 0, "still private after rotation");
+  assert.ok(!readFileSync(d.config, "utf8").includes(newKey) && !JSON.stringify(await list()).includes(newKey), "the private key never reaches the Server");
+
+  const stranger = new WebSocket(`ws://127.0.0.1:${server.port}/client`);
+  const reply = await new Promise<{ kind: string; error?: { code: string } }>((resolve) => {
+    stranger.on("message", (m) => {
+      const frame = JSON.parse(m.toString()) as { kind: string; nonce?: string; error?: { code: string } };
+      if (frame.kind === "challenge") {
+        const old = { privateKey: oldKey, publicKey: publicKeyFromPrivate(importPrivateKey(oldKey)), key: importPrivateKey(oldKey) };
+        stranger.send(JSON.stringify(signedHello(old, clientId, frame.nonce!, { client_build: "dev-1" })));
+      } else resolve(frame);
+    });
+  });
+  assert.equal(reply.error?.code, "AUTH_FAILED", "the old key is refused");
+  stranger.terminate();
+
+  assert.equal((await post("disable")).status, 200);
+  assert.equal(await wait(async () => (await connected()) === 0), true, "Disable closed the live session");
+  assert.equal((await list()).clients[0]?.status, "disabled");
+  await new Promise((r) => setTimeout(r, 2500));
+  assert.equal(await connected(), 0, "a Disabled Client is refused on reconnect");
+  assert.equal(client.transport.snapshot().lastError?.code, "CLIENT_DISABLED");
+  assert.equal((await post("enable")).status, 200);
+  assert.equal(await wait(async () => (await connected()) === 1), true, "re-enable restores access without any manual step");
+
   client.stop();
-  assert.equal(await waitConnected(0), 0);
-  const again = startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true });
-  assert.equal(await waitConnected(1), 1, "reconnect re-authenticates with the same identity");
-  assert.equal(readFileSync(file, "utf8"), stored, "the identity is generated once");
-  again.stop();
   await server.stop();
   const logs = readdirSync(d.logs).map((f) => readFileSync(path.join(d.logs, f), "utf8")).join("\n");
-  assert.match(logs, new RegExp(`client enrolled client_id=${clientId}`));
-  assert.match(logs, new RegExp(`client connected client_id=${clientId}`));
-  assert.match(logs, /action=enroll/);
-  assert.ok(![identityText, BEARER].some((x) => logs.includes(x)));
+  assert.match(logs, new RegExp(`client registered pending client_id=${clientId}`));
+  assert.match(logs, /action=register_pending/);
+  assert.match(logs, /action=rotate_key/);
+  assert.match(logs, /action=client_disable/);
+  assert.ok(![oldKey, newKey, BEARER].some((x) => logs.includes(x)));
 });
 
 test("the real Server process starts in setup mode and exits cleanly on SIGTERM", async () => {

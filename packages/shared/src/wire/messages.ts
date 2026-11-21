@@ -13,7 +13,7 @@ import { PolicySync } from "./policy.ts";
 export const ServerChallenge = z.strictObject({ kind: z.literal("challenge"), nonce: Nonce });
 export type ServerChallenge = z.infer<typeof ServerChallenge>;
 
-/** Client -> Server, once per connection: identity, public key and the signature of the challenge. A first connection from an unknown client_id is its enrollment. */
+/** Client -> Server, once per connection: identity, public key and the signature of the challenge. A first valid hello from an unknown client_id registers it as Pending; it gets no access until a human enables it. */
 export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, display_name: z.string().min(1).max(100).optional() });
 export type ClientHello = z.infer<typeof ClientHello>;
 
@@ -37,19 +37,31 @@ export const ResponseEnvelope = z.discriminatedUnion("ok", [
 ]);
 export type ResponseEnvelope = z.infer<typeof ResponseEnvelope>;
 
+/** Server -> Client, after the welcome: the connected Client must generate a new Ed25519 pair locally and answer with only its public key. */
+export const ServerRotateKey = z.strictObject({ kind: z.literal("rotate_key"), rotation_id: RequestId });
+export type ServerRotateKey = z.infer<typeof ServerRotateKey>;
+
+/** Client -> Server: the answer to one rotate_key; the replacement PUBLIC key, never the private one. */
+export const ClientRotated = z.strictObject({ kind: z.literal("rotated"), rotation_id: RequestId, public_key: PublicKey });
+export type ClientRotated = z.infer<typeof ClientRotated>;
+
+/** What an admitted Client may send: a response to a request, or the answer to a key rotation. */
+export const SessionMessage = z.union([ClientRotated, ...ResponseEnvelope.options]);
+export type SessionMessage = z.infer<typeof SessionMessage>;
+
 /** Client -> Server: the hello, then one response per request. */
 /** The one constructor of an error response. */
 export const failureResponse = (requestId: string, error: WireError): ResponseEnvelope => ({ kind: "response", request_id: requestId, ok: false, error });
 
-export const ClientMessage = z.union([ClientHello, ...ResponseEnvelope.options]);
+export const ClientMessage = z.union([ClientHello, ...SessionMessage.options]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
 /** Server -> Client: the handshake answer, the policy snapshot, and the requests the Client executes. */
-export const ServerMessage = z.union([ServerChallenge, ServerWelcome, ServerReject, PolicySync, RequestEnvelope]);
+export const ServerMessage = z.union([ServerChallenge, ServerWelcome, ServerReject, PolicySync, RequestEnvelope, ServerRotateKey]);
 export type ServerMessage = z.infer<typeof ServerMessage>;
 
 /** What the Server may send once the Client is admitted. */
-export const PostWelcomeMessage = z.union([PolicySync, RequestEnvelope]);
+export const PostWelcomeMessage = z.union([PolicySync, RequestEnvelope, ServerRotateKey]);
 export type PostWelcomeMessage = z.infer<typeof PostWelcomeMessage>;
 
 export type WireParse<T> = { ok: true; data: T } | { ok: false; error: WireError };

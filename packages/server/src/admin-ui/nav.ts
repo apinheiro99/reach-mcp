@@ -2,7 +2,7 @@
 // declare a menu entry. The order here is the order on screen.
 export const NAV_ITEMS = [
   { id: "overview", label: "Overview", icon: "home", subtitle: "High-level server, clients and platform status at a glance." },
-  { id: "clients", label: "Clients", icon: "users", subtitle: "Clients, their projects and access." },
+  { id: "clients", label: "Clients", icon: "users", subtitle: "MCP clients, connection status and access control" },
   { id: "projects", label: "Projects", icon: "layers", subtitle: "Projects exposed through each Client." },
   { id: "system", label: "System", icon: "cog", subtitle: "Server settings and platform configuration." },
   { id: "api", label: "API", icon: "code", subtitle: "Endpoints and connection details." },

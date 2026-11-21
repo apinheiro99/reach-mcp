@@ -28,9 +28,6 @@ const ago = (ms) => {
   return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m ago";
 };
 
-// One status per Client, so the counters and the donut always add up: no enrolled key = pending, else enabled or disabled.
-const clientStatus = (c) => (!c.has_public_key ? "pending" : c.enabled ? "enabled" : "disabled");
-
 function donut(parts, total) {
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -51,15 +48,12 @@ function donut(parts, total) {
 }
 
 async function renderOverview(view) {
-  const [state, config] = await Promise.all([api("GET", "/admin/api/state"), api("GET", "/admin/api/config")]);
-  if (!state.ok || !config.ok) { view.replaceChildren(UI.card({ title: "Overview", icon: "info", children: [UI.unavailable("The Server did not answer the state request.")] })); return; }
+  const [state, list] = await Promise.all([api("GET", "/admin/api/state"), api("GET", "/admin/api/clients")]);
+  if (!state.ok || !list.ok) { view.replaceChildren(UI.card({ title: "Overview", icon: "info", children: [UI.unavailable("The Server did not answer the state request.")] })); return; }
   const h = state.json.health;
-  const clients = config.json.clients;
-  const sessions = h.clients.sessions;
-  const online = sessions.filter((s) => s.online).length;
-  const by = (name) => clients.filter((c) => clientStatus(c) === name).length;
-  const count = { enabled: by("enabled"), pending: by("pending"), disabled: by("disabled") };
-  const total = clients.length;
+  const clients = list.json.clients;
+  const { total, online, enabled, pending, disabled } = list.json.counts;
+  const count = { enabled, pending, disabled };
 
   const stats = UI.el("div", { className: "ov-stats" },
     UI.stat({ icon: "users", value: total, label: "Total Clients" }),
@@ -80,11 +74,11 @@ async function renderOverview(view) {
   const status = UI.card({ icon: "users", title: "Client Status", subtitle: "Distribution of clients by access status", children: [
     UI.el("div", { className: "donut-wrap" }, donut([{ tone: "ok", count: count.enabled }, { tone: "warn", count: count.pending }, { tone: "bad", count: count.disabled }], total), legend)] });
 
-  const name = (id) => (clients.find((c) => c.client_id === id) || {}).display_name || id;
-  const recent = [...sessions].sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0)).slice(0, 4);
+  const name = (c) => c.display_name || c.client_id;
+  const recent = clients.filter((c) => c.last_seen).sort((a, b) => b.last_seen - a.last_seen).slice(0, 4);
   const activity = UI.card({ icon: "pulse", title: "Recent Client Activity", subtitle: "Latest client connection and status", children: recent.length
-    ? recent.map((s) => UI.row({ icon: s.online ? "check-circle" : "wifi-off", tone: s.online ? "ok" : undefined, title: name(s.client_id), detail: s.online ? "Client connected (online)" : "Client offline", aside: s.last_seen ? ago(s.last_seen) : "never seen" }))
-    : [UI.unavailable("No clients configured yet")] });
+    ? recent.map((c) => UI.row({ icon: c.online ? "check-circle" : "wifi-off", tone: c.online ? "ok" : undefined, title: name(c), detail: c.online ? "Client connected (online)" : "Client offline", aside: ago(c.last_seen) }))
+    : [UI.unavailable("No client has connected yet")] });
 
   const healthRow = (icon, title, pill) => UI.row({ icon, title, aside: pill });
   const failed = h.requests.failed + h.requests.timed_out;

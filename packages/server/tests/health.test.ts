@@ -97,7 +97,7 @@ test("health holds no logger, metrics library, event bus, runtime Git or second 
   const dir = path.join(import.meta.dirname, "..", "src");
   const health = readFileSync(path.join(dir, "health.ts"), "utf8");
   assert.ok(!/child_process|execFile|node:fs|console\.|EventEmitter|prom-client|opentelemetry|randomUUID/.test(health));
-  const all = readdirSync(dir).map((f) => readFileSync(path.join(dir, f), "utf8")).join("\n");
+  const all = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts")).map((f) => readFileSync(path.join(dir, f), "utf8")).join("\n");
   assert.equal([...all.matchAll(/randomUUID\(/g)].length, 1, "one request id generator, in the registry");
   assert.ok(!/console\.|EventEmitter|prom-client|opentelemetry|child_process/.test(all));
   assert.ok(typeof buildHealth === "function");

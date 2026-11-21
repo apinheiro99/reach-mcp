@@ -69,7 +69,10 @@ export const SHELL_HTML = `<div class="shell">
 <div class="main"><header class="header" id="header"></header><main class="view" id="view"></main></div></div>`;
 
 // The router and shell behaviour. NAV is the one menu list, injected from nav.ts; VIEWS is filled by the views.
-export const shellJs = (): string => `
+/** The label of the signed-in operator; one value, injected as data so it can never break out of the script. */
+export const DEFAULT_ADMIN_USER = "admin";
+export const shellJs = (adminUser: string = DEFAULT_ADMIN_USER): string => `
+const ADMIN_USER = ${JSON.stringify(adminUser).replace(/</g, "\\u003c")};
 const NAV = ${JSON.stringify(NAV_ITEMS)};
 const VIEWS = {};
 const autosave = UI.autosave();
@@ -80,7 +83,7 @@ function buildNav() {
 }
 function buildHeader(item) {
   document.getElementById("header").replaceChildren(UI.icon(item.icon), UI.el("div", {}, UI.el("h1", { textContent: item.label }), UI.el("p", { textContent: item.subtitle })),
-    UI.el("div", { className: "header-end" }, autosave.el, UI.el("div", { className: "admin-user" }, UI.icon("user"), "admin")));
+    UI.el("div", { className: "header-end" }, autosave.el, UI.el("div", { className: "admin-user" }, UI.icon("user"), ADMIN_USER)));
 }
 function currentItem() { const id = location.hash.replace("#/", ""); return NAV.find((n) => n.id === id) || NAV[0]; }
 let poller = null;

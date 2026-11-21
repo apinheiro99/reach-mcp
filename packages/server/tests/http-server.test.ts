@@ -60,7 +60,7 @@ test("the Client WebSocket upgrade shares the same listener and still goes throu
 
 test("one owner for each primitive: hashing, digest comparison and bearer parsing live only in auth.ts", () => {
   const dir = path.join(import.meta.dirname, "..", "src");
-  const files = readdirSync(dir).map((f) => [f, readFileSync(path.join(dir, f), "utf8")] as const);
+  const files = readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts")).map((f) => [f, readFileSync(path.join(dir, f), "utf8")] as const);
   for (const [name, text] of files) {
     if (name === "auth.ts") continue;
     assert.ok(!/createHash|timingSafeEqual|\/\^Bearer/.test(text), `${name} must use the auth owner`);

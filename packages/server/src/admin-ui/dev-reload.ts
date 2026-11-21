@@ -3,7 +3,6 @@
 // triggered by the one source watcher below, which polls file times because the sources live on a network share, where inotify
 // (and so `node --watch`) never sees a change made from another machine. systemd (Restart=always in the DEV unit) starts the process again.
 // It exists only when the runtime switch --dev-live-reload is given, so a production process has neither the route, the script nor the watcher.
-import { randomUUID } from "node:crypto";
 import { readdirSync, watchFile } from "node:fs";
 import type { ServerResponse } from "node:http";
 import path from "node:path";
@@ -18,7 +17,7 @@ export const DEV_RELOAD_SCRIPT = `
 `;
 
 export function createDevReload(): (res: ServerResponse) => void {
-  const instance = randomUUID();
+  const instance = `${process.pid}-${process.hrtime.bigint()}`; // differs for every process start, which is all the page compares
   return (res) => {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
     res.write(`data: ${instance}\n\n`);

@@ -131,7 +131,7 @@ test("one rotation implementation serves both writers; no logging framework or g
   const read = (f: string) => readFileSync(path.join(src, f), "utf8");
   for (const f of ["logging.ts", "audit.ts"]) assert.ok(!/renameSync|unlinkSync|appendFileSync|readdirSync|node:fs/.test(read(f)), `${f} holds no file mechanics`);
   assert.equal((read("rotating-text.ts").match(/renameSync\(/g) ?? []).length, 1);
-  const all = readdirSync(src).map(read).join("\n");
+  const all = readdirSync(src, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts")).map(read).join("\n");
   assert.ok(!/console\.(log|error|warn)|EventEmitter|winston|pino|prom-client|opentelemetry/.test(all), "no console logger, event bus or framework");
   const pkg = readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8");
   assert.ok(!/winston|pino|bunyan|prom-client|opentelemetry/.test(pkg));

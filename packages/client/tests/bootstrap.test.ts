@@ -163,3 +163,21 @@ test("first run: createIdentity generates the client_id and Ed25519 key once, wr
   assert.throws(() => loadBootstrap(open, { createIdentity: true }), (e: unknown) => e instanceof BootstrapError && /group or others/.test(e.message), "a file open to others never receives a key");
   assert.ok(!readFileSync(open, "utf8").includes("REACH_CLIENT_IDENTITY_KEY"));
 });
+
+test("rotateIdentity: a new Ed25519 pair replaces only the private key line, atomically, 0600, and returns the public key", () => {
+  const f = path.join(mkdtempSync(path.join(tmpdir(), "reach-rotate-boot-")), "bootstrap.env");
+  const text = `# kept\nREACH_SERVER_URL=wss://server.example/ws\nREACH_CLIENT_ID=laptop-1\nREACH_CLIENT_IDENTITY_KEY=${CRED}\nREACH_ROOTS=${JSON.stringify([anchor])}\n`;
+  writeFileSync(f, text, { mode: 0o600 });
+  const boot = loadBootstrap(f);
+  const next = boot.rotateIdentity();
+  assert.notEqual(next, KEY.publicKey);
+  assert.equal(boot.publicKey(), next, "the in-memory identity is the new one");
+  const after = readFileSync(f, "utf8");
+  const newKey = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(after)![1]!;
+  assert.notEqual(newKey, CRED);
+  assert.equal(after.replace(newKey, CRED), text, "every other line, comment and id is untouched");
+  assert.equal(statSync(f).mode & 0o077, 0, "still private");
+  assert.equal(loadBootstrap(f).publicKey(), next, "a restart loads the rotated identity");
+  assert.equal(verifyChallenge(next, "N".repeat(43), "laptop-1", boot.sign("N".repeat(43))), true, "signatures now come from the new key");
+  assert.throws(() => parseBootstrap(text, {}, undefined).rotateIdentity(), (e: unknown) => e instanceof BootstrapError && !String(e).includes(CRED), "a bootstrap with no file cannot rotate");
+});

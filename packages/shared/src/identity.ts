@@ -1,7 +1,7 @@
 // The one owner of Ed25519 identity primitives, shared by Client (generate, sign) and Server (verify). Keys travel in the
 // raw 32-byte form as unpadded base64url; the Client private key is a PKCS#8 DER blob in the same encoding and never
 // leaves the Client. A signature binds the Server's fresh challenge to the signing client_id.
-import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify, type KeyObject } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify, type KeyObject } from "node:crypto";
 
 const PKCS8_ED25519_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 
@@ -49,3 +49,6 @@ export function verifyChallenge(publicKey: string, nonce: string, clientId: stri
     return false;
   }
 }
+
+/** The canonical, non-secret fingerprint of a public key: "ed25519:" and the SHA-256 of its raw 32 bytes in lowercase hex. */
+export const publicKeyFingerprint = (publicKey: string): string => `ed25519:${createHash("sha256").update(Buffer.from(publicKey, "base64url")).digest("hex")}`;
