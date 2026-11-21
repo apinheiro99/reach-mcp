@@ -6,15 +6,27 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import { ConfigError } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
-import { ADMIN_PAGE } from "./admin-page.ts";
+import { renderAdminPage } from "./admin-page.ts";
+import { LOGO_PNG } from "./admin-ui/assets.ts";
+import { createDevReload, DEV_RELOAD_PATH } from "./admin-ui/dev-reload.ts";
 import { buildHealth, type HealthDeps } from "./health.ts";
 import type { ProposalStore } from "./proposals.ts";
+import type { SourcePolicy } from "./trusted-network.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
 const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
-export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & { proposals: ProposalStore; uptimeSeconds?: () => number; logger?: Logger; audit?: Audit };
+export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & {
+  proposals: ProposalStore;
+  uptimeSeconds?: () => number;
+  logger?: Logger;
+  audit?: Audit;
+  /** Direct socket peers allowed to use the admin surface. Omitted means no peer check, which is only safe on a loopback listener. */
+  allowFrom?: SourcePolicy;
+  /** DEV only: serve the reload event stream and add its script to the page. */
+  devLiveReload?: boolean;
+};
 
 const send = (res: ServerResponse, status: number, body?: unknown): void => {
   if (body === undefined) return void res.writeHead(status).end();
@@ -41,6 +53,8 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   const uptimeSeconds = deps.uptimeSeconds ?? process.uptime;
   const logger = deps.logger ?? NO_LOGGER;
   const audit = deps.audit ?? NO_AUDIT;
+  const page = renderAdminPage({ devLiveReload: deps.devLiveReload === true });
+  const devReload = deps.devLiveReload === true ? createDevReload() : undefined;
 
   /** Runs one config change; on success the Clients get the new policies exactly once, on a refusal nothing changed. Audited once either way. */
   const change = async (res: ServerResponse, action: string, target: string | undefined, apply: () => unknown): Promise<void> => {
@@ -68,13 +82,19 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   };
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (deps.allowFrom && !deps.allowFrom(req.socket.remoteAddress)) return send(res, 403);
     const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     const method = req.method ?? "GET";
     if (pathname === "/") return void res.writeHead(302, { Location: "/admin" }).end();
     if (pathname === "/admin") {
       if (method !== "GET") return send(res, 405);
-      return void res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(ADMIN_PAGE);
+      return void res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }).end(page);
     }
+    if (pathname === "/admin/assets/reach-logo.png") {
+      if (method !== "GET") return send(res, 405);
+      return void res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=3600" }).end(LOGO_PNG);
+    }
+    if (devReload && pathname === DEV_RELOAD_PATH) return method === "GET" ? devReload(res) : send(res, 405);
     if (pathname === "/admin/api/state") {
       if (method !== "GET") return send(res, 405);
       return send(res, 200, { setup_mode: !config.isActive(), health: buildHealth({ ...deps, uptimeSeconds }) });

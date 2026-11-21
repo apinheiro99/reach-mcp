@@ -142,7 +142,7 @@ test("the page is vanilla: debounced autosave, no Save button, no framework or r
   assert.match(html, /DEBOUNCE_MS = \d+/);
   assert.match(html, /setTimeout\(save, DEBOUNCE_MS\)/);
   assert.ok(!/>\s*Save\s*</i.test(html), "no generic Save button");
-  assert.ok(html.includes('id="log-bytes"') && html.includes('id="log-days"'), "log size and retention fields exist");
+  assert.ok(html.includes('id: "log-bytes"') && html.includes('id: "log-days"'), "log size and retention fields exist");
   assert.ok(html.includes('"Approve"') && html.includes('"Reject"') && html.includes("/admin/api/proposal"), "approve and reject exist for a pending proposal");
   assert.ok(!/<script[^>]*\ssrc=|react|vue|svelte|angular|jquery/i.test(html));
   assert.equal((await fetch(`${rt.a}/`, { redirect: "manual" })).status, 302);

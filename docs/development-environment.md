@@ -34,6 +34,8 @@ The Server uses the same V1 architecture as production:
 - no trusted-network auto-admission;
 - no TLS/WSS requirement in V1.
 
+The DEV unit starts the Server with `--dev-live-reload`: the process watches its own sources (polling file times, because `/reach` is a network share where `node --watch` never sees a change made from another machine), restarts itself, and systemd (`Restart=always`) starts it again; an already open Admin page reloads by itself (the page keeps one event stream open, receives a new process instance id after the restart and reloads once). Both are DEV only; a production process has neither the route nor the script. The unit keeps the Admin listener on loopback. To review the UI from the operator workstation, the private drop-in `reach-private/runtime/server/reach-mcp-server.lan-admin.conf` binds it to the LAN with `--admin-host` and `--admin-allow-from`, and the runtime refuses a non-loopback admin host without that peer list; no network address of the deployment is in public source.
+
 DEV may use an explicit insecure-WS switch because the V1 transport itself is WS. Manual DEV bootstrap compatibility may remain temporarily while migration work is incomplete, but it is not the canonical production installation path.
 
 ## Runtime paths
