@@ -43,7 +43,7 @@ Keep `REACH_PRIVATE_PATH` the same across updates: that path is what preserves t
 
 ## Client installation
 
-The Server exposes the canonical install commands:
+The Server exposes the canonical install commands. `http://REACH-SERVER/` is a minimal discovery page that shows exactly these commands for the address you used, and only for the installers the Server can actually serve right now; `/install.sh` and `/install.ps1` are the fixed download routes, served from the Server's release artifacts by those two exact names (a missing installer answers 404 and is not advertised). The page needs no login and no Admin access and works in setup mode.
 
 Linux:
 

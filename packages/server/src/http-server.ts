@@ -1,5 +1,5 @@
 // The Server's one HTTP listener: authenticated stateless Streamable HTTP MCP on /mcp and the Client WebSocket upgrade on
-// /client, plus the private /health. "/release/..." goes to the injected public release handler (release.ts); every other path is a 404, and there is no MCP session here. TLS is the reverse proxy's job.
+// /client, plus the private /health. "/release/..." goes to the injected public release handler (release.ts) and "/", "/install.sh" and "/install.ps1" to the install-discovery handler (install-discovery.ts); every other path is a 404, and there is no MCP session here. TLS is the reverse proxy's job.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { WebSocketServer } from "ws";
@@ -9,6 +9,7 @@ import type { ServerConfigStore } from "./config.ts";
 import { buildHealth } from "./health.ts";
 import { buildMcpServer } from "./mcp.ts";
 import type { ProposalStore } from "./proposals.ts";
+import { isInstallPath } from "./install-discovery.ts";
 import { isReleasePath } from "./release.ts";
 
 export type HttpServerDeps = {
@@ -21,13 +22,19 @@ export type HttpServerDeps = {
   uptimeSeconds?: () => number;
   /** Handler for the public release routes; without it those paths are 404. */
   release?: (req: IncomingMessage, res: ServerResponse) => void;
+  /** Handler for the public install-discovery routes (/, /install.sh, /install.ps1); without it those paths are 404. */
+  install?: (req: IncomingMessage, res: ServerResponse) => void;
 };
 
 const MCP_PATH = "/mcp";
 const HEALTH_PATH = "/health";
 const CLIENT_PATH = "/client";
 
-const pathOf = (req: IncomingMessage): string => new URL(req.url ?? "/", "http://localhost").pathname;
+// A request target starting with "//" would parse as a network-path reference (host "install.sh" and path "/"): it is just an unknown path.
+const pathOf = (req: IncomingMessage): string => {
+  const target = req.url ?? "/";
+  return target.startsWith("//") ? target : new URL(target, "http://localhost").pathname;
+};
 
 export function createHttpServer(deps: HttpServerDeps): Server {
   const clients = new WebSocketServer({ noServer: true });
@@ -43,6 +50,7 @@ export function createHttpServer(deps: HttpServerDeps): Server {
       return;
     }
     if (deps.release && isReleasePath(pathname)) return deps.release(req, res);
+    if (deps.install && isInstallPath(pathname)) return deps.install(req, res);
     if (pathname !== MCP_PATH) {
       res.writeHead(404).end();
       return;

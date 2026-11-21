@@ -17,7 +17,7 @@ reach-tunnel
 reach-server:8787/mcp
 
 Authorized Clients ----------> reach-server:8787/client
-Installers ------------------> reach-server:8787/release/...
+Installers ------------------> reach-server:8787/ , /install.sh , /install.ps1 , /release/...
 Operator --------------------> reach-server:8788/admin
 ```
 
