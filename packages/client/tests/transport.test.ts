@@ -1,3 +1,4 @@
+import { suggestClientDisplayName } from "../src/display-name.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -96,6 +97,7 @@ test("auth: no credential on the upgrade or in the URL, one hello signed over th
   const hello = ClientHello.parse(seen.frames[0]);
   assert.deepEqual([hello.client_id, hello.client_build, hello.public_key], ["laptop-1", "build-1", KEY.publicKey]);
   assert.equal(verifyChallenge(hello.public_key, seen.nonce, "laptop-1", hello.signature), true, "the signature proves possession over this connection's challenge");
+  assert.equal(hello.display_name, suggestClientDisplayName(), "the hello carries the hostname suggestion, never part of the signed identity");
   assert.ok(!JSON.stringify(seen.frames).includes(CRED), "the private key never travels");
   assert.ok(!JSON.stringify(t.snapshot()).includes(CRED));
   t.stop();

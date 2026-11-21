@@ -9,6 +9,15 @@ import { hashCredential } from "./auth.ts";
 import { publicKeyFingerprint } from "@reach-mcp/shared/identity";
 import { ClientId, EffectiveProjectPolicy, PublicKey } from "@reach-mcp/shared/wire";
 
+const ClientDisplayNameUpdate = z.strictObject({ display_name: z.string() });
+
+/** The one accepted rename body, exactly `{ display_name: string }`; the length rules belong to the configuration schema. */
+export function parseClientDisplayNameUpdate(input: unknown): string {
+  const parsed = ClientDisplayNameUpdate.safeParse(input);
+  if (!parsed.success) throw new ConfigError(["body must be exactly { display_name: string }"]);
+  return parsed.data.display_name;
+}
+
 /** SHA-256 of a credential, lowercase hex. */
 const Digest = z.string().regex(/^[0-9a-f]{64}$/, "must be 64 lowercase hex characters");
 
@@ -185,6 +194,11 @@ export class ServerConfigStore {
   /** The Client proved its staged key: it becomes the key and the old one stops authenticating. */
   promoteClientPublicKey(clientId: string): void {
     this.#changeClient(clientId, ({ next_public_key, ...client }) => ({ ...client, ...(next_public_key ? { public_key: next_public_key } : {}) }));
+  }
+
+  /** The human-readable label of a Client; `client_id`, keys, status and projects stay as they are. Blank or over-long names are refused by the schema. */
+  setClientDisplayName(clientId: string, displayName: string): void {
+    this.#changeClient(clientId, (client) => ({ ...client, display_name: displayName.trim() }));
   }
 
   /** Every Client as the Clients screen shows it: status and fingerprint, never the key. */

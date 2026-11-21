@@ -152,7 +152,7 @@ const UI = {
   identity({ icon, badgeImageSrc, badgeImageAlt = "", title, subtitle }) {
     const badge = badgeImageSrc ? UI.el("img", { src: badgeImageSrc, alt: badgeImageAlt }) : UI.icon(icon);
     return UI.el("div", { className: "identity" }, UI.el("div", { className: "identity-badge" }, badge),
-      UI.el("div", {}, UI.el("div", { className: "identity-title", textContent: title }), subtitle ? UI.el("div", { className: "identity-sub", textContent: subtitle }) : ""));
+      UI.el("div", {}, UI.el("div", { className: "identity-title" }, title), subtitle ? UI.el("div", { className: "identity-sub", textContent: subtitle }) : ""));
   },
   meter(percent, tone) { const n = UI.el("div", { className: "meter" }, UI.el("span", { style: "width:" + Math.max(0, Math.min(100, percent)) + "%" })); n.setAttribute("role", "meter"); n.setAttribute("aria-valuenow", String(Math.round(percent))); if (tone) n.dataset.tone = tone; return n; },
   stat({ icon, value, label, tone }) {
