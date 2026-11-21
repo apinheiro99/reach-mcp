@@ -185,6 +185,7 @@ test("Windows low-level installer (structural): a running Client is stopped befo
 test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-driven uninstaller removes only the REACH-owned task, runtime and state and keeps a custom root", () => {
   const dir = path.join(import.meta.dirname, "..", "deploy", "client");
   const un = readFileSync(path.join(dir, "uninstall-windows.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
+  for (const f of ["install.ps1", "install-windows.ps1", "uninstall-windows.ps1"]) assert.match(readFileSync(path.join(dir, f), "utf8"), /^\$ProgressPreference = 'SilentlyContinue'$/m, `${f} turns progress rendering off (Expand-Archive progress made the install take many minutes)`);
   assert.match(un, /install-receipt\.json/, "driven by the receipt");
   assert.match(un, /Unregister-ScheduledTask/);
   assert.match(un, /IndexOf\("`"\$InstallDir\\reach-client\.mjs`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "a task that does not run the exact recorded launcher path is refused, case-insensitively");
