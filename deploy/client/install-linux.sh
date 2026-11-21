@@ -107,7 +107,7 @@ if [ -e "$install_dir" ] && [ -n "$(ls -A "$install_dir")" ] && [ ! -f "$install
 fi
 
 # The unit name is REACH's, but a file already there that does not run the REACH launcher belongs to someone else: refuse before any change.
-if [ -e "$unit_dir/$UNIT_NAME" ] && ! grep -q "$TOP\\.mjs" "$unit_dir/$UNIT_NAME"; then
+if [ -e "$unit_dir/$UNIT_NAME" ] && ! grep '^ExecStart=' "$unit_dir/$UNIT_NAME" | grep -Fq "\"$install_dir/$TOP.mjs\""; then
   die "$unit_dir/$UNIT_NAME exists and is not a REACH Client unit: refusing to overwrite it"
 fi
 

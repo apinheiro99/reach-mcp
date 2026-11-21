@@ -74,7 +74,7 @@ root="${root%/}"
 # The service: only a unit that runs the REACH launcher from the recorded install directory is stopped and removed.
 unit="$unit_dir/$unit_name"
 if [ -e "$unit" ]; then
-  grep -q "${install_dir%/}/reach-client\.mjs" "$unit" || die "$unit does not run the REACH Client from $install_dir: refusing to remove it"
+  grep '^ExecStart=' "$unit" | grep -Fq "\"${install_dir%/}/reach-client.mjs\"" || die "$unit does not run the REACH Client from $install_dir: refusing to remove it"
   if [ "$system" = 1 ]; then systemctl disable --now "$unit_name" >/dev/null 2>&1 || true; fi
   rm -f "$unit"
   if [ "$system" = 1 ]; then systemctl daemon-reload; fi

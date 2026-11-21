@@ -39,7 +39,7 @@ if ((Test-Path -LiteralPath $InstallDir) -and (Get-ChildItem -LiteralPath $Insta
 
 # The task name is REACH's, but a task that does not run the REACH launcher belongs to someone else: refuse before any change.
 $Occupant = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if ($null -ne $Occupant -and (($Occupant.Actions | ForEach-Object { "$($_.Arguments)" }) -join ' ') -notlike "*$Top.mjs*") {
+if ($null -ne $Occupant -and (($Occupant.Actions | ForEach-Object { "$($_.Arguments)" }) -join ' ').IndexOf("`"$Launcher`"", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
   throw "scheduled task '$TaskName' exists and is not a REACH Client task: refusing to replace it"
 }
 

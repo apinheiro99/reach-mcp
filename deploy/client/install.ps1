@@ -35,6 +35,9 @@ $Bootstrap = Join-Path $StateDir 'bootstrap.env'
 if (Test-Path -LiteralPath $Receipt -PathType Leaf) {
   try { $Prior = Get-Content -LiteralPath $Receipt -Raw | ConvertFrom-Json } catch { Fail "the install receipt $Receipt is unreadable" }
   if ($Prior.schema_version -ne 1 -or $Prior.platform -ne 'win32' -or $Prior.root -isnot [string] -or $null -eq $Prior.owned) { Fail "the install receipt $Receipt is not a REACH receipt" }
+  # The receipt is the identity of one installation: its runtime coordinates cannot be redefined by a rerun.
+  if ($Prior.task_name -ne 'REACH Client' -or $Prior.state_dir -isnot [string] -or $Prior.state_dir.TrimEnd('\') -ne $StateDir.TrimEnd('\') -or $Prior.bootstrap -ne $Bootstrap) { Fail "the install receipt $Receipt does not match this machine's REACH state" }
+  if ($Prior.install_dir -isnot [string] -or $Prior.install_dir.TrimEnd('\') -ne $InstallDir.TrimEnd('\')) { Fail "this machine is already installed in $($Prior.install_dir): uninstall first to change REACH_INSTALL_DIR" }
   if ($RootGiven -and $Prior.root.TrimEnd('\') -ne $Root.TrimEnd('\')) { Fail "this machine is already installed with root $($Prior.root): uninstall first to change it" }
   $Root = $Prior.root
   $OwnState = [bool]$Prior.owned.state_dir
@@ -93,7 +96,7 @@ try {
 
   # A task of that name that does not run the REACH launcher is someone else's: refuse before the first change (the low-level installer checks again).
   $Occupant = Get-ScheduledTask -TaskName 'REACH Client' -ErrorAction SilentlyContinue
-  if ($null -ne $Occupant -and (($Occupant.Actions | ForEach-Object { "$($_.Arguments)" }) -join ' ') -notlike '*reach-client.mjs*') { Fail "scheduled task 'REACH Client' exists and is not a REACH Client task: refusing to replace it" }
+  if ($null -ne $Occupant -and (($Occupant.Actions | ForEach-Object { "$($_.Arguments)" }) -join ' ').IndexOf("`"$($InstallDir.TrimEnd('\'))\reach-client.mjs`"", [StringComparison]::OrdinalIgnoreCase) -lt 0) { Fail "scheduled task 'REACH Client' exists and is not a REACH Client task: refusing to replace it" }
 
   # Machine changes start here, after everything above was validated.
   $Endpoint = "ws://$Authority/client"

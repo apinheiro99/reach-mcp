@@ -466,6 +466,44 @@ test("Linux uninstall keeps a custom root and what it did not create; a rerun ke
   }
 });
 
+test("Linux rerun cannot move the install or the unit directory, and a unit that only mentions the launcher at another path is foreign", async () => {
+  const { server, origin } = await serveRelease();
+  try {
+    const m = machine("un-coords");
+    assert.equal((await installerAsync(flags(m, origin))).status, 0);
+    const receiptFile = path.join(m.state, "install-receipt.json");
+    const unitFile = path.join(m.units, "reach-mcp-client.service");
+    const before = [readFileSync(receiptFile, "utf8"), readFileSync(unitFile, "utf8")];
+    const moved = { install: path.join(base, "un-coords-moved", "opt"), units: path.join(base, "un-coords-moved", "units") };
+    const withDirs = (install, units) => ["--server-origin", origin, "--state-dir", m.state, "--install-dir", install, "--unit-dir", units, "--test-no-system"];
+    const newInstall = await installerAsync(withDirs(moved.install, m.units));
+    assert.equal(newInstall.status, 2);
+    assert.match(newInstall.stderr, /uninstall first to change --install-dir/);
+    const newUnits = await installerAsync(withDirs(m.install, moved.units));
+    assert.equal(newUnits.status, 2);
+    assert.match(newUnits.stderr, /uninstall first to change --unit-dir/);
+    assert.ok(!existsSync(path.dirname(moved.install)), "nothing was created at the new coordinates");
+    assert.deepEqual([readFileSync(receiptFile, "utf8"), readFileSync(unitFile, "utf8")], before, "the receipt and the unit are unchanged");
+    assert.equal((await installerAsync(flags(m, origin))).status, 0, "the same coordinates still update in place");
+    // A unit that merely mentions the launcher (a comment, or another install path) is not REACH's.
+    for (const body of [`# reach-client.mjs\n[Service]\nExecStart=/bin/true\n`, `[Service]\nExecStart="/usr/bin/node" "/elsewhere/reach-client.mjs" --bootstrap "/x"\n`]) {
+      writeFileSync(unitFile, body);
+      const refused = await installerAsync(flags(m, origin));
+      assert.equal(refused.status, 2, refused.stderr);
+      assert.match(refused.stderr, /not a REACH Client unit/);
+      assert.equal(readFileSync(unitFile, "utf8"), body, "the foreign unit is untouched");
+    }
+    const lowLevel = spawnSync("sh", [path.join(m.install, "deploy", "install-linux.sh"), "--archive", path.join(out, "artifacts", manifest.artifacts.find((a) => a.role === "client" && a.os === "linux").name), "--bootstrap", path.join(m.state, "bootstrap.env"), "--build", "x", "--install-dir", m.install, "--unit-dir", m.units], { encoding: "utf8" });
+    assert.equal(lowLevel.status, 2);
+    assert.match(lowLevel.stderr, /not a REACH Client unit/, "the low-level installer refuses the same unit");
+    const gone = uninstallSh(m);
+    assert.notEqual(gone.status, 0, "the uninstaller also refuses a unit that does not run the recorded launcher");
+    assert.ok(existsSync(m.install) && existsSync(unitFile), "nothing was removed");
+  } finally {
+    server.close();
+  }
+});
+
 test("Linux install refuses a foreign unit before any change; uninstall without a receipt deletes nothing", async () => {
   const { server, origin } = await serveRelease();
   try {

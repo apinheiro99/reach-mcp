@@ -187,7 +187,7 @@ test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-dr
   const un = readFileSync(path.join(dir, "uninstall-windows.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
   assert.match(un, /install-receipt\.json/, "driven by the receipt");
   assert.match(un, /Unregister-ScheduledTask/);
-  assert.match(un, /-notlike "\*\$InstallDir\\reach-client\.mjs\*"/, "a task that does not run the REACH launcher is refused");
+  assert.match(un, /IndexOf\("`"\$InstallDir\\reach-client\.mjs`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "a task that does not run the exact recorded launcher path is refused, case-insensitively");
   assert.match(un, /StartsWith\(\$InstallDir \+ '\\'/, "only Node processes under the recorded install directory are stopped");
   assert.match(un, /if \(\[bool\]\$R\.owned\.root\) \{ Remove-IfEmpty \$Root \}/, "the root goes only when REACH created it and it is empty");
   assert.doesNotMatch(un, /Remove-Item[^\n]*\$Root[^\n]*-Recurse/, "no recursive deletion of a root");
@@ -195,6 +195,10 @@ test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-dr
   assert.match(ps, /\$OwnRoot = -not \(Test-Path -LiteralPath \$Root\)/, "ownership is decided before the first change");
   assert.match(ps, /uninstall first to change it/, "a conflicting root fails before any change");
   assert.match(ps, /install-receipt\.json/);
+  assert.match(ps, /uninstall first to change REACH_INSTALL_DIR/, "a changed install directory fails before any change");
+  assert.match(ps, /IndexOf\("`"\$\(\$InstallDir\.TrimEnd\('\\'\)\)\\reach-client\.mjs`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "the public installer proves a task by the exact launcher path");
+  assert.ok(ps.indexOf("uninstall first to change REACH_INSTALL_DIR") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the coordinate check precedes every machine change");
+  assert.match(readFileSync(PS1, "utf8"), /IndexOf\("`"\$Launcher`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "the low-level installer proves a task by the exact launcher path");
   assert.match(readFileSync(PS1, "utf8"), /is not a REACH Client task: refusing to replace it/, "a foreign Scheduled Task is refused by the low-level installer too");
   assert.ok(ps.indexOf("is not a REACH Client task") > 0 && ps.indexOf("is not a REACH Client task") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the public installer refuses a foreign task before creating any state or bootstrap");
 });

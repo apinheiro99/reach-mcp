@@ -105,11 +105,18 @@ const fs = require("node:fs");
 let r;
 try { r = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(2); }
 if (r.schema_version !== 1 || r.platform !== "linux" || typeof r.root !== "string" || !r.owned) process.exit(2);
-process.stdout.write([r.root, r.owned.state_dir ? 1 : 0, r.owned.root ? 1 : 0, r.owned.service_user ? 1 : 0].join("\n") + "\n");
+for (const k of ["install_dir", "state_dir", "bootstrap", "unit_dir"]) if (typeof r[k] !== "string") process.exit(2);
+if (r.unit_name !== "reach-mcp-client.service" || r.bootstrap !== r.state_dir + "/bootstrap.env") process.exit(2);
+process.stdout.write([r.root, r.owned.state_dir ? 1 : 0, r.owned.root ? 1 : 0, r.owned.service_user ? 1 : 0, r.install_dir, r.unit_dir, r.state_dir].join("\n") + "\n");
 '
   prior="$("$node_bin" -e "$READ_RECEIPT" "$receipt")" || die "the install receipt $receipt is unreadable"
   prior_root="$(printf '%s\n' "$prior" | sed -n 1p)"
   own_state="$(printf '%s\n' "$prior" | sed -n 2p)" own_root="$(printf '%s\n' "$prior" | sed -n 3p)" own_user="$(printf '%s\n' "$prior" | sed -n 4p)"
+  # The receipt is the identity of one installation: its runtime and unit coordinates cannot be redefined by a rerun.
+  prior_install="$(printf '%s\n' "$prior" | sed -n 5p)" prior_unit_dir="$(printf '%s\n' "$prior" | sed -n 6p)" prior_state="$(printf '%s\n' "$prior" | sed -n 7p)"
+  [ "$prior_state" = "${state_dir%/}" ] || die "the install receipt $receipt belongs to another state directory"
+  if [ "${install_dir%/}" != "$prior_install" ]; then die "this machine is already installed in $prior_install: uninstall first to change --install-dir"; fi
+  if [ "${unit_dir%/}" != "$prior_unit_dir" ]; then die "this machine is already installed with units in $prior_unit_dir: uninstall first to change --unit-dir"; fi
   if [ -n "$root_given" ] && [ "$root" != "$prior_root" ]; then die "this machine is already installed with root $prior_root: uninstall first to change it"; fi
   root="$prior_root"
 else
@@ -166,7 +173,7 @@ if (createHash("sha256").update(bytes).digest("hex") !== process.argv[2]) { proc
 tar -xzf "$work/client.tgz" -C "$work" --no-same-owner reach-client/deploy/install-linux.sh || die "the archive has no reach-client/deploy/install-linux.sh"
 
 # A unit of that name that does not run the REACH launcher is someone else's: refuse before the first change (the low-level installer checks again).
-if [ -e "$unit_dir/reach-mcp-client.service" ] && ! grep -q 'reach-client\.mjs' "$unit_dir/reach-mcp-client.service"; then
+if [ -e "$unit_dir/reach-mcp-client.service" ] && ! grep '^ExecStart=' "$unit_dir/reach-mcp-client.service" | grep -Fq "\"${install_dir%/}/reach-client.mjs\""; then
   die "$unit_dir/reach-mcp-client.service exists and is not a REACH Client unit: refusing to overwrite it"
 fi
 

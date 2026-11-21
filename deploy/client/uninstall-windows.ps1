@@ -47,7 +47,7 @@ $Kept = @()
 $Task = Get-ScheduledTask -TaskName $R.task_name -ErrorAction SilentlyContinue
 if ($null -ne $Task) {
   $TaskArgs = ($Task.Actions | ForEach-Object { "$($_.Arguments)" }) -join ' '
-  if ($TaskArgs -notlike "*$InstallDir\reach-client.mjs*") { Fail "scheduled task '$($R.task_name)' does not run the REACH Client from ${InstallDir}: refusing to remove it" }
+  if ($TaskArgs.IndexOf("`"$InstallDir\reach-client.mjs`"", [StringComparison]::OrdinalIgnoreCase) -lt 0) { Fail "scheduled task '$($R.task_name)' does not run the REACH Client from ${InstallDir}: refusing to remove it" }
   Stop-ScheduledTask -TaskName $R.task_name -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $R.task_name -Confirm:$false
 }
