@@ -1,5 +1,5 @@
 // The Overview view: six counters, three status cards and three platform cards, built only from UI.* components and only from
-// facts the Server already answers (/admin/api/state and /admin/api/config). What the API does not expose yet (the OpenAI
+// facts the Server already answers (/admin/api/state and /admin/api/clients). What the API does not expose yet (the OpenAI
 // tunnel, the private mount, recent administrative actions) is shown as an explicit "not exposed yet" state, never invented.
 export const OVERVIEW_CSS = `
 .ov-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--gap)}

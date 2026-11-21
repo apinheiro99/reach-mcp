@@ -169,7 +169,9 @@ export class ClientConnectionRegistry {
 
   /**
    * Asks the connected, enabled Client to generate a new Ed25519 pair locally and waits for the answer: only its public key
-   * comes back, and the config replaces the stored key atomically. The session is then closed so the Client reconnects and proves the new key.
+   * comes back and is STAGED next to the valid key (one atomic config write). Only then is the Client told to commit; it makes the
+   * new key its own and reconnects, and the first hello that proves the staged key promotes it and retires the old one (#admit).
+   * Until that proof the old key keeps working, so no single failure leaves the Client and the Server without a common key.
    * One rotation per Client at a time; a Client that is not connected is refused, nothing is queued.
    */
   rotateKey(clientId: string): Promise<RotationResult> {
@@ -292,13 +294,14 @@ export class ClientConnectionRegistry {
     const hello = parseWire(ClientHello, frame);
     if (!hello.ok) return this.#reject(socket, hello.error);
     const { client_id: clientId, client_build: build, public_key: publicKey, signature, display_name: displayName } = hello.data;
-    // A registered Client must present its stored key whatever its status; an unknown one proves possession of the key it offers.
+    // A registered Client must present a stored key (current or staged) whatever its status; an unknown one proves possession of the key it offers.
     const known = this.#admissionOf(clientId);
-    const key = known ? known.publicKey : publicKey;
-    if (key === null || key !== publicKey || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
+    const key = known ? [known.publicKey, known.nextPublicKey].find((k) => k !== null && k === publicKey) : publicKey;
+    if (key === undefined || key === null || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
     if (!this.#options.isBuildCompatible(build)) return this.#reject(socket, incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
     if (!known) return this.#reject(socket, this.#register(clientId, publicKey, displayName) ? PENDING_APPROVAL : AUTH_FAILED);
     if (known.status !== "enabled") return this.#reject(socket, known.status === "pending" ? PENDING_APPROVAL : CLIENT_DISABLED);
+    if (known.nextPublicKey === publicKey) this.#promoteKey(clientId);
     const existing = this.#sessions.get(clientId);
     if (existing && !this.#isStale(existing)) return this.#reject(socket, { code: "DUPLICATE_CLIENT", message: "client is already connected" });
     if (existing) {
@@ -315,12 +318,23 @@ export class ClientConnectionRegistry {
   }
 
   /** The registered Client's status and stored key; with no active configuration it reads as registered and keyless, so nobody is registered or admitted. */
-  #admissionOf(clientId: string): { status: ClientStatus; publicKey: string | null } | null {
+  #admissionOf(clientId: string): { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null } | null {
     try {
       return this.#options.config.admissionOf(clientId);
     } catch {
-      return { status: "disabled", publicKey: null };
+      return { status: "disabled", publicKey: null, nextPublicKey: null };
     }
+  }
+
+  /** The Client just proved its staged key: it becomes the key. A failed write is not fatal, the staged key stays valid and the next proof retries. */
+  #promoteKey(clientId: string): void {
+    try {
+      this.#options.config.promoteClientPublicKey(clientId);
+    } catch {
+      return void this.#logger.log("WARNING", "connections", `key promotion not persisted client_id=${clientId}`);
+    }
+    this.#logger.log("INFO", "connections", `key promoted client_id=${clientId}`);
+    this.#audit.record({ actor: "client", action: "key_promoted", client_id: clientId, result: "ok" });
   }
 
   /** The one registration write: an unknown Client becomes Pending; logged and audited without any key material. */
@@ -351,17 +365,19 @@ export class ClientConnectionRegistry {
     if (pending && pending.session === session) pending.settle(message.data);
   }
 
-  /** The Client's answer to a rotation: only the one asked, on the session that was asked, replaces the stored key. */
+  /** The Client's answer to a rotation: only the one asked, on the session that was asked, stages its new key; it is told to commit only once that is stored. */
   #onRotated(session: Session, answer: { rotation_id: string; public_key: string }): void {
     const rotation = this.#rotations.get(session.clientId);
     if (!rotation || rotation.session !== session || rotation.id !== answer.rotation_id) return;
     try {
-      this.#options.config.replaceClientPublicKey(session.clientId, answer.public_key);
+      this.#options.config.stageClientPublicKey(session.clientId, answer.public_key);
     } catch {
       return rotation.settle("refused");
     }
+    this.#send(session, { kind: "rotate_committed", rotation_id: answer.rotation_id });
     rotation.settle("rotated");
-    session.socket.terminate();
+    this.#drop(session);
+    session.socket.close();
   }
 
   /** Forgets a session if it is still the registered one and fails the requests it carried. */

@@ -9,7 +9,10 @@ import { NO_LOGGER, type Logger } from "./logging.ts";
 import { renderAdminPage } from "./admin-page.ts";
 import { LOGO_PNG } from "./admin-ui/assets.ts";
 import { createDevReload, DEV_RELOAD_PATH } from "./admin-ui/dev-reload.ts";
+import { endpointCatalog } from "./endpoint-catalog.ts";
 import { buildHealth, type HealthDeps } from "./health.ts";
+import { readLogs } from "./log-reader.ts";
+import { systemView } from "./system-info.ts";
 import type { ProposalStore } from "./proposals.ts";
 import type { SourcePolicy } from "./trusted-network.ts";
 
@@ -28,6 +31,10 @@ export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & {
   allowFrom?: SourcePolicy;
   /** The operator label of the page header; the page's own default when omitted. */
   adminUser?: string;
+  /** The log directory the Logs screen reads (read only) and whose space the System screen shows. */
+  logsDir?: string;
+  /** The release artifact directory, when one is configured: its presence makes the release routes configured, and its space is shown. */
+  artifactsDir?: string;
   /** DEV only: serve the reload event stream and add its script to the page. */
   devLiveReload?: boolean;
 };
@@ -111,6 +118,15 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     if (pathname === "/admin/api/state") {
       if (method !== "GET") return send(res, 405);
       return send(res, 200, { setup_mode: !config.isActive(), health: buildHealth({ ...deps, uptimeSeconds }) });
+    }
+    if (pathname === "/admin/api/system" || pathname === "/admin/api/endpoints" || pathname === "/admin/api/logs") {
+      if (method !== "GET") return send(res, 405);
+      const health = buildHealth({ ...deps, uptimeSeconds });
+      if (pathname === "/admin/api/system") return send(res, 200, systemView(health, [...(deps.logsDir ? [{ name: "Logs", dir: deps.logsDir }] : []), ...(deps.artifactsDir ? [{ name: "Release artifacts", dir: deps.artifactsDir }] : [])]));
+      if (pathname === "/admin/api/logs") return send(res, 200, deps.logsDir ? readLogs(deps.logsDir) : { events: [], truncated: false });
+      const endpoints = endpointCatalog({ configActive: health.config_active, artifactsConfigured: deps.artifactsDir !== undefined });
+      const http = endpoints.filter((e) => e.method !== "WS").length;
+      return send(res, 200, { endpoints, counts: { http, websocket: endpoints.length - http, healthy: endpoints.filter((e) => e.status === "healthy").length, errors: endpoints.filter((e) => e.status === "unavailable").length, connected_clients: health.clients.connected }, requests: health.requests });
     }
     if (pathname === "/admin/api/config") {
       if (method === "GET") return send(res, 200, config.editableView());

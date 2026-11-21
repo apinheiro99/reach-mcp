@@ -38,7 +38,7 @@ Ownership, one owner each. `ServerConfigStore` persists the identity and the aut
 
 ## Key rotation
 
-The Admin UI/API requests rotation (`POST /admin/api/clients/<client_id>/rotate-key`), only for an Enabled, connected Client; any other Client is refused with `409` and nothing is queued. The Server sends one `rotate_key` frame to that session. The connected Client generates a new Ed25519 keypair locally, stores it through its Bootstrap, and answers with only the new public key. The Server atomically replaces the old public key and closes the session; the Client reconnects and proves possession of the new private key, and the old key is refused from then on. One rotation per Client at a time, bounded by the request timeout.
+The Admin UI/API requests rotation (`POST /admin/api/clients/<client_id>/rotate-key`), only for an Enabled, connected Client; any other Client is refused with `409` and nothing is queued. The Server sends one `rotate_key` frame to that session. The connected Client generates a candidate Ed25519 keypair locally and answers with only the new public key; its valid key is untouched. The Server stages that public key next to the valid one (one atomic write) and then sends `rotate_committed`; the Client writes the candidate through its Bootstrap, and the Server closes the session. The Client reconnects with the new key; the first proof promotes it, and only then is the old key refused. Until that proof either key authenticates, so a failure at any single step leaves the Client and the Server with a common key. One rotation per Client at a time, bounded by the request timeout.
 
 ## Client local state
 

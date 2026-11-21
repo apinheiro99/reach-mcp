@@ -148,7 +148,7 @@ test("Pending: an unknown client_id proving its key is registered with the publi
   await c.closed;
   assert.equal(code(c.frames), "PENDING_APPROVAL");
   assert.equal(c.frames.some((f) => f.kind === "welcome" || f.kind === "policy_sync"), false, "no welcome and no policy before a human Enable");
-  assert.deepEqual(t.config.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey });
+  assert.deepEqual(t.config.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null });
   assert.equal(t.config.effectivePoliciesFor("newbox"), null);
   assert.deepEqual(t.registry.status(), [], "a Pending registration never becomes a session");
   const stored = readFileSync(configFile, "utf8");
@@ -212,7 +212,7 @@ test("Disable: the live session closes at once, its in-flight request fails, and
   await t.done();
 });
 
-test("Rotate Key: one typed frame to the connected Client, only its public key comes back, the key is replaced and the session closes; refusals are clean", async () => {
+test("Rotate Key: only the Client's public key comes back and is STAGED next to the valid key; the old key works until the new one proves itself; refusals are clean", async () => {
   const t = await setup();
   assert.equal(await t.registry.rotateKey("laptop"), "offline", "offline Client");
   assert.equal(await t.registry.rotateKey("nobody"), "offline", "unknown Client");
@@ -229,13 +229,22 @@ test("Rotate Key: one typed frame to the connected Client, only its public key c
   c.ws.send(JSON.stringify({ kind: "rotated", rotation_id: frame.rotation_id, public_key: next.publicKey }));
   assert.equal(await rotating, "rotated");
   await c.closed;
-  assert.equal(t.config.admissionOf("laptop")?.publicKey, next.publicKey);
-  assert.ok(!readFileSync(configFile, "utf8").includes(LAPTOP.publicKey), "the old key is gone");
+  assert.ok(c.frames.some((f) => f.kind === "rotate_committed"), "the Client is told to commit only after the key is stored");
+  assert.deepEqual([t.config.admissionOf("laptop")?.publicKey, t.config.admissionOf("laptop")?.nextPublicKey], [LAPTOP.publicKey, next.publicKey], "staged next to the valid key");
+  const staged = readFileSync(configFile, "utf8");
+  assert.ok(staged.includes(LAPTOP.publicKey) && staged.includes(next.publicKey), "both keys are durable until the proof");
+  const lost = await t.connect();
+  await until(() => lost.frames.length === 3, "a Client that never committed still connects with the old key");
+  assert.equal(t.config.admissionOf("laptop")?.nextPublicKey, next.publicKey, "and the staged key stays");
+  lost.ws.terminate();
+  await until(() => t.registry.status().length === 0, "the old session ended");
+  const fresh = await t.connect({ identity: next });
+  await until(() => fresh.frames.length === 3, "the new key reconnects");
+  assert.deepEqual([t.config.admissionOf("laptop")?.publicKey, t.config.admissionOf("laptop")?.nextPublicKey], [next.publicKey, null], "the proof promotes the new key");
+  assert.ok(!readFileSync(configFile, "utf8").includes(LAPTOP.publicKey), "only now the old key is gone");
   const old = await t.connect();
   await old.closed;
   assert.equal(code(old.frames), "AUTH_FAILED", "the old key no longer authenticates");
-  const fresh = await t.connect({ identity: next });
-  await until(() => fresh.frames.length === 3, "the new key reconnects");
   const second = t.registry.rotateKey("laptop");
   await until(() => fresh.frames.some((f) => f.kind === "rotate_key"), "second rotate frame");
   t.clock.advance(5000);
@@ -249,6 +258,8 @@ test("Rotate Key: one typed frame to the connected Client, only its public key c
   await until(() => dup.frames.some((f) => f.kind === "rotate_key"), "clash frame");
   dup.ws.send(JSON.stringify({ kind: "rotated", rotation_id: (dup.frames.find((f) => f.kind === "rotate_key") as unknown as { rotation_id: string }).rotation_id, public_key: DESKTOP.publicKey }));
   assert.equal(await clash, "refused", "a key that belongs to another Client is refused");
+  assert.ok(!dup.frames.some((f) => f.kind === "rotate_committed"), "a refused stage never tells the Client to commit");
+  assert.equal(t.config.admissionOf("laptop")?.nextPublicKey, null, "and stages nothing");
   await t.done();
 });
 

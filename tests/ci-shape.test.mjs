@@ -83,7 +83,8 @@ test("production delivery: the release job needs every validation job; the defau
   const release = block("Build Release");
   for (const job of validationJobs) assert.match(release, new RegExp(`- "${job}"`), `Build Release must need ${job}`);
   assert.match(release, /stage: release/);
-  assert.match(release, /--build-id "\$CI_COMMIT_SHORT_SHA" --repository-commit "\$CI_COMMIT_SHA"/, "the release identity is the pipeline SHA");
+  assert.match(release, /VERSION="v\$\(date -u -d "\$CI_PIPELINE_CREATED_AT" \+%Y\.%m\)\.\$\(printf "%06d" "\$CI_PIPELINE_IID"\)"/, "the release version is the tag grammar of the green tag job");
+  assert.match(release, /--build-id "\$VERSION" --repository-commit "\$CI_COMMIT_SHA"/, "the release identity is the Git tag version");
   assert.match(release, /extends: \.release-push/);
   const rules = block(".release-push");
   assert.match(rules, /\$CI_COMMIT_TAG'\n\s+when: never/, "no release for tag pipelines");

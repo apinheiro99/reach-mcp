@@ -69,6 +69,24 @@ export const COMPONENT_CSS = `
 .table tr[data-tone="warn"] td:first-child{box-shadow:inset 2px 0 0 var(--c-warn)}
 .table tr[data-note="head"] td{border-bottom:0}
 .table tr[data-note="body"] td{padding-top:0}
+.stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--gap)}
+.toolbar{display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--gap)}
+.toolbar>.search{flex:1 1 16rem}
+.toolbar .input{height:2.9rem;border-radius:var(--radius-card)}
+.toolbar select.input{width:auto;min-width:12rem;flex:none}
+.search{position:relative;display:flex;align-items:center;min-width:0}
+.search .icon{position:absolute;left:var(--sp-3);width:1.2rem;height:1.2rem;color:var(--c-muted);pointer-events:none}
+.search .input{padding-left:2.6rem}
+.identity{display:flex;align-items:center;gap:var(--sp-3);min-width:0}
+.identity-badge{display:grid;place-items:center;width:2.6rem;height:2.6rem;flex:none;border-radius:var(--radius-control);background:var(--c-elevated);border:1px solid var(--c-border)}
+.identity-badge .icon{color:var(--c-accent)}
+.identity-title{font-weight:700;font-size:var(--fs-md)}
+.identity-sub{color:var(--c-muted);font-size:var(--fs-sm)}
+.meter{height:.6rem;border-radius:var(--radius-pill);background:var(--c-border);overflow:hidden}
+.meter span{display:block;height:100%;border-radius:var(--radius-pill);background:var(--c-accent)}
+.meter[data-tone="warn"] span{background:var(--c-warn)}.meter[data-tone="bad"] span{background:var(--c-bad)}
+@container (max-width:75rem){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@container (max-width:46rem){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .unavailable{display:flex;align-items:center;gap:var(--sp-2);color:var(--c-muted);font-size:var(--fs-sm);padding:var(--sp-2) 0}
 .unavailable .icon{width:1rem;height:1rem}
 .autosave{display:inline-flex;align-items:center;gap:var(--sp-2);padding:.4rem .9rem;border-radius:var(--radius-pill);border:1px solid var(--c-border-strong);background:var(--c-card);font-size:var(--fs-md);white-space:nowrap}
@@ -103,6 +121,11 @@ const ICONS = {
   box: "M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3zM4 7.5l8 4.5 8-4.5M12 12v9",
   search: "M11 18a7 7 0 100-14 7 7 0 000 14zM20 20l-4-4",
   copy: "M9 9h10v11H9zM5 15V4h10",
+  plus: "M12 5v14M5 12h14",
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
+  alert: "M12 3l10 18H2L12 3zM12 10v5M12 18h.01",
+  database: "M12 5c4.4 0 8-1 8-2.5S16.4 0 12 0 4 1 4 2.5 7.6 5 12 5zM4 2.5v15C4 19 7.6 20 12 20s8-1 8-2.5v-15M4 10c0 1.5 3.6 2.5 8 2.5s8-1 8-2.5",
+  shield: "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM8.5 12l2.5 2.5 4.5-5",
   refresh: "M20 11a8 8 0 00-14.5-4M4 4v4h4M4 13a8 8 0 0014.5 4M20 20v-4h-4"
 };
 const UI = {
@@ -122,6 +145,14 @@ const UI = {
     n.append(UI.el("div", { className: "card-body" }, ...(children || [])));
     return n;
   },
+  stats(items) { return UI.el("div", { className: "stats" }, ...items); },
+  search({ id, placeholder, onInput }) { return UI.el("div", { className: "search" }, UI.icon("search"), UI.input({ id, placeholder, onInput })); },
+  toolbar(...kids) { return UI.el("div", { className: "toolbar" }, ...kids); },
+  identity({ icon, title, subtitle }) {
+    return UI.el("div", { className: "identity" }, UI.el("div", { className: "identity-badge" }, UI.icon(icon)),
+      UI.el("div", {}, UI.el("div", { className: "identity-title", textContent: title }), subtitle ? UI.el("div", { className: "identity-sub", textContent: subtitle }) : ""));
+  },
+  meter(percent, tone) { const n = UI.el("div", { className: "meter" }, UI.el("span", { style: "width:" + Math.max(0, Math.min(100, percent)) + "%" })); n.setAttribute("role", "meter"); n.setAttribute("aria-valuenow", String(Math.round(percent))); if (tone) n.dataset.tone = tone; return n; },
   stat({ icon, value, label, tone }) {
     const n = UI.el("section", { className: "card" });
     n.dataset.variant = "stat"; if (tone) n.dataset.tone = tone;

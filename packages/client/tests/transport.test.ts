@@ -507,10 +507,11 @@ test("Pending and Disabled refusals are not terminal: the Client keeps the ordin
   await refused.close();
 });
 
-test("rotate_key: the Client generates its new pair locally, answers with only the public key, and reconnects proving the new key", async () => {
+test("rotate_key: the Client answers with only a candidate public key, keeps the valid key until the Server commits, then reconnects proving the new key", async () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), "reach-rotate-")), "bootstrap.env");
   writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:1/ws\nREACH_CLIENT_ID=laptop-1\nREACH_CLIENT_IDENTITY_KEY=${CRED}\nREACH_ROOTS=${JSON.stringify([root])}\n`, { mode: 0o600 });
   let connections = 0;
+  let committedAfter = "";
   const srv = await server((s) =>
     s.on("message", (data) => {
       const frame = JSON.parse(data.toString()) as { kind: string };
@@ -518,6 +519,7 @@ test("rotate_key: the Client generates its new pair locally, answers with only t
         welcome(s);
         if (connections++ === 0) s.send(JSON.stringify({ kind: "rotate_key", rotation_id: "rot-1" }));
       }
+      if (frame.kind === "rotated") committedAfter = readFileSync(file, "utf8");
     }),
   );
   writeFileSync(file, readFileSync(file, "utf8").replace("127.0.0.1:1", `127.0.0.1:${srv.port}`));
@@ -530,7 +532,10 @@ test("rotate_key: the Client generates its new pair locally, answers with only t
   assert.deepEqual(Object.keys(answer).sort(), ["kind", "public_key", "rotation_id"], "nothing but the public key travels");
   assert.deepEqual([answer.kind, answer.rotation_id], ["rotated", "rot-1"]);
   assert.notEqual(answer.public_key, KEY.publicKey, "a different pair was generated");
-  assert.equal(answer.public_key, bootstrap.publicKey(), "the Client now holds the key it announced");
+  assert.equal(bootstrap.publicKey(), KEY.publicKey, "the valid key is still the identity until the Server commits");
+  assert.ok(committedAfter.includes(CRED), "and the file still holds it");
+  srv.sockets[0]!.send(JSON.stringify({ kind: "rotate_committed", rotation_id: "rot-1" }));
+  await until(() => bootstrap.publicKey() === answer.public_key, "the Client makes the committed key its own");
   const stored = readFileSync(file, "utf8");
   assert.ok(!JSON.stringify(srv.seen[0]!.frames).includes(/REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(stored)![1]!), "the new private key never travels");
   assert.ok(!stored.includes(CRED), "the old private key is replaced in the file");
@@ -541,6 +546,17 @@ test("rotate_key: the Client generates its new pair locally, answers with only t
   const hello = ClientHello.parse(srv.seen[1]!.frames[0]);
   assert.equal(hello.public_key, answer.public_key);
   assert.equal(verifyChallenge(hello.public_key, srv.seen[1]!.nonce, "laptop-1", hello.signature), true, "the reconnect proves the new key");
+  t.stop();
+  await srv.close();
+});
+
+test("rotate_committed for a rotation that was never asked fails closed and keeps the identity", async () => {
+  const srv = await server((s) => s.once("message", () => { welcome(s); s.send(JSON.stringify({ kind: "rotate_committed", rotation_id: "rot-0" })); }));
+  const bootstrap = boot(srv.port);
+  const t = new ClientTransport(bootstrap, opts(clock(), { handler: new ClientDispatcher({ anchors: [root] }) }));
+  t.start();
+  await until(() => t.snapshot().lastError?.message === "unexpected rotation commit", "commit refused");
+  assert.equal(bootstrap.publicKey(), KEY.publicKey);
   t.stop();
   await srv.close();
 });
