@@ -65,6 +65,10 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
   assert.deepEqual([flag("config"), flag("proposal"), flag("logs"), flag("artifacts")], ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach", layout.artifacts]);
   assert.deepEqual([flag("port"), flag("host"), flag("admin-port"), flag("admin-host")], ["8787", "0.0.0.0", "8788", "0.0.0.0"]);
   assert.ok(!args.includes("--data-port"), "two listeners only: service and admin");
+  assert.ok(!args.includes("--admin-allow-from") && !args.some((a) => /192\.168\./.test(a)), "no allowlist and no LAN value is invented by default; the Server then refuses the non-loopback Admin host");
+  const allowed = serverArgs({ REACH_ADMIN_ALLOW_FROM: "10.0.0.0/24,127.0.0.1" }, layout);
+  assert.deepEqual([allowed[allowed.indexOf("--admin-allow-from") + 1], allowed.filter((a) => a === "--admin-host").length, allowed.filter((a) => a === "--admin-allow-from").length], ["10.0.0.0/24,127.0.0.1", 1, 1], "the deployment allowlist is passed through once");
+  assert.ok(!serverArgs({ REACH_ADMIN_ALLOW_FROM: "" }, layout).includes("--admin-allow-from"), "an empty value is not passed");
   const custom = serverArgs({ REACH_PORT: "9001" }, layout);
   assert.equal(custom[custom.indexOf("--port") + 1], "9001");
   assert.equal(serverArgs({ REACH_ADMIN_PORT: "9002" }, layout)[serverArgs({ REACH_ADMIN_PORT: "9002" }, layout).indexOf("--admin-port") + 1], "9002");
