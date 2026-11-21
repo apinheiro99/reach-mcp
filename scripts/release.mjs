@@ -1,19 +1,23 @@
 // The one release builder. One invocation takes ONE opaque build id and the repository commit and writes, under --out:
-//   artifacts/manifest.json, artifacts/reach-client-linux-x64.tgz, artifacts/reach-client-win32-x64.zip   (what the Server serves)
+//   artifacts/manifest.json, artifacts/install.sh, artifacts/reach-client-linux-x64.tgz, artifacts/reach-client-win32-x64.zip   (what the Server serves)
 //   server/reach-server-linux-x64.tgz                                                                       (the Server runtime input)
 // Each archive is a self-contained Node >=24 runtime: the REACH packages as ordinary directories under lib/, the production
 // dependency tree installed by npm, and a thin launcher. No workspace link, no Git metadata, no dev dependency, no test.
 //   node scripts/release.mjs build --build-id <id> [--repository-commit <sha>] --out <dir>
 //   node scripts/release.mjs verify --out <dir>
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { collectEntries, tgz, zip } from "./release/archive.mjs";
-import { artifactDir, buildManifest, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
+import { artifactDir, buildManifest, INSTALLERS, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
 
 const REPO = path.resolve(import.meta.dirname, "..");
+/** The Windows Client carries its own Node runtime so a fresh machine needs no Node. Pinned version and the SHA-256 Node publishes for this exact file
+ *  (SHASUMS256.txt of that release); the builder refuses any other bytes. It is part of the Windows archive, so the manifest hash already covers it. */
+const WINDOWS_NODE = { version: "26.13.1", url: "https://nodejs.org/dist/v26.13.1/win-x64/node.exe", sha256: "f5109dc868ec38703ad8f305e0aceece717cb60d4889873f434017af4e96cccb" };
 /** package name -> source directory. The closure of each role is derived from its package.json dependencies. */
 const PACKAGES = {
   "@reach-mcp/shared": "packages/shared",
@@ -39,6 +43,21 @@ function closure(role) {
   return [...seen].sort();
 }
 
+/** The pinned node.exe, downloaded once into a cache and verified against the pinned SHA-256 every time it is used. */
+function windowsNode() {
+  const cached = path.join(tmpdir(), "reach-node-cache", `node-${WINDOWS_NODE.version}-win-x64.exe`);
+  const verified = () => existsSync(cached) && createHash("sha256").update(readFileSync(cached)).digest("hex") === WINDOWS_NODE.sha256;
+  if (!verified()) {
+    mkdirSync(path.dirname(cached), { recursive: true });
+    execFileSync("curl", ["-fsSL", "--max-time", "600", "-o", cached, WINDOWS_NODE.url], { stdio: ["ignore", "ignore", "inherit"] });
+    if (!verified()) {
+      rmSync(cached, { force: true });
+      throw new Error(`release: the downloaded node.exe ${WINDOWS_NODE.version} does not match the pinned SHA-256`);
+    }
+  }
+  return cached;
+}
+
 function stage(target, buildDir) {
   const root = path.join(buildDir, `${target.role}-${target.platform}`, `reach-${target.role}`);
   mkdirSync(path.join(root, "lib"), { recursive: true });
@@ -57,6 +76,17 @@ function stage(target, buildDir) {
   rmSync(path.join(root, "node_modules", ".package-lock.json"), { force: true });
   copyFileSync(path.join(import.meta.dirname, "release", "launcher.mjs"), path.join(root, `reach-${target.role}.mjs`));
   copyFileSync(path.join(REPO, "LICENSE"), path.join(root, "LICENSE"));
+  if (target.role === "client" && target.os === "linux") {
+    // The public install.sh runs this low-level installer out of the verified archive: it stays the one owner of the swap and the unit.
+    mkdirSync(path.join(root, "deploy"));
+    copyFileSync(path.join(REPO, "deploy", "client", "install-linux.sh"), path.join(root, "deploy", "install-linux.sh"));
+  }
+  if (target.role === "client" && target.os === "win32") {
+    mkdirSync(path.join(root, "deploy"));
+    copyFileSync(path.join(REPO, "deploy", "client", "install-windows.ps1"), path.join(root, "deploy", "install-windows.ps1"));
+    mkdirSync(path.join(root, "runtime"));
+    copyFileSync(windowsNode(), path.join(root, "runtime", "node.exe"));
+  }
   return root;
 }
 
@@ -70,8 +100,10 @@ export function build({ buildId, repositoryCommit, out }) {
     });
     mkdirSync(path.join(out, SERVED_DIR), { recursive: true });
     mkdirSync(path.join(out, SERVER_DIR), { recursive: true });
+    const installers = INSTALLERS.map(({ name }) => ({ name, bytes: readFileSync(path.join(REPO, "deploy", "client", name)) }));
+    for (const i of installers) writeFileSync(path.join(out, SERVED_DIR, i.name), i.bytes);
     for (const r of records) writeFileSync(path.join(out, artifactDir(r.role), r.name), r.bytes);
-    writeFileSync(path.join(out, SERVED_DIR, MANIFEST_NAME), `${JSON.stringify(buildManifest({ buildId, repositoryCommit, records }), null, 2)}\n`);
+    writeFileSync(path.join(out, SERVED_DIR, MANIFEST_NAME), `${JSON.stringify(buildManifest({ buildId, repositoryCommit, records, installers }), null, 2)}\n`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

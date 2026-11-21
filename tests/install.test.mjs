@@ -149,3 +149,35 @@ test("one Client install per machine: the install assets know no project and hav
     assert.ok(!/curl|wget|Invoke-WebRequest|auto-?update|cron|timer/i.test(text.replace(/nothing here updates itself/g, "")), `${path.basename(file)} fetches nothing`);
   }
 });
+
+test("Windows public installer (structural only, no PowerShell runs here): explicit origin, manifest v2 selection, verified bytes, narrow ACL'd root, no identity, Bypass child for the low-level script", () => {
+  const ps = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "install.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
+  assert.match(ps, /\$env:REACH_SERVER_ORIGIN/, "the origin is explicit");
+  assert.match(ps, /AllowAutoRedirect = \$false/, "no redirect, so the origin cannot be switched");
+  assert.match(ps, /schema_version -ne 2/);
+  assert.match(ps, /\$_\.role -eq 'client' -and \$_\.os -eq 'win32' -and \$_\.arch -eq 'x64'/, "selected by role/os/arch, never by filename");
+  assert.match(ps, /Get-FileHash .* SHA256/);
+  assert.ok(ps.indexOf("Get-FileHash") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "integrity is verified before any machine change");
+  assert.match(ps, /S-1-5-18.*S-1-5-32-544/, "only SYSTEM and Administrators on the state directory");
+  assert.match(ps, /-ExecutionPolicy Bypass -File \$LowLevel/, "a default Windows client refuses to run a .ps1 file directly");
+  assert.match(ps, /-AllowInsecureWs -Start/);
+  assert.doesNotMatch(ps, /REACH_CLIENT_ID|REACH_CLIENT_IDENTITY_KEY|openssl|New-SelfSigned/i, "identity is the Client's alone");
+  assert.doesNotMatch(ps, /winget|choco|nodejs\.org/i, "no uncontrolled runtime supply chain: Node comes from the verified archive");
+  assert.doesNotMatch(ps, /Invoke-WebRequest|Invoke-RestMethod|\birm\b/, "only the origin-pinned fetch");
+});
+
+test("PowerShell scripts: no double-quoted string puts a scope-like ':' right after a variable (a parse error on Windows PowerShell 5.1, found natively)", () => {
+  for (const file of ["install.ps1", "install-windows.ps1"]) {
+    const text = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", file), "utf8");
+    const risky = text.split("\n").filter((line) => /"[^"]*\$(?!env:)[A-Za-z_][A-Za-z0-9_]*:[^"]*"/.test(line) && !/^\s*#/.test(line));
+    assert.deepEqual(risky, [], `${file}: use \${name} or $($name) before a colon`);
+  }
+});
+
+test("Windows low-level installer (structural): a running Client is stopped before the swap and restarted if the swap fails", () => {
+  const ps = readFileSync(PS1, "utf8").replace(/^\s*#.*$/gm, "");
+  const stop = ps.indexOf("Stop-ScheduledTask");
+  assert.ok(stop > 0 && stop < ps.indexOf("Move-Item -LiteralPath $InstallDir -Destination $Old"), "the task is stopped before the old tree is moved");
+  assert.match(ps, /Stop-Process -Force/, "a node.exe started from the install is stopped too");
+  assert.equal([...ps.matchAll(/Start-ScheduledTask -TaskName \$TaskName -ErrorAction SilentlyContinue/g)].length, 2, "restarted after a failed move and after a failed swap");
+});

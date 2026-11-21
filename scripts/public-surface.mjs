@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import process from "node:process";
 
-const FORBIDDEN_PATHS = [/(^|\/)\.env(\.[^/]*)?$/, /\.(pem|key|p12|pfx|crt|cer)$/i];
+const FORBIDDEN_PATHS = [/(^|\/)\.env(?!\.example$)(\.[^/]*)?$/, /\.(pem|key|p12|pfx|crt|cer)$/i];
 
 // The checker and its test necessarily contain the patterns they detect.
 const PATTERN_FILES = new Set(["scripts/public-surface.mjs", "tests/public-surface.test.mjs"]);

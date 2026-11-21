@@ -35,6 +35,8 @@ export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & {
   logsDir?: string;
   /** The release artifact directory, when one is configured: its presence makes the release routes configured, and its space is shown. */
   artifactsDir?: string;
+  /** Which installer scripts the release artifacts can serve; omitted means none. Only the endpoint catalog reads it. */
+  installers?: { sh: boolean; ps1: boolean };
   /** DEV only: serve the reload event stream and add its script to the page. */
   devLiveReload?: boolean;
 };
@@ -124,7 +126,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
       const health = buildHealth({ ...deps, uptimeSeconds });
       if (pathname === "/admin/api/system") return send(res, 200, systemView(health, [...(deps.logsDir ? [{ name: "Logs", dir: deps.logsDir }] : []), ...(deps.artifactsDir ? [{ name: "Release artifacts", dir: deps.artifactsDir }] : [])]));
       if (pathname === "/admin/api/logs") return send(res, 200, deps.logsDir ? readLogs(deps.logsDir) : { events: [], truncated: false });
-      const endpoints = endpointCatalog({ configActive: health.config_active, artifactsConfigured: deps.artifactsDir !== undefined });
+      const endpoints = endpointCatalog({ configActive: health.config_active, artifactsConfigured: deps.artifactsDir !== undefined, installers: deps.installers ?? { sh: false, ps1: false } });
       const http = endpoints.filter((e) => e.method !== "WS").length;
       return send(res, 200, { endpoints, counts: { http, websocket: endpoints.length - http, healthy: endpoints.filter((e) => e.status === "healthy").length, errors: endpoints.filter((e) => e.status === "unavailable").length, connected_clients: health.clients.connected }, requests: health.requests });
     }

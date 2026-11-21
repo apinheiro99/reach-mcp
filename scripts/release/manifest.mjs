@@ -1,21 +1,31 @@
-// Release manifest v1: its schema, its construction and the verification of a release directory against it.
+// Release manifest v2: its schema, its construction and the verification of a release directory against it.
 // One owner of what a release declares. Build ids are opaque (never parsed); compatibility is exact equality.
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { BuildId } from "@reach-mcp/shared/wire";
 
-export const MANIFEST_SCHEMA_VERSION = 1;
+export const MANIFEST_SCHEMA_VERSION = 2;
 export const MANIFEST_NAME = "manifest.json";
 /** Release layout: the Client archives and the manifest are what the Server serves; the Server runtime sits beside it. */
 export const SERVED_DIR = "artifacts";
 export const SERVER_DIR = "server";
-/** The canonical schema-v1 release composition: exactly one artifact per role and platform. The builder derives its targets from this. */
+/** The Server route that serves the Client archives; the manifest declares relative paths under it, never an origin. */
+export const PUBLIC_DOWNLOAD_PREFIX = "/release/artifacts/";
+/** The canonical schema-v2 release composition: exactly one artifact per role and platform. The one owner of target metadata:
+ *  os/arch are what an installer selects by (never parsed from platform); only Client archives are publicly downloadable. */
 export const REQUIRED_ARTIFACTS = [
-  { role: "server", platform: "linux-x64", os: "linux" },
-  { role: "client", platform: "linux-x64", os: "linux" },
-  { role: "client", platform: "win32-x64", os: "win32" },
+  { role: "server", platform: "linux-x64", os: "linux", arch: "x64" },
+  { role: "client", platform: "linux-x64", os: "linux", arch: "x64" },
+  { role: "client", platform: "win32-x64", os: "win32", arch: "x64" },
 ];
+/** The public installer scripts a release carries, served by the Server at these fixed paths. The manifest declares their hash and size, so verifyRelease covers them. */
+export const INSTALLERS = [
+  { name: "install.sh", os: "linux", download_path: "/install.sh" },
+  { name: "install.ps1", os: "win32", download_path: "/install.ps1" },
+];
+const isPublic = (role) => role === "client";
+const targetOf = (role, platform) => REQUIRED_ARTIFACTS.find((t) => t.role === role && t.platform === platform);
 const ROLES = new Set(REQUIRED_ARTIFACTS.map((r) => r.role));
 const SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
@@ -34,15 +44,28 @@ export function parseCommit(value) {
   return value;
 }
 
-/** records: [{ role, platform, name, bytes }]; hash and size come from the final bytes. */
-export function buildManifest({ buildId, repositoryCommit, records }) {
+/** records: [{ role, platform, name, bytes }]; installers: [{ name, bytes }] for every INSTALLERS entry; hash and size come from the final bytes. */
+export function buildManifest({ buildId, repositoryCommit, records, installers }) {
   return {
     schema_version: MANIFEST_SCHEMA_VERSION,
     release: { build_id: buildId, repository_commit: repositoryCommit },
     server: { build_id: buildId },
     client: { build_id: buildId },
     compatibility: { strategy: "exact", accepted_client_builds: [buildId] },
-    artifacts: records.map(({ role, platform, name, bytes }) => ({ role, platform, name, sha256: sha256(bytes), size_bytes: bytes.length })),
+    artifacts: records.map(({ role, platform, name, bytes }) => ({
+      role,
+      platform,
+      os: targetOf(role, platform)?.os,
+      arch: targetOf(role, platform)?.arch,
+      name,
+      sha256: sha256(bytes),
+      size_bytes: bytes.length,
+      download_path: isPublic(role) ? `${PUBLIC_DOWNLOAD_PREFIX}${name}` : null,
+    })),
+    installers: INSTALLERS.map(({ name, os, download_path }) => {
+      const bytes = installers.find((i) => i.name === name)?.bytes;
+      return { name, os, sha256: bytes && sha256(bytes), size_bytes: bytes?.length, download_path };
+    }),
   };
 }
 
@@ -73,6 +96,7 @@ export function validateManifest(m) {
   }
   const names = new Set();
   const pairs = new Map();
+  const selectors = new Set();
   m.artifacts.forEach((a, i) => {
     const at = `artifacts[${i}]`;
     if (!ROLES.has(a?.role)) problems.push(`${at}.role must be server or client`);
@@ -80,15 +104,35 @@ export function validateManifest(m) {
     if (typeof a?.name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(a.name) || a.name === MANIFEST_NAME) problems.push(`${at}.name is not a servable artifact name`);
     else if (names.has(a.name)) problems.push(`${at}.name is duplicated`);
     else names.add(a.name);
+    const target = targetOf(a?.role, a?.platform);
+    if (target && (a.os !== target.os || a.arch !== target.arch)) problems.push(`${at}.os/arch must be ${target.os}/${target.arch} for ${a.role}/${a.platform}`);
+    if (target && isPublic(a.role)) {
+      const selector = `${a.role}/${a.os}/${a.arch}`;
+      if (selectors.has(selector)) problems.push(`${at}: selector ${selector} is not unique`);
+      selectors.add(selector);
+    }
+    const expectedPath = target && typeof a.name === "string" ? (isPublic(a.role) ? `${PUBLIC_DOWNLOAD_PREFIX}${a.name}` : null) : undefined;
+    if (expectedPath !== undefined && a.download_path !== expectedPath) problems.push(`${at}.download_path must be ${expectedPath === null ? "null (not publicly served)" : expectedPath}`);
     const pair = `${a?.role}/${a?.platform}`;
     pairs.set(pair, (pairs.get(pair) ?? 0) + 1);
     if (!SHA256.test(a?.sha256 ?? "")) problems.push(`${at}.sha256 must be 64 lowercase hex`);
     if (!Number.isSafeInteger(a?.size_bytes) || a.size_bytes <= 0) problems.push(`${at}.size_bytes must be a positive integer`);
   });
+  if (!Array.isArray(m.installers) || m.installers.length !== INSTALLERS.length) problems.push(`installers must list exactly ${INSTALLERS.map((i) => i.name).join(", ")}`);
+  else {
+    INSTALLERS.forEach((expected, i) => {
+      const at = `installers[${i}]`;
+      const got = m.installers[i];
+      if (got?.name !== expected.name || got.os !== expected.os) problems.push(`${at} must be ${expected.name} for ${expected.os}`);
+      if (got?.download_path !== expected.download_path) problems.push(`${at}.download_path must be ${expected.download_path}`);
+      if (!SHA256.test(got?.sha256 ?? "")) problems.push(`${at}.sha256 must be 64 lowercase hex`);
+      if (!Number.isSafeInteger(got?.size_bytes) || got.size_bytes <= 0) problems.push(`${at}.size_bytes must be a positive integer`);
+    });
+  }
   const required = new Set(REQUIRED_ARTIFACTS.map((r) => `${r.role}/${r.platform}`));
   for (const pair of required) if (!pairs.has(pair)) problems.push(`artifacts: required ${pair} is missing`);
   for (const [pair, count] of pairs) {
-    if (!required.has(pair)) problems.push(`artifacts: ${pair} is not part of manifest schema v1`);
+    if (!required.has(pair)) problems.push(`artifacts: ${pair} is not part of manifest schema v2`);
     else if (count > 1) problems.push(`artifacts: ${pair} appears ${count} times`);
   }
   return problems;
@@ -105,11 +149,12 @@ export function verifyRelease(dir) {
   const problems = validateManifest(manifest);
   if (problems.length > 0) return problems;
   const declared = { [SERVED_DIR]: new Set([MANIFEST_NAME]), [SERVER_DIR]: new Set() };
-  for (const a of manifest.artifacts) {
-    declared[artifactDir(a.role)].add(a.name);
+  for (const a of [...manifest.artifacts, ...manifest.installers]) {
+    const dirName = a.role === undefined ? SERVED_DIR : artifactDir(a.role);
+    declared[dirName].add(a.name);
     let bytes;
     try {
-      bytes = readFileSync(path.join(dir, artifactDir(a.role), a.name));
+      bytes = readFileSync(path.join(dir, dirName, a.name));
     } catch {
       problems.push(`${a.name}: declared but missing`);
       continue;
