@@ -55,6 +55,8 @@ test("the Dockerfile only wraps release bytes: no install/build/test, no source 
   assert.doesNotMatch(df, /reach-private|\/reach\/reach-|192\.168\.|\.lab\b/);
 });
 
+const PRIVATE_LAN = new RegExp(["192", "168"].join("\\.") + "\\.|\\b10\\.\\d+\\.\\d+\\.\\d+|\\b172\\.(1[6-9]|2\\d|3[01])\\.");
+
 test("the entrypoint takes build id and commit from the baked manifest and runs the canonical launcher with the baked artifacts", () => {
   const dir = release("entry");
   const layout = { ...LAYOUT, artifacts: path.join(dir, "artifacts") };
@@ -65,6 +67,10 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
   assert.deepEqual([flag("config"), flag("proposal"), flag("logs"), flag("artifacts")], ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach", layout.artifacts]);
   assert.deepEqual([flag("port"), flag("host"), flag("admin-port"), flag("admin-host")], ["8787", "0.0.0.0", "8788", "0.0.0.0"]);
   assert.ok(!args.includes("--data-port"), "two listeners only: service and admin");
+  assert.ok(!args.includes("--admin-allow-from") && !args.some((a) => PRIVATE_LAN.test(a)), "no allowlist and no LAN value is invented by default; the Server then refuses the non-loopback Admin host");
+  const allowed = serverArgs({ REACH_ADMIN_ALLOW_FROM: "203.0.113.0/24,127.0.0.1" }, layout);
+  assert.deepEqual([allowed[allowed.indexOf("--admin-allow-from") + 1], allowed.filter((a) => a === "--admin-host").length, allowed.filter((a) => a === "--admin-allow-from").length], ["203.0.113.0/24,127.0.0.1", 1, 1], "the deployment allowlist is passed through once");
+  assert.ok(!serverArgs({ REACH_ADMIN_ALLOW_FROM: "" }, layout).includes("--admin-allow-from"), "an empty value is not passed");
   const custom = serverArgs({ REACH_PORT: "9001" }, layout);
   assert.equal(custom[custom.indexOf("--port") + 1], "9001");
   assert.equal(serverArgs({ REACH_ADMIN_PORT: "9002" }, layout)[serverArgs({ REACH_ADMIN_PORT: "9002" }, layout).indexOf("--admin-port") + 1], "9002");
@@ -81,8 +87,10 @@ test("Compose runs a built image and mounts exactly config file, proposal file a
   assert.deepEqual(volumes, ["/run/reach/config.json", "/run/reach/proposal.json", "/var/log/reach"]);
   assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 3, "no other mount");
   assert.doesNotMatch(yaml, /docker\.sock|privileged|network_mode: host|volumes:\s*\n\s*\w+:|\s- \/:|\s- \/\w+:\/\w+/);
-  const ports = [...yaml.matchAll(/^\s+- "(\$\{REACH_(?:ADMIN_)?BIND:-[0-9.]+\}:\$\{REACH_(?:ADMIN_)?PORT:-\d+\}:(\d+))"$/gm)].map((m) => m[1]);
-  assert.deepEqual(ports, ["${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787", "${REACH_ADMIN_BIND:-127.0.0.1}:${REACH_ADMIN_PORT:-8788}:8788"], "service reachable by default, admin on host loopback by default");
+  const ports = [...yaml.matchAll(/^\s+- "([^"]+:8[0-9]{3})"$/gm)].map((m) => m[1]);
+  assert.deepEqual(ports, ["${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787", "${REACH_ADMIN_BIND:?host address to publish the Admin plane on}:${REACH_ADMIN_PORT:-8788}:8788"], "service reachable by default; the Admin publication is whatever the deployment sets in REACH_ADMIN_BIND, with no default");
+  assert.match(yaml, /environment:\n\s+REACH_ADMIN_ALLOW_FROM: \$\{REACH_ADMIN_ALLOW_FROM:\?/, "the Server receives its Admin allowlist from the deployment and has no default one");
+  assert.doesNotMatch(text("compose.yaml"), PRIVATE_LAN, "no private network literal in Compose");
   assert.doesNotMatch(yaml, /8789|REACH_DATA/, "no third listener");
 });
 
@@ -100,10 +108,11 @@ test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is rea
   assert.doesNotMatch(full, /sk-|tunnel_[0-9a-f]{8}|api[_-]?key:|Bearer /i, "no credential or tunnel identity in the public file");
 });
 
-test("the healthcheck probes the admin state endpoint without a credential and the image declares it", () => {
+test("the healthcheck probes the public release manifest of the service listener without a credential, never the Admin plane, and the image declares it", () => {
   const hc = code("healthcheck.mjs");
-  assert.match(hc, /\/admin\/api\/state/);
-  assert.doesNotMatch(hc, /Authorization|bearer|\/health\b|\/mcp/i);
+  assert.match(hc, /\/release\/manifest/);
+  assert.match(hc, /REACH_PORT/);
+  assert.doesNotMatch(hc, /Authorization|bearer|\/health\b|\/mcp|\/admin|ADMIN/i);
   assert.match(text("Dockerfile"), /^HEALTHCHECK .*healthcheck\.mjs/m);
 });
 

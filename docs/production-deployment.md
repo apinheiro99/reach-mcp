@@ -26,7 +26,7 @@ Operator --------------------> reach-server:8788/admin
 - The tunnel routes only `/mcp`.
 - Client runtime uses direct **WS** on the controlled/local network.
 - **TLS/WSS is not required in V1.**
-- 8788 defaults to host loopback because the MVP admin plane has no application login. Wider exposure requires an explicit network boundary plus direct-peer allowlist.
+- 8788 has no application login in the MVP, so the deployment must state its exposure explicitly: `REACH_ADMIN_BIND` (the host address Compose publishes it on) and `REACH_ADMIN_ALLOW_FROM` (the direct peers the Server admits, as addresses or CIDRs). Neither has a default; the Server refuses a non-loopback Admin listener without the allowlist. The controller takes both as `--admin-bind` and `--admin-allow-from` on `deploy` and `rollback` (an empty value is refused; `status` needs neither), and the pipeline passes them from the GitLab variables `REACH_ADMIN_BIND` and `REACH_ADMIN_ALLOW_FROM`. The values for a given environment are deployment data, not part of this repository.
 
 ## Distribution
 
