@@ -12,6 +12,7 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { build } from "../../scripts/release.mjs";
 import { collectEntries } from "../../scripts/release/archive.mjs";
 import { serverArgs } from "../../deploy/prod/entrypoint.mjs";
+import { selectClient } from "./select-client.mjs";
 import { sha256, validateManifest, verifyRelease } from "../../scripts/release/manifest.mjs";
 
 const { fetch } = globalThis;
@@ -148,8 +149,10 @@ test("a real Server from the extracted runtime serves the produced manifest and 
     const service = `http://127.0.0.1:${port[1]}`;
     const auth = {};
     assert.deepEqual(Buffer.from(await (await fetch(`${service}/release/manifest`, auth)).arrayBuffer()), readFileSync(path.join(out, "artifacts", "manifest.json")), "the manifest served is the manifest produced");
-    for (const a of manifest.artifacts.filter((x) => x.role === "client")) {
-      const res = await fetch(`${service}/release/artifacts/${a.name}`, auth);
+    for (const [os, arch] of [["linux", "x64"], ["win32", "x64"]]) {
+      const a = selectClient(manifest, os, arch);
+      assert.equal(a.download_path, `/release/artifacts/${a.name}`);
+      const res = await fetch(`${service}${a.download_path}`, auth);
       assert.equal(res.status, 200, a.name);
       const bytes = Buffer.from(await res.arrayBuffer());
       assert.deepEqual([bytes.length, sha256(bytes)], [a.size_bytes, a.sha256], a.name);
