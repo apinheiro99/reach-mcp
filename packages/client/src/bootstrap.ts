@@ -51,15 +51,19 @@ export class Bootstrap {
   }
 
   /**
-   * Replaces this Client's identity with a freshly generated Ed25519 pair: the new private key is written to the bootstrap file
-   * (every other line kept, mode 0600, temporary file and rename) and only then becomes the active key. Returns the new PUBLIC key.
+   * Generates a candidate Ed25519 pair WITHOUT touching the active identity: the valid key keeps working until `commit` is called.
+   * `publicKey` is all that may leave this process. `commit` writes the candidate to the bootstrap file (every other line kept,
+   * mode 0600, temporary file and rename) and only then makes it the active key.
    */
-  rotateIdentity(): string {
-    if (!this.#file) throw new BootstrapError(["this bootstrap has no file to rotate the identity in"]);
+  prepareRotation(): { publicKey: string; commit: () => void } {
+    const file = this.#file;
+    if (!file) throw new BootstrapError(["this bootstrap has no file to rotate the identity in"]);
     const generated = generateIdentityKey();
-    writeBootstrapText(this.#file, readFileSync(this.#file, "utf8").replace(/^(\s*REACH_CLIENT_IDENTITY_KEY\s*=).*$/m, (_, head: string) => `${head}${generated.privateKey}`));
-    this.#identityKey = importPrivateKey(generated.privateKey);
-    return generated.publicKey;
+    const commit = () => {
+      writeBootstrapText(file, readFileSync(file, "utf8").replace(/^(\s*REACH_CLIENT_IDENTITY_KEY\s*=).*$/m, (_, head: string) => `${head}${generated.privateKey}`));
+      this.#identityKey = importPrivateKey(generated.privateKey);
+    };
+    return { publicKey: generated.publicKey, commit };
   }
 
   /** The public key the Server stores as this Client's identity (base64url). */

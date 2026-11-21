@@ -135,7 +135,9 @@ ci-tag-red:
     - "Package Check"
     - "Release Check"
   script:
-    - node scripts/release.mjs build --build-id "$CI_COMMIT_SHORT_SHA" --repository-commit "$CI_COMMIT_SHA" --out release
+    # The release identity is the version the green tag job gives this very pipeline (same grammar as .ci-tag), so the footer shows the Git tag.
+    - VERSION="v$(date -u -d "$CI_PIPELINE_CREATED_AT" +%Y.%m).$(printf "%06d" "$CI_PIPELINE_IID")"
+    - node scripts/release.mjs build --build-id "$VERSION" --repository-commit "$CI_COMMIT_SHA" --out release
     - node scripts/release.mjs verify --out release
   artifacts:
     expire_in: 14 days

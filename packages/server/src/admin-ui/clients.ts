@@ -2,17 +2,6 @@
 // from what /admin/api/clients answers. The Server owns every status, count and fingerprint; this view renders them, sends the human
 // actions (Enable/Disable, Rotate Key) to the lifecycle API and reloads on the shell's one refresh cadence, so it holds no policy.
 export const CLIENTS_CSS = `
-.cl-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--gap)}
-.cl-toolbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(12rem,16rem);gap:var(--gap)}
-.cl-search{position:relative;display:flex;align-items:center}
-.cl-search .icon{position:absolute;left:var(--sp-3);width:1.2rem;height:1.2rem;color:var(--c-muted);pointer-events:none}
-.cl-search .input{padding-left:2.6rem}
-.cl-toolbar .input{height:2.9rem;border-radius:var(--radius-card)}
-.cl-client{display:flex;align-items:center;gap:var(--sp-3);min-width:0}
-.cl-avatar{display:grid;place-items:center;width:2.6rem;height:2.6rem;flex:none;border-radius:var(--radius-control);background:var(--c-elevated);border:1px solid var(--c-border)}
-.cl-avatar .icon{color:var(--c-accent)}
-.cl-name{font-weight:700;font-size:var(--fs-md)}
-.cl-id{color:var(--c-muted);font-size:var(--fs-sm)}
 .cl-conn{display:flex;flex-direction:column;gap:.15rem}
 .cl-conn-state{display:flex;align-items:center;gap:var(--sp-2);font-weight:600}
 .cl-dot{width:.7rem;height:.7rem;border-radius:50%;border:2px solid var(--c-muted);flex:none}
@@ -24,8 +13,6 @@ export const CLIENTS_CSS = `
 .cl-note strong{color:var(--c-warn)}
 .cl-note .icon{width:1.1rem;height:1.1rem;color:var(--c-warn)}
 .cl-empty{padding:var(--sp-5);text-align:center}
-@container (max-width:75rem){.cl-stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@container (max-width:46rem){.cl-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.cl-toolbar{grid-template-columns:minmax(0,1fr)}}
 `;
 
 export const CLIENTS_JS = `
@@ -37,10 +24,10 @@ const matchesSearch = (c, text) => !text || [c.display_name, c.client_id, c.fing
 
 async function renderClients(view) {
   const ui = { search: "", filter: "all", data: null };
-  const stats = UI.el("div", { className: "cl-stats" });
+  const stats = UI.el("div", {});
   const tableHost = UI.el("div", {});
-  const toolbar = UI.el("div", { className: "cl-toolbar" },
-    UI.el("div", { className: "cl-search" }, UI.icon("search"), UI.input({ id: "client-search", placeholder: "Search by client name or fingerprint…", onInput: (v) => { ui.search = v.trim().toLowerCase(); draw(); } })),
+  const toolbar = UI.toolbar(
+    UI.search({ id: "client-search", placeholder: "Search by client name or fingerprint…", onInput: (v) => { ui.search = v.trim().toLowerCase(); draw(); } }),
     UI.select(FILTERS, "all", (v) => { ui.filter = v; draw(); }));
   view.replaceChildren(stats, toolbar, tableHost);
 
@@ -55,8 +42,7 @@ async function renderClients(view) {
   const row = (c) => {
     const base = "/admin/api/clients/" + encodeURIComponent(c.client_id);
     const [label, tone, icon] = STATUS_PILL[c.status];
-    const name = UI.el("div", { className: "cl-client" }, UI.el("div", { className: "cl-avatar" }, UI.icon("box")),
-      UI.el("div", {}, UI.el("div", { className: "cl-name", textContent: c.display_name || c.client_id }), UI.el("div", { className: "cl-id", textContent: c.client_id })));
+    const name = UI.identity({ icon: "box", title: c.display_name || c.client_id, subtitle: c.client_id });
     const dot = UI.el("span", { className: "cl-dot" });
     dot.dataset.online = String(c.online);
     const conn = UI.el("div", { className: "cl-conn" }, UI.el("div", { className: "cl-conn-state" }, dot, c.online ? "Online" : "Offline"), UI.el("div", { className: "cl-seen", textContent: c.last_seen ? ago(c.last_seen) : "—" }));
@@ -76,13 +62,13 @@ async function renderClients(view) {
   function draw() {
     if (!ui.data) return;
     const n = ui.data.counts;
-    stats.replaceChildren(
+    stats.replaceChildren(UI.stats([
       UI.stat({ icon: "users", value: n.total, label: "Total" }),
       UI.stat({ icon: "check-circle", value: n.enabled, label: "Enabled", tone: "ok" }),
       UI.stat({ icon: "clock", value: n.pending, label: "Pending", tone: "warn" }),
       UI.stat({ icon: "ban", value: n.disabled, label: "Disabled", tone: "bad" }),
       UI.stat({ icon: "wifi", value: n.online, label: "Online", tone: "ok" }),
-      UI.stat({ icon: "wifi-off", value: n.offline, label: "Offline" }));
+      UI.stat({ icon: "wifi-off", value: n.offline, label: "Offline" })]));
     const shown = ui.data.clients.filter((c) => matchesFilter(c, ui.filter) && matchesSearch(c, ui.search));
     tableHost.replaceChildren(UI.card({ variant: "table", children: [shown.length
       ? UI.table(["Client", "Status", "Connection", "Public Key (Fingerprint)", "Actions"], shown.map(row))

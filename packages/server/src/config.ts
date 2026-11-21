@@ -20,6 +20,8 @@ const ClientEntry = z.strictObject({
   pending: z.literal(true).optional(),
   /** The Client's Ed25519 public key (base64url). Required while the Client is enabled; the private key is never here. */
   public_key: PublicKey.optional(),
+  /** A replacement key staged by a Rotate Key: valid next to public_key until the Client proves it, then it becomes public_key. */
+  next_public_key: PublicKey.optional(),
   projects: z.array(EffectiveProjectPolicy).max(200),
 });
 
@@ -45,6 +47,8 @@ export const ServerConfig = z
       if (client.enabled && !client.public_key) ctx.addIssue({ code: "custom", path: ["clients", c, "public_key"], message: "an enabled client needs a public key" });
       if (client.public_key && keys.has(client.public_key)) ctx.addIssue({ code: "custom", path: ["clients", c, "public_key"], message: "duplicate public key" });
       if (client.public_key) keys.add(client.public_key);
+      if (client.next_public_key && (!client.public_key || keys.has(client.next_public_key))) ctx.addIssue({ code: "custom", path: ["clients", c, "next_public_key"], message: "a staged key needs a distinct current key" });
+      if (client.next_public_key) keys.add(client.next_public_key);
       const projects = new Set<string>();
       client.projects.forEach((project, p) => {
         if (projects.has(project.project_id)) ctx.addIssue({ code: "custom", path: ["clients", c, "projects", p, "project_id"], message: "duplicate project_id within a client" });
@@ -58,13 +62,13 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
   logging: LoggingSettings.optional(),
-  clients: z.array(ClientEntry.omit({ public_key: true, pending: true })).max(500),
+  clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, pending: true })).max(500),
 });
 /** The shape of editableView(): Clients with their policies and an enrollment flag, never the key. Strict, for readers of stored copies. */
 export const EditableView = z.strictObject({
   configured: z.boolean(),
   logging: LoggingSettings,
-  clients: z.array(ClientEntry.omit({ public_key: true }).extend({ has_public_key: z.boolean() })).max(500),
+  clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true }).extend({ has_public_key: z.boolean() })).max(500),
 });
 export type EditableView = z.infer<typeof EditableView>;
 
@@ -79,7 +83,7 @@ export type ClientStatus = "pending" | "enabled" | "disabled";
 /** What the admin Clients screen reads of one Client: identity and authorization, never the key itself. */
 export type ClientSummary = { client_id: string; display_name?: string; status: ClientStatus; fingerprint: string | null; projects: number };
 /** What admission needs: whether the id is registered, its authorization status and its stored public key, whatever the status. */
-export type ClientAdmission = { status: ClientStatus; publicKey: string | null } | null;
+export type ClientAdmission = { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null } | null;
 /** The editable view of one Client: whether it is enrolled (has a public key), never the key itself. */
 export type EditableClient = PublicClient & { has_public_key: boolean };
 
@@ -173,9 +177,14 @@ export class ServerConfigStore {
     this.#changeClient(clientId, (client) => ({ ...omitPending(client), enabled }));
   }
 
-  /** Atomically replaces a registered Client's public key with the one it generated itself; the old key stops authenticating. */
-  replaceClientPublicKey(clientId: string, publicKey: string): void {
-    this.#changeClient(clientId, (client) => ({ ...client, public_key: publicKey }));
+  /** Durably stages the replacement key a Client generated itself; the current key keeps authenticating next to it. One staged key per Client. */
+  stageClientPublicKey(clientId: string, publicKey: string): void {
+    this.#changeClient(clientId, (client) => ({ ...client, next_public_key: publicKey }));
+  }
+
+  /** The Client proved its staged key: it becomes the key and the old one stops authenticating. */
+  promoteClientPublicKey(clientId: string): void {
+    this.#changeClient(clientId, ({ next_public_key, ...client }) => ({ ...client, ...(next_public_key ? { public_key: next_public_key } : {}) }));
   }
 
   /** Every Client as the Clients screen shows it: status and fingerprint, never the key. */
@@ -186,7 +195,7 @@ export class ServerConfigStore {
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
   editableView(): EditableView {
     if (!this.#active) return { configured: false, logging: { ...DEFAULT_LOGGING }, clients: [] };
-    return structuredClone({ configured: true, logging: this.#active.logging, clients: this.#active.clients.map(({ public_key, ...client }) => ({ ...client, has_public_key: public_key !== undefined })) });
+    return structuredClone({ configured: true, logging: this.#active.logging, clients: this.#active.clients.map(({ public_key, ...client }) => { delete client.next_public_key; return { ...client, has_public_key: public_key !== undefined }; }) });
   }
 
   /** The log size and retention in force; the defaults while no configuration is active. */
@@ -218,13 +227,13 @@ export class ServerConfigStore {
   /** Admission facts for a client_id: null when unregistered. The key is returned in every status; only an Enabled Client is authorized. */
   admissionOf(clientId: string): ClientAdmission {
     const client = this.#requireActive().clients.find((c) => c.client_id === clientId);
-    return client ? { status: statusOf(client), publicKey: client.public_key ?? null } : null;
+    return client ? { status: statusOf(client), publicKey: client.public_key ?? null, nextPublicKey: client.next_public_key ?? null } : null;
   }
 
   #editCandidate(clients: ProposedEdit["clients"], mcp_bearer_sha256: string, logging: LoggingSettings | undefined) {
-    const keys = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, c.public_key]));
+    const keys = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, { public_key: c.public_key, next_public_key: c.next_public_key }]));
     const pending = new Set((this.#active?.clients ?? []).filter((c) => c.pending).map((c) => c.client_id));
-    return { mcp_bearer_sha256, logging, clients: clients.map((c) => ({ ...c, public_key: keys.get(c.client_id), ...(pending.has(c.client_id) && !c.enabled ? { pending: true } : {}) })) };
+    return { mcp_bearer_sha256, logging, clients: clients.map((c) => ({ ...c, ...keys.get(c.client_id), ...(pending.has(c.client_id) && !c.enabled ? { pending: true } : {}) })) };
   }
 
   #changeClient(clientId: string, change: (client: ServerConfig["clients"][number]) => ServerConfig["clients"][number]): void {

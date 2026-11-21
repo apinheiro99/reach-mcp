@@ -42,12 +42,12 @@ test("menu: one navigation source, exact order Overview, Clients, Projects, Syst
   assert.equal(page.match(/id="nav"/g)?.length, 1, "one sidebar nav element");
   assert.equal(page.match(/href: "#\//g)?.length, 1, "menu links are produced in exactly one place");
   for (const [file, text] of OTHER_THAN("nav.ts")) {
-    assert.ok(!/id: "overview"|label: "Clients"|label: "Projects"/.test(text), `${file} declares a menu entry of its own`);
+    assert.ok(!/id: "overview"|label: "[A-Za-z]+", icon: "[a-z]+", subtitle/.test(text), `${file} declares a menu entry of its own`);
   }
   for (const [file, text] of Object.entries(uiSource)) if (file !== "shell.ts" && file !== "nav.ts") assert.ok(!text.includes("NAV_ITEMS"), `${file} reads the menu list directly; only the shell may`);
 });
 
-const PRIMITIVES = ["card", "pill", "row", "toggle", "field", "input", "btn", "table", "unavailable", "autosave"];
+const PRIMITIVES = ["card", "pill", "row", "toggle", "field", "input", "btn", "table", "unavailable", "autosave", "stats", "toolbar", "search", "identity", "meter"];
 
 test("components: every primitive has one CSS owner and one JS builder, and no view styles or builds one by hand", () => {
   const owner = uiSource["components.ts"] as string;
@@ -62,7 +62,7 @@ test("components: every primitive has one CSS owner and one JS builder, and no v
   for (const [file, text] of OTHER_THAN("components.ts")) {
     assert.ok(!/(createElement|UI\.el)\(\s*"(button|input|select|table|textarea)"/.test(text), `${file} creates a raw form control or table; UI.button/input/select/table own that`);
   }
-  for (const fn of ["icon", "pill", "card", "stat", "row", "toggle", "input", "select", "field", "button", "table", "unavailable", "autosave"]) {
+  for (const fn of ["icon", "pill", "card", "stat", "row", "toggle", "input", "select", "field", "button", "table", "unavailable", "autosave", "stats", "search", "toolbar", "identity", "meter"]) {
     assert.equal(owner.match(new RegExp(`\\n  ${fn}\\(`, "g"))?.length, 1, `UI.${fn} is implemented once`);
   }
   assert.ok(/\.pill\{[^}]*border-radius:var\(--radius-pill\)/.test(owner), "the pill shape is one design token, so one change reshapes every pill");
@@ -137,7 +137,7 @@ test("Clients screen: the approved reference as structure: six counters in order
   const clients = uiSource["clients.ts"] as string;
   const labels = [...clients.matchAll(/UI\.stat\(\{ icon: "[a-z-]+", value: n\.\w+, label: "(\w+)"/g)].map((m) => m[1]);
   assert.deepEqual(labels, ["Total", "Enabled", "Pending", "Disabled", "Online", "Offline"], "the six counters of docs/screens/02_clients.png, in that order");
-  assert.equal(clients.match(/UI\.input\(/g)?.length, 1, "one search field");
+  assert.equal(clients.match(/UI\.search\(/g)?.length, 1, "one search field");
   assert.equal(clients.match(/UI\.select\(/g)?.length, 1, "one status filter");
   assert.ok(clients.includes('"Client", "Status", "Connection", "Public Key (Fingerprint)", "Actions"'), "the five columns of the reference");
   assert.equal(clients.match(/UI\.toggle\(/g)?.length, 1, "one Enable/Disable toggle owner");

@@ -111,7 +111,7 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
   const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, logger, audit });
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
-  const admin = createServer(createAdminHandler({ ...common, logger, audit, devLiveReload: args.devLiveReload, ...(args.adminUser === undefined ? {} : { adminUser: args.adminUser }), ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
+  const admin = createServer(createAdminHandler({ ...common, logger, audit, devLiveReload: args.devLiveReload, logsDir: args.logs, ...(args.artifacts === undefined ? {} : { artifactsDir: args.artifacts }), ...(args.adminUser === undefined ? {} : { adminUser: args.adminUser }), ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
   const release = createReleaseHandler({ audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
   const server = createHttpServer({ ...common, release });
   const stop = async () => {

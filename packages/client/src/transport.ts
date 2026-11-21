@@ -59,6 +59,8 @@ export class ClientTransport {
   #lastHealthyAt: number | null = null;
   #attempts = 0;
   #answered = false;
+  /** The candidate identity of the one rotation in flight; dropped on every reconnect. */
+  #rotation: { id: string; commit: () => void } | null = null;
   #socket: WebSocket | null = null;
   #cancelRetry: (() => void) | null = null;
   #cancelHeartbeat: (() => void) | null = null;
@@ -113,6 +115,7 @@ export class ClientTransport {
   #connect(): void {
     this.#state = "connecting";
     this.#answered = false;
+    this.#rotation = null;
     const socket = this.#createSocket(this.#bootstrap.endpoint);
     this.#socket = socket;
     socket.on("open", () => this.#onOpen(socket));
@@ -182,6 +185,7 @@ export class ClientTransport {
     const message = this.#handler ? parseWire(PostWelcomeMessage, frame) : null;
     if (!this.#handler || !message?.ok) return this.#failClosed(socket, "unexpected frame after the handshake");
     if (message.data.kind === "rotate_key") return this.#rotateKey(socket, message.data.rotation_id);
+    if (message.data.kind === "rotate_committed") return this.#commitRotation(socket, message.data.rotation_id);
     if (message.data.kind === "policy_sync") {
       try {
         this.#handler.applyPolicy(message.data);
@@ -201,15 +205,28 @@ export class ClientTransport {
     );
   }
 
-  /** The one rotation path: the Bootstrap owner generates and stores the new pair; only its public key goes back to the Server. */
+  /** Rotation step 1: the Bootstrap owner generates a CANDIDATE pair; only its public key goes back. The valid key stays the identity. */
   #rotateKey(socket: WebSocket, rotationId: string): void {
-    let publicKey: string;
+    let prepared: { publicKey: string; commit: () => void };
     try {
-      publicKey = this.#bootstrap.rotateIdentity();
+      prepared = this.#bootstrap.prepareRotation();
     } catch {
       return this.#failClosed(socket, "key rotation failed");
     }
-    socket.send(JSON.stringify({ kind: "rotated", rotation_id: rotationId, public_key: publicKey }));
+    this.#rotation = { id: rotationId, commit: prepared.commit };
+    socket.send(JSON.stringify({ kind: "rotated", rotation_id: rotationId, public_key: prepared.publicKey }));
+  }
+
+  /** Rotation step 2: the Server has durably stored the candidate, so it may become the identity. The Server then closes and the Client reconnects with it. */
+  #commitRotation(socket: WebSocket, rotationId: string): void {
+    const rotation = this.#rotation;
+    this.#rotation = null;
+    if (!rotation || rotation.id !== rotationId) return this.#failClosed(socket, "unexpected rotation commit");
+    try {
+      rotation.commit();
+    } catch {
+      this.#failClosed(socket, "key rotation failed"); // the old key is still the identity, and the Server still accepts it
+    }
   }
 
   #onPong(socket: WebSocket): void {

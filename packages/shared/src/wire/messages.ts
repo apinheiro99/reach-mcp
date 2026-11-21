@@ -41,6 +41,10 @@ export type ResponseEnvelope = z.infer<typeof ResponseEnvelope>;
 export const ServerRotateKey = z.strictObject({ kind: z.literal("rotate_key"), rotation_id: RequestId });
 export type ServerRotateKey = z.infer<typeof ServerRotateKey>;
 
+/** Server -> Client: the replacement public key is durably stored next to the valid one; the Client may now make it its own. */
+export const ServerRotateCommitted = z.strictObject({ kind: z.literal("rotate_committed"), rotation_id: RequestId });
+export type ServerRotateCommitted = z.infer<typeof ServerRotateCommitted>;
+
 /** Client -> Server: the answer to one rotate_key; the replacement PUBLIC key, never the private one. */
 export const ClientRotated = z.strictObject({ kind: z.literal("rotated"), rotation_id: RequestId, public_key: PublicKey });
 export type ClientRotated = z.infer<typeof ClientRotated>;
@@ -57,11 +61,11 @@ export const ClientMessage = z.union([ClientHello, ...SessionMessage.options]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
 /** Server -> Client: the handshake answer, the policy snapshot, and the requests the Client executes. */
-export const ServerMessage = z.union([ServerChallenge, ServerWelcome, ServerReject, PolicySync, RequestEnvelope, ServerRotateKey]);
+export const ServerMessage = z.union([ServerChallenge, ServerWelcome, ServerReject, PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted]);
 export type ServerMessage = z.infer<typeof ServerMessage>;
 
 /** What the Server may send once the Client is admitted. */
-export const PostWelcomeMessage = z.union([PolicySync, RequestEnvelope, ServerRotateKey]);
+export const PostWelcomeMessage = z.union([PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted]);
 export type PostWelcomeMessage = z.infer<typeof PostWelcomeMessage>;
 
 export type WireParse<T> = { ok: true; data: T } | { ok: false; error: WireError };

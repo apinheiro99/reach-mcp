@@ -123,7 +123,7 @@ test("Server and Client runtimes: unknown Client waits Pending, Enable admits it
   const firstFingerprint = (await list()).clients[0]!.fingerprint;
 
   assert.equal((await post("rotate-key")).status, 200);
-  assert.equal(await wait(async () => (await list()).clients[0]?.fingerprint !== firstFingerprint), true, "the Server replaced the public key");
+  assert.equal(await wait(async () => (await list()).clients[0]?.fingerprint !== firstFingerprint), true, "the Server promoted the new public key after the Client proved it");
   assert.equal(await wait(async () => (await connected()) === 1), true, "the Client reconnected and proved the new key");
   const rotated = readFileSync(file, "utf8");
   const newKey = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(rotated)![1]!;

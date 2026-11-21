@@ -284,5 +284,9 @@ test("rotation frames: the Server asks with a rotation_id, the Client answers wi
   assert.equal(ClientRotated.safeParse({ ...answer, public_key: "short" }).success, false);
   assert.equal(ServerRotateKey.safeParse({ ...ask, public_key: answer.public_key }).success, false);
   assert.equal(SessionMessage.safeParse(answer).success, true);
+  const commit = { kind: "rotate_committed", rotation_id: "rot-1" };
+  assert.equal(PostWelcomeMessage.safeParse(commit).success, true, "the Server commits the staged key");
+  assert.equal(ClientMessage.safeParse(commit).success, false, "the Client never commits");
+  assert.equal(PostWelcomeMessage.safeParse({ ...commit, public_key: answer.public_key }).success, false);
   for (const code of ["PENDING_APPROVAL", "CLIENT_DISABLED"]) assert.equal(WireError.safeParse({ code, message: "m" }).success, true, code);
 });
