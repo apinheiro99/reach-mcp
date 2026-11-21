@@ -22,18 +22,10 @@ VIEWS.projects = renderProjects;
 VIEWS.system = renderSystem;
 VIEWS.api = renderApi;
 VIEWS.logs = renderLogs;
-async function refreshVersion() {
-  const r = await api("GET", "/admin/api/state");
-  if (!r.ok) return;
-  const h = r.json.health;
-  document.getElementById("version-text").textContent = h.server_build + (h.repository_commit ? " (" + h.repository_commit.slice(0, 7) + ")" : "");
-  document.getElementById("version").dataset.state = h.status === "ok" ? "ok" : "";
-}
 buildNav();
 window.addEventListener("hashchange", route);
 route().then(() => say("saved", "Ready"));
 refreshVersion();
-setInterval(refreshVersion, 5000);
 `;
 
 export function renderAdminPage(options: { devLiveReload?: boolean; adminUser?: string } = {}): string {

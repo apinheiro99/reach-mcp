@@ -86,8 +86,15 @@ function buildHeader(item) {
     UI.el("div", { className: "header-end" }, autosave.el, UI.el("div", { className: "admin-user" }, UI.icon("user"), ADMIN_USER)));
 }
 function currentItem() { const id = location.hash.replace("#/", ""); return NAV.find((n) => n.id === id) || NAV[0]; }
+async function refreshVersion() {
+  const r = await api("GET", "/admin/api/state");
+  if (!r.ok) return;
+  const h = r.json.health;
+  document.getElementById("version-text").textContent = h.server_build + (h.repository_commit ? " (" + h.repository_commit.slice(0, 7) + ")" : "");
+  document.getElementById("version").dataset.state = h.status === "ok" ? "ok" : "";
+}
 let poller = null;
-const every = (fn) => { clearInterval(poller); poller = setInterval(fn, 5000); };
+const every = (fn) => { clearInterval(poller); poller = setInterval(() => { fn(); refreshVersion(); }, 5000); };
 async function route() {
   clearInterval(poller);
   const item = currentItem();

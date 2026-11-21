@@ -130,5 +130,7 @@ test("all six screens are real: no placeholder remains, one poller owner, and th
   assert.ok(!/built in a later task/.test(page), "no placeholder screen is left");
   for (const view of ["overview", "clients", "projects", "system", "api", "logs"]) assert.ok(new RegExp(`VIEWS\\.${view} =`).test(page), view);
   for (const f of readdirSync(UI_DIR).filter((n) => n.endsWith(".ts") && n !== "shell.ts" && n !== "dev-reload.ts")) assert.ok(!/setInterval/.test(ui(f)), `${f} declares its own interval`);
+  assert.ok(!/setInterval/.test(page), "the page composition declares no timer; the footer version rides the shell's one poller");
+  assert.ok(/refreshVersion\(\); }, 5000\)/.test(ui("shell.ts")), "the footer version refreshes on the shell poller");
   assert.match(ui("overview.ts").split("\n").slice(0, 3).join(" "), /\/admin\/api\/state and \/admin\/api\/clients/);
 });
