@@ -193,5 +193,7 @@ ci-tag-red:
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
+    # PO order: no deploy ever waits for a click. Rollback stays available as a manual button but must never leave the pipeline blocked in "manual".
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       when: manual
+      allow_failure: true

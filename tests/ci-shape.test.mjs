@@ -104,7 +104,11 @@ test("production delivery: the release job needs every validation job; the defau
   assert.match(candidate, /\$CI_COMMIT_BRANCH =~ \/\^feature\\\/task-\/'\n/, "Task branches only");
   assert.doesNotMatch(candidate, /when: manual|allow_failure/, "PO order: no button, it runs after Build Release passes");
   assert.doesNotMatch(candidate, /\$CI_DEFAULT_BRANCH/, "never the default branch");
-  assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
+  assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual\n\s+allow_failure: true/);
+  // PO order (2026-11-20): a deployment never waits for a click. The only manual job is Rollback, and it must never block the pipeline.
+  const manual = ci.match(/when: manual/g) ?? [];
+  assert.equal(manual.length, ci.match(/when: manual\n\s+allow_failure: true/g)?.length, "every manual job is allow_failure: true, so no pipeline is left blocked in manual");
+  assert.equal(manual.length, 1, "Rollback Production is the only manual job");
   assert.ok(ci.indexOf("  - validate\n") < ci.indexOf("  - release\n") && ci.indexOf("  - release\n") < ci.indexOf("  - deploy\n"), "stage order: validate, release, deploy");
 });
 
