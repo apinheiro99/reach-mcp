@@ -28,6 +28,8 @@ test("flags forbidden paths", () => {
   const read = () => "";
   assert.equal(scanFiles([".env"], read)[0].category, "forbidden-path");
   assert.equal(scanFiles(["config/.env.production"], read)[0].category, "forbidden-path");
+  assert.deepEqual(scanFiles([".env.example"], () => "REACH_PRIVATE_PATH=\n"), [], "the tracked non-secret template is the one allowed .env file");
+  assert.equal(scanFiles([".env.example.local"], read)[0].category, "forbidden-path", "only the exact template name is allowed");
   assert.equal(scanFiles(["server.pem"], read)[0].category, "forbidden-path");
 });
 

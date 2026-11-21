@@ -4,7 +4,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -163,9 +163,9 @@ test("a real Server from the extracted runtime serves the produced manifest and 
 });
 
 test("the production entrypoint starts the real extracted Server from the manifest identity; the healthcheck passes in setup mode without a bearer", async () => {
-  const state = path.join(base, "prod-state");
-  mkdirSync(state, { recursive: true });
-  const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${state}/config.json`, proposal: `${state}/proposal.json`, logs: `${state}/logs` };
+  const root = path.join(base, "reach-private");
+  mkdirSync(root, { recursive: true }); // what the deployment controller does for a first run: an empty private root, no files in it
+  const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${root}/config.json`, proposal: `${root}/proposal.json`, logs: `${root}/logs` };
   const args = serverArgs({ REACH_HOST: "127.0.0.1", REACH_PORT: "0", REACH_ADMIN_PORT: "0", REACH_ADMIN_ALLOW_FROM: "203.0.113.0/24" }, layout);
   assert.deepEqual([args[args.indexOf("--build") + 1], args[args.indexOf("--repository-commit") + 1]], [BUILD_ID, COMMIT]);
   assert.equal(args[args.indexOf("--admin-allow-from") + 1], "203.0.113.0/24", "the Admin allowlist excludes loopback on purpose: health must not depend on it");
@@ -174,6 +174,7 @@ test("the production entrypoint starts the real extracted Server from the manife
     const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
     const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: port[1] } });
+    assert.ok(existsSync(path.join(root, "logs")), "the Server created its log directory inside the private root");
     assert.equal(health.status, 0, "healthy in setup mode with no bearer configured, while the Admin allowlist excludes the probe's loopback address");
     assert.equal((await fetch(`http://127.0.0.1:${port[2]}/admin/api/state`)).status, 403, "the Admin plane really refuses a peer outside the allowlist");
     const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: "1" } });
@@ -235,9 +236,8 @@ test("can it hang: a Server that exits before listening fails at once with its o
 });
 
 test("the production entrypoint contract: the Admin listener is non-loopback by default and the Server refuses it without an allowlist", async () => {
-  const state = path.join(base, "no-allowlist");
-  mkdirSync(state, { recursive: true });
-  const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${state}/config.json`, proposal: `${state}/proposal.json`, logs: `${state}/logs` };
+  const root = path.join(base, "no-allowlist");
+  const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${root}/config.json`, proposal: `${root}/proposal.json`, logs: `${root}/logs` };
   const args = serverArgs({ REACH_HOST: "127.0.0.1", REACH_PORT: "0", REACH_ADMIN_PORT: "0" }, layout);
   assert.ok(!args.includes("--admin-allow-from"), "no allowlist is invented");
   await assert.rejects(startServer(args, { env: { PATH: process.env.PATH } }), /--admin-host outside loopback needs --admin-allow-from/);

@@ -53,6 +53,6 @@ The Server stores only the matching public key and Server-owned logical configur
 
 ## Persistence and logs
 
-Runtime configuration, proposal state and logs live under the deployment-provided persistent root. Secrets never belong in the public repository, logs or CI output.
+Runtime configuration, proposal state and logs live under the deployment-provided persistent root (`REACH_PRIVATE_PATH`, mounted at `/reach-private` as `config.json`, `proposal.json` and `logs/`). Secrets never belong in the public repository, logs or CI output.
 
 Project roots are explicit. There is no default root.

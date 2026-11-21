@@ -18,28 +18,28 @@ npm run validate
 Canonical distribution:
 
 - prebuilt Server image;
-- root `compose.yaml`;
+- `deploy/prod/compose.yaml`;
 - root `.env.example`;
-- local `.env`;
-- one installation-specific persistent path, mounted as `/reach-private`.
+- local `.env` (ignored by Git);
+- one installation-specific persistent path, `REACH_PRIVATE_PATH`, mounted as `/reach-private`.
 
 Normal install:
 
 ```sh
 git clone <repository-url>
 cd <repository>
-cp .env.example .env
-docker compose up -d
+cp .env.example .env   # then set REACH_IMAGE, REACH_PRIVATE_PATH and the other values
+docker compose --env-file .env -f deploy/prod/compose.yaml up -d
 ```
 
 Update:
 
 ```sh
-docker compose pull
-docker compose up -d
+docker compose --env-file .env -f deploy/prod/compose.yaml pull
+docker compose --env-file .env -f deploy/prod/compose.yaml up -d
 ```
 
-The persistent root must survive container recreation. REACH must fail clearly rather than silently fall back to ephemeral storage.
+Keep `REACH_PRIVATE_PATH` the same across updates: that path is what preserves the data. The persistent root must survive container recreation. REACH must fail clearly rather than silently fall back to ephemeral storage.
 
 ## Client installation
 

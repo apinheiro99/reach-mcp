@@ -1,8 +1,7 @@
 # Production Server. It runs an image already built by deploy/prod/build-image.mjs; Compose never builds from source.
-# The three host paths below must already exist (Docker would create a missing path as a directory) and be set by the operator:
-#   REACH_CONFIG_FILE    a file the container user (uid 1000) can read and write: the Server stores its configuration there
-#   REACH_PROPOSAL_FILE  a file the container user can read and write
-#   REACH_LOG_DIR        a directory the container user can write
+# The Server keeps everything it persists (configuration, proposal, logs) under ONE host directory, REACH_PRIVATE_PATH, mounted at /reach-private.
+# It must be a directory the container user (uid 1000) can write; the controller (deploy/prod/deploy.mjs) creates or validates it, and it is never
+# replaced by container-local storage. Variables come from the root .env (copy .env.example): docker compose --env-file .env -f deploy/prod/compose.yaml up -d
 # The Secure MCP Tunnel is the second service of the same stack. It is an operator-provided static binary plus a private directory holding
 # its configuration and credentials, never baked into an image:
 #   REACH_TUNNEL_BINARY  the tunnel-client executable (a regular file)
@@ -18,9 +17,7 @@ services:
     image: ${REACH_IMAGE:?set REACH_IMAGE to the tag produced by build-image.mjs}
     restart: unless-stopped
     volumes:
-      - ${REACH_CONFIG_FILE:?absolute path of the config file}:/run/reach/config.json
-      - ${REACH_PROPOSAL_FILE:?absolute path of the proposal file}:/run/reach/proposal.json
-      - ${REACH_LOG_DIR:?absolute path of the log directory}:/var/log/reach
+      - ${REACH_PRIVATE_PATH:?absolute path of the Server private directory}:/reach-private
     # The in-container Admin listener is non-loopback, so the Server needs its direct-peer allowlist: deployment data, never a default here.
     environment:
       REACH_ADMIN_ALLOW_FROM: ${REACH_ADMIN_ALLOW_FROM:?comma-separated addresses or CIDRs allowed to reach the Admin plane}
