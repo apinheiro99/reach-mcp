@@ -297,3 +297,36 @@ test("logging settings: defaults when omitted, bounded, editable through the one
   assert.equal("logging" in store.validateEdit({ clients: store.snapshot().clients }), false, "an AI proposal carries no logging settings");
   assert.throws(() => store.validateEdit({ logging: { max_bytes: 4096, retention_days: 9 }, clients: [] }), ConfigError);
 });
+
+test("setClientDisplayName: rename persists and reloads, changes only the label, accepts duplicates and the 1 and 100 boundaries, refuses blank, over-long and unknown", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  const fresh = newIdentity();
+  store.registerPendingClient("newbox", fresh.publicKey);
+  const before = store.snapshot().clients.find((c) => c.client_id === "newbox")!;
+  store.setClientDisplayName("newbox", "  Build box  ");
+  const after = store.snapshot().clients.find((c) => c.client_id === "newbox")!;
+  assert.deepEqual({ ...after, display_name: undefined }, { ...before, display_name: undefined }, "id, status, key and projects are untouched");
+  assert.equal(after.display_name, "Build box");
+  assert.equal(store.admissionOf("newbox")?.status, "pending", "a Pending Client stays Pending");
+  const reloaded = new ServerConfigStore(file);
+  reloaded.loadInitial();
+  assert.equal(reloaded.clientSummaries().find((c) => c.client_id === "newbox")?.display_name, "Build box", "the rename survives a reload");
+  store.setClientDisplayName("laptop", "Build box");
+  assert.equal(store.clientSummaries().filter((c) => c.display_name === "Build box").length, 2, "duplicate names on distinct ids are valid");
+  store.setClientDisplayName("newbox", "x");
+  store.setClientDisplayName("newbox", "y".repeat(100));
+  for (const bad of ["", "   ", "z".repeat(101)]) assert.throws(() => store.setClientDisplayName("newbox", bad), ConfigError, `"${bad.slice(0, 5)}" is refused`);
+  assert.throws(() => store.setClientDisplayName("nobody", "Name"), ConfigError, "an unknown client is refused");
+  assert.equal(store.clientSummaries().find((c) => c.client_id === "newbox")?.display_name, "y".repeat(100), "refusals changed nothing");
+  store.stageClientPublicKey("newbox", newIdentity().publicKey);
+  store.promoteClientPublicKey("newbox");
+  assert.equal(store.clientSummaries().find((c) => c.client_id === "newbox")?.display_name, "y".repeat(100), "key rotation keeps the name");
+});
+
+test("a config without display_name stays valid and its summary has no name", () => {
+  const store = new ServerConfigStore(write(valid()));
+  store.loadInitial();
+  assert.ok(store.clientSummaries().some((c) => c.display_name === undefined), "UUID is the fallback shown by the UI");
+});

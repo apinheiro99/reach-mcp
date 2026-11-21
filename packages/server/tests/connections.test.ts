@@ -446,3 +446,14 @@ test("an invalid option is refused, and the connection registry keeps to routing
   assert.ok(!/node:fs|node:child_process|sqlite|express|fastify|\/mcp\b/.test(text));
   assert.ok(!/credential|console\./.test(text));
 });
+
+test("display name: a known Client reconnecting with another suggestion never overwrites the name an operator set", async () => {
+  const t = await setup();
+  const fresh = newIdentity();
+  await (await t.connect({ id: "namebox", identity: fresh, extra: { display_name: "Suggested" } })).closed;
+  assert.equal(t.config.clientSummaries().find((c) => c.client_id === "namebox")?.display_name, "Suggested", "the first hello stores the suggestion");
+  t.config.setClientDisplayName("namebox", "Operator choice");
+  await (await t.connect({ id: "namebox", identity: fresh, extra: { display_name: "Another suggestion" } })).closed;
+  assert.equal(t.config.clientSummaries().find((c) => c.client_id === "namebox")?.display_name, "Operator choice");
+  await t.done();
+});

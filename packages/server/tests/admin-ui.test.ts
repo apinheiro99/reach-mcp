@@ -147,7 +147,8 @@ test("Clients screen: the approved reference as structure: six counters in order
   assert.ok(/api\("GET", "\/admin\/api\/clients"\)/.test(clients) && /api\("POST", path\)/.test(clients), "the screen only calls the Server lifecycle API");
   assert.ok(!/status === "enabled" \? .*online|has_public_key|enabled:\s*true/.test(clients), "no status or count is computed from raw config in the UI");
   assert.equal(clients.match(/every\(load\)/g)?.length, 1, "automatic refresh reuses the shell's one poller");
-  assert.ok(!/setInterval|setTimeout/.test(clients), "no second timer owner");
+  assert.ok(!/setInterval/.test(clients), "no second refresh timer owner");
+  assert.equal(clients.match(/setTimeout/g)?.length, 1, "the only timer is the rename autosave debounce");
   assert.ok(page.includes('data-tone="warn"') || page.includes('tr[data-tone="warn"]'), "the table component owns the row highlight");
 });
 
@@ -220,7 +221,7 @@ test("identity badge: one primitive renders either an icon or an image, and Clie
   const clients = uiSource["clients.ts"] as string;
   const projects = uiSource["projects.ts"] as string;
   for (const [file, text] of [["clients.ts", clients], ["projects.ts", projects]] as const) {
-    assert.ok(/UI\.identity\(\{ badgeImageSrc: "\/admin\/assets\/reach-logo\.png", title: c\.display_name/.test(text), `${file} shows the Client with the canonical REACH mark`);
+    assert.ok(/UI\.identity\(\{ badgeImageSrc: "\/admin\/assets\/reach-logo\.png", title: /.test(text), `${file} shows the Client with the canonical REACH mark`);
     assert.ok(!/UI\.identity\(\{ icon: "box"/.test(text), `${file} no longer shows a Client as a generic box`);
   }
   assert.ok(/UI\.stat\(\{ icon: "box", value: all\.length, label: "Projects" \}\)/.test(projects), "the Projects statistic keeps its box icon");
