@@ -30,8 +30,7 @@ $InstallDir = $InstallDir.TrimEnd('\')
 if ($Bootstrap.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Bootstrap must live outside the install directory (the bootstrap is not part of the install)' }
 if ($Build -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') { throw 'Build must be 1 to 128 characters: letters, digits and . _ -' }
 if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw 'Archive is not a file' }
-if ($NodePath -eq '') { $NodePath = (Get-Command node).Source }
-Assert-AbsolutePath 'NodePath' $NodePath
+if ($NodePath -ne '') { Assert-AbsolutePath 'NodePath' $NodePath }
 
 $Launcher = Join-Path $InstallDir "$Top.mjs"
 if ((Test-Path -LiteralPath $InstallDir) -and (Get-ChildItem -LiteralPath $InstallDir -Force | Select-Object -First 1) -and -not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
@@ -46,15 +45,37 @@ Expand-Archive -LiteralPath $Archive -DestinationPath $Stage
 if (-not (Test-Path -LiteralPath (Join-Path $Stage "$Top\$Top.mjs") -PathType Leaf)) { Remove-Item -LiteralPath $Stage -Recurse -Force; throw "archive has no $Top\$Top.mjs launcher" }
 if (Get-ChildItem -LiteralPath $Stage -Recurse -Force | Where-Object { $_.LinkType }) { Remove-Item -LiteralPath $Stage -Recurse -Force; throw 'archive contains a link: refusing the archive' }
 
+# A running Client holds its files open: stop the task and any node.exe started from this install before the swap, and bring it back if the swap fails.
+$Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+$WasRunning = ($null -ne $Existing) -and ($Existing.State -eq 'Running')
+if ($null -ne $Existing) { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
+Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue
+$Deadline = (Get-Date).AddSeconds(15)
+while ((Get-Date) -lt $Deadline -and (Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) })) { Start-Sleep -Milliseconds 300 }
+
 # Replace: a failure before the swap leaves the previous install untouched; the old tree is removed only after the new one is in place.
-if (Test-Path -LiteralPath $InstallDir) { Move-Item -LiteralPath $InstallDir -Destination $Old }
+if (Test-Path -LiteralPath $InstallDir) {
+  try { Move-Item -LiteralPath $InstallDir -Destination $Old }
+  catch {
+    if ($WasRunning) { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
+    throw "could not move the current install aside; it was left in place: $($_.Exception.Message)"
+  }
+}
 try { Move-Item -LiteralPath (Join-Path $Stage $Top) -Destination $InstallDir }
 catch {
   if (Test-Path -LiteralPath $Old) { Move-Item -LiteralPath $Old -Destination $InstallDir }
+  if ($WasRunning) { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
   throw 'could not move the new install into place; the previous install was restored'
 }
 Remove-Item -LiteralPath $Stage -Recurse -Force
 if (Test-Path -LiteralPath $Old) { Remove-Item -LiteralPath $Old -Recurse -Force }
+
+# Node: an explicit -NodePath, else the runtime the release carries inside the install (so a fresh machine needs no Node), else a Node on PATH.
+if ($NodePath -eq '') {
+  $Bundled = Join-Path $InstallDir 'runtime\node.exe'
+  if (Test-Path -LiteralPath $Bundled -PathType Leaf) { $NodePath = $Bundled } else { $NodePath = (Get-Command node).Source }
+}
+Assert-AbsolutePath 'NodePath' $NodePath
 
 # The task arguments carry only the launcher, the bootstrap path and the build id; paths are quoted because Program Files has a space.
 $Arguments = "`"$Launcher`" --bootstrap `"$Bootstrap`" --build $Build"

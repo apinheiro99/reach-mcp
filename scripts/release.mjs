@@ -6,6 +6,7 @@
 //   node scripts/release.mjs build --build-id <id> [--repository-commit <sha>] --out <dir>
 //   node scripts/release.mjs verify --out <dir>
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,6 +15,9 @@ import { collectEntries, tgz, zip } from "./release/archive.mjs";
 import { artifactDir, buildManifest, INSTALLERS, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
 
 const REPO = path.resolve(import.meta.dirname, "..");
+/** The Windows Client carries its own Node runtime so a fresh machine needs no Node. Pinned version and the SHA-256 Node publishes for this exact file
+ *  (SHASUMS256.txt of that release); the builder refuses any other bytes. It is part of the Windows archive, so the manifest hash already covers it. */
+const WINDOWS_NODE = { version: "26.13.1", url: "https://nodejs.org/dist/v26.13.1/win-x64/node.exe", sha256: "f5109dc868ec38703ad8f305e0aceece717cb60d4889873f434017af4e96cccb" };
 /** package name -> source directory. The closure of each role is derived from its package.json dependencies. */
 const PACKAGES = {
   "@reach-mcp/shared": "packages/shared",
@@ -39,6 +43,21 @@ function closure(role) {
   return [...seen].sort();
 }
 
+/** The pinned node.exe, downloaded once into a cache and verified against the pinned SHA-256 every time it is used. */
+function windowsNode() {
+  const cached = path.join(tmpdir(), "reach-node-cache", `node-${WINDOWS_NODE.version}-win-x64.exe`);
+  const verified = () => existsSync(cached) && createHash("sha256").update(readFileSync(cached)).digest("hex") === WINDOWS_NODE.sha256;
+  if (!verified()) {
+    mkdirSync(path.dirname(cached), { recursive: true });
+    execFileSync("curl", ["-fsSL", "--max-time", "600", "-o", cached, WINDOWS_NODE.url], { stdio: ["ignore", "ignore", "inherit"] });
+    if (!verified()) {
+      rmSync(cached, { force: true });
+      throw new Error(`release: the downloaded node.exe ${WINDOWS_NODE.version} does not match the pinned SHA-256`);
+    }
+  }
+  return cached;
+}
+
 function stage(target, buildDir) {
   const root = path.join(buildDir, `${target.role}-${target.platform}`, `reach-${target.role}`);
   mkdirSync(path.join(root, "lib"), { recursive: true });
@@ -61,6 +80,12 @@ function stage(target, buildDir) {
     // The public install.sh runs this low-level installer out of the verified archive: it stays the one owner of the swap and the unit.
     mkdirSync(path.join(root, "deploy"));
     copyFileSync(path.join(REPO, "deploy", "client", "install-linux.sh"), path.join(root, "deploy", "install-linux.sh"));
+  }
+  if (target.role === "client" && target.os === "win32") {
+    mkdirSync(path.join(root, "deploy"));
+    copyFileSync(path.join(REPO, "deploy", "client", "install-windows.ps1"), path.join(root, "deploy", "install-windows.ps1"));
+    mkdirSync(path.join(root, "runtime"));
+    copyFileSync(windowsNode(), path.join(root, "runtime", "node.exe"));
   }
   return root;
 }

@@ -43,7 +43,7 @@ export function createInstallHandler(deps: { artifacts?: ArtifactSource; audit?:
     const available = installerFacts(deps.artifacts);
     const commands = [
       ...(available.sh ? [["Linux", `curl -fsSL http://${authority}/install.sh | sudo sh -s -- --server-origin http://${authority}`]] : []),
-      ...(available.ps1 ? [["Windows (PowerShell)", `irm http://${authority}/install.ps1 | iex`]] : []),
+      ...(available.ps1 ? [["Windows (PowerShell)", `$env:REACH_SERVER_ORIGIN='http://${authority}'; irm http://${authority}/install.ps1 | iex`]] : []),
     ];
     const body = `<!doctype html>\n<meta charset="utf-8">\n<title>Install the REACH Client</title>\n<h1>Install the REACH Client</h1>\n${
       commands.length === 0 ? "<p>No installer is available on this Server yet.</p>\n" : commands.map(([label, command]) => `<h2>${label}</h2>\n<pre>${escapeHtml(command as string)}</pre>\n`).join("")

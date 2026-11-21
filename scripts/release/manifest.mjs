@@ -20,7 +20,10 @@ export const REQUIRED_ARTIFACTS = [
   { role: "client", platform: "win32-x64", os: "win32", arch: "x64" },
 ];
 /** The public installer scripts a release carries, served by the Server at these fixed paths. The manifest declares their hash and size, so verifyRelease covers them. */
-export const INSTALLERS = [{ name: "install.sh", os: "linux", download_path: "/install.sh" }];
+export const INSTALLERS = [
+  { name: "install.sh", os: "linux", download_path: "/install.sh" },
+  { name: "install.ps1", os: "win32", download_path: "/install.ps1" },
+];
 const isPublic = (role) => role === "client";
 const targetOf = (role, platform) => REQUIRED_ARTIFACTS.find((t) => t.role === role && t.platform === platform);
 const ROLES = new Set(REQUIRED_ARTIFACTS.map((r) => r.role));

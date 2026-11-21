@@ -113,7 +113,8 @@ test("manifest v2: an installer selects exactly one Client by os/arch and gets i
 test("manifest v2 declares the public installers: a missing, renamed, mispathed or unhashed installer is rejected", () => {
   const records = [["server", "linux-x64", "s.tgz"], ["client", "linux-x64", "c1.tgz"], ["client", "win32-x64", "c2.zip"]].map(([role, platform, name]) => ({ role, platform, name, bytes: Buffer.from(name) }));
   const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records, installers: INSTALLER_BYTES });
-  assert.deepEqual(m.installers, [{ name: "install.sh", os: "linux", sha256: sha256(INSTALLER_BYTES[0].bytes), size_bytes: INSTALLER_BYTES[0].bytes.length, download_path: "/install.sh" }]);
+  assert.deepEqual(m.installers[0], { name: "install.sh", os: "linux", sha256: sha256(INSTALLER_BYTES[0].bytes), size_bytes: INSTALLER_BYTES[0].bytes.length, download_path: "/install.sh" });
+  assert.deepEqual([m.installers[1].name, m.installers[1].os, m.installers[1].download_path], ["install.ps1", "win32", "/install.ps1"]);
   const bad = (edit) => validateManifest(edit(JSON.parse(JSON.stringify(m)))).join();
   assert.match(bad((x) => (delete x.installers, x)), /installers must list exactly install.sh/);
   assert.match(bad((x) => ((x.installers[0].name = "other.sh"), x)), /must be install.sh for linux/);

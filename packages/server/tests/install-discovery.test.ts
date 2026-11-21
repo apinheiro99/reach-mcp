@@ -14,7 +14,10 @@ const SH = Buffer.from("#!/bin/sh\necho canonical linux installer\n");
 const PS1 = Buffer.from("Write-Output 'canonical windows installer'\r\n");
 const BEARER = "mcp-bearer-" + "Kq83Zr20";
 const LINUX = (host: string) => `curl -fsSL http://${host}/install.sh | sudo sh -s -- --server-origin http://${host}`;
-const WINDOWS = (host: string) => `irm http://${host}/install.ps1 | iex`;
+const WINDOWS = (host: string) => `$env:REACH_SERVER_ORIGIN='http://${host}'; irm http://${host}/install.ps1 | iex`;
+
+/** The page escapes every special character as a numeric entity; this is what a browser shows. */
+const shown = (html: string): string => html.replace(/&#(\d+);/g, (_, n: string) => String.fromCharCode(Number(n)));
 
 type Options = { sh?: boolean; ps1?: boolean; active?: boolean; source?: ArtifactSource | null };
 
@@ -66,7 +69,7 @@ test("with both installers: the root page shows exactly the two canonical comman
   assert.match(String(page.headers["content-type"]), /^text\/html/);
   assert.deepEqual([page.headers["x-content-type-options"], page.headers["cache-control"]], ["nosniff", "no-store"]);
   const body = page.body.toString();
-  assert.deepEqual([...body.matchAll(/<pre>(.*)<\/pre>/g)].map((m) => m[1]), [LINUX("reach.example:8787"), WINDOWS("reach.example:8787")]);
+  assert.deepEqual([...body.matchAll(/<pre>(.*)<\/pre>/g)].map((m) => shown(m[1] as string)), [LINUX("reach.example:8787"), WINDOWS("reach.example:8787")]);
   assert.ok(!/<script|<img|<link|src=|href=/i.test(body), "no script and no external asset");
   const sh = await s.call("GET", "/install.sh");
   const ps1 = await s.call("GET", "/install.ps1?cache=bust");
@@ -82,7 +85,7 @@ test("truthfulness: a command is advertised only while its installer exists, the
     const s = await start(options);
     const body = (await s.call("GET", "/", { host: "h:1" })).body.toString();
     assert.equal(body.includes(LINUX("h:1")), linux);
-    assert.equal(body.includes(WINDOWS("h:1")), windows);
+    assert.equal(shown(body).includes(WINDOWS("h:1")), windows);
     assert.equal(body.includes("No installer is available"), !linux && !windows);
     assert.deepEqual([(await s.call("GET", "/install.sh")).status, (await s.call("GET", "/install.ps1")).status], [linux ? 200 : 404, windows ? 200 : 404]);
     await s.close();
