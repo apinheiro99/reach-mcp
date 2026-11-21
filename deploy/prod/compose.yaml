@@ -9,8 +9,9 @@
 #   REACH_TUNNEL_DIR     a directory readable by uid 1000 with tunnel-client.yaml, api-key and mcp.auth (rotating them needs no rebuild)
 # The container is named reach-server (override with REACH_CONTAINER_NAME); the Compose project name stays the controller's.
 # Two published ports: 8787 serves MCP, Client WSS, health and the public release downloads and is published on all host addresses by
-# default so Client machines can reach it (REACH_BIND narrows it); 8788 serves only the Web UI and admin API, has no login of its own and
-# is published on host loopback by default (REACH_ADMIN_BIND, never a broad address). Nothing else listens.
+# default so Client machines can reach it (REACH_BIND narrows it); 8788 serves only the Web UI and admin API and has no login of its own: the operator
+# must set REACH_ADMIN_BIND (the host address it is published on) and REACH_ADMIN_ALLOW_FROM (the direct peers the Server admits); neither
+# has a default. Nothing else listens.
 services:
   reach-server:
     container_name: ${REACH_CONTAINER_NAME:-reach-server}
@@ -20,12 +21,12 @@ services:
       - ${REACH_CONFIG_FILE:?absolute path of the config file}:/run/reach/config.json
       - ${REACH_PROPOSAL_FILE:?absolute path of the proposal file}:/run/reach/proposal.json
       - ${REACH_LOG_DIR:?absolute path of the log directory}:/var/log/reach
-    # The in-container Admin listener is non-loopback, so the Server needs its allowlist (empty = not passed, and the Server then refuses to start).
+    # The in-container Admin listener is non-loopback, so the Server needs its direct-peer allowlist: deployment data, never a default here.
     environment:
-      REACH_ADMIN_ALLOW_FROM: ${REACH_ADMIN_ALLOW_FROM:-}
+      REACH_ADMIN_ALLOW_FROM: ${REACH_ADMIN_ALLOW_FROM:?comma-separated addresses or CIDRs allowed to reach the Admin plane}
     ports:
       - "${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787"
-      - "${REACH_ADMIN_BIND:-127.0.0.1}:${REACH_ADMIN_PORT:-8788}:8788"
+      - "${REACH_ADMIN_BIND:?host address to publish the Admin plane on}:${REACH_ADMIN_PORT:-8788}:8788"
 
   # Only /mcp is routed (reach-server:8787 over the internal Compose network, set in tunnel-client.yaml); the admin
   # routes are never a tunnel route. The Server does not depend on the tunnel: it stays healthy while the tunnel restarts.

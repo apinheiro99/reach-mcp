@@ -166,16 +166,17 @@ test("the production entrypoint starts the real extracted Server from the manife
   const state = path.join(base, "prod-state");
   mkdirSync(state, { recursive: true });
   const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${state}/config.json`, proposal: `${state}/proposal.json`, logs: `${state}/logs` };
-  const args = serverArgs({ REACH_HOST: "127.0.0.1", REACH_PORT: "0", REACH_ADMIN_PORT: "0", REACH_ADMIN_ALLOW_FROM: "127.0.0.1" }, layout);
+  const args = serverArgs({ REACH_HOST: "127.0.0.1", REACH_PORT: "0", REACH_ADMIN_PORT: "0", REACH_ADMIN_ALLOW_FROM: "203.0.113.0/24" }, layout);
   assert.deepEqual([args[args.indexOf("--build") + 1], args[args.indexOf("--repository-commit") + 1]], [BUILD_ID, COMMIT]);
-  assert.equal(args[args.indexOf("--admin-allow-from") + 1], "127.0.0.1");
+  assert.equal(args[args.indexOf("--admin-allow-from") + 1], "203.0.113.0/24", "the Admin allowlist excludes loopback on purpose: health must not depend on it");
   const { child, output } = await startServer(args, { env: { PATH: process.env.PATH } });
   try {
     const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
-    const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_ADMIN_PORT: port[2] } });
-    assert.equal(health.status, 0, "healthy in setup mode with no bearer configured");
-    const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_ADMIN_PORT: "1" } });
+    const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: port[1] } });
+    assert.equal(health.status, 0, "healthy in setup mode with no bearer configured, while the Admin allowlist excludes the probe's loopback address");
+    assert.equal((await fetch(`http://127.0.0.1:${port[2]}/admin/api/state`)).status, 403, "the Admin plane really refuses a peer outside the allowlist");
+    const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: "1" } });
     assert.equal(down.status, 1, "unhealthy when nothing listens");
     const service = `http://127.0.0.1:${port[1]}`;
     const auth = {};

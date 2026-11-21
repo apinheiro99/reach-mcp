@@ -23,6 +23,8 @@ const inputFile = (name) => {
 const TB = inputFile("tunnel-client");
 const TD = path.join(base, "tunnel");
 mkdirSync(TD, { recursive: true });
+const ADMIN_BIND = "127.0.0.1";
+const ADMIN_ALLOW = "203.0.113.0/24,127.0.0.1";
 const [C1, P1, C2, P2] = ["c1.json", "p1.json", "c2.json", "p2.json"].map(inputFile);
 
 /** A valid canonical release for one build id. */
@@ -41,8 +43,9 @@ function release(buildId, commit) {
 }
 
 /** A docker that only records, and a fake "Server" whose reported identity follows what compose last started. */
-function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = new Set() } = {}) {
+function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = new Set(), malformed = new Set() } = {}) {
   const log = [];
+  const urls = [];
   let running = null;
   const dockerBin = path.join(base, `docker-${counter++}.sh`);
   writeFileSync(dockerBin, "#!/bin/sh\nexit 0\n");
@@ -50,23 +53,25 @@ function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = 
   const deps = {
     run: (cmd, args, env) => {
       assert.deepEqual(args.slice(0, 2), ["compose", "-p"]);
-      log.push({ image: env.REACH_IMAGE, config: env.REACH_CONFIG_FILE, proposal: env.REACH_PROPOSAL_FILE, logs: env.REACH_LOG_DIR });
+      log.push({ image: env.REACH_IMAGE, config: env.REACH_CONFIG_FILE, proposal: env.REACH_PROPOSAL_FILE, logs: env.REACH_LOG_DIR, adminBind: env.REACH_ADMIN_BIND, adminAllowFrom: env.REACH_ADMIN_ALLOW_FROM });
       if (failImages.has(env.REACH_IMAGE)) throw new Error("compose up failed");
       running = env.REACH_IMAGE;
     },
     http: async (url) => {
+      urls.push(url);
       if (running === null || unhealthy.has(running)) throw new Error("connection refused");
-      if (url.endsWith("/admin/api/state")) {
+      if (url.endsWith("/release/manifest")) {
+        if (malformed.has(running)) return { status: 200, body: "<html>not a manifest" };
         const [, id] = running.split(":");
-        const identity = wrongIdentity.has(running) ? { server_build: "other", repository_commit: "0".repeat(40) } : { server_build: id, repository_commit: commitOf.get(id) };
-        return { status: 200, body: JSON.stringify({ setup_mode: false, health: identity }) };
+        const release = wrongIdentity.has(running) ? { build_id: "other", repository_commit: "0".repeat(40) } : { build_id: id, repository_commit: commitOf.get(id) };
+        return { status: 200, body: JSON.stringify({ release }) };
       }
       return { status: 401, body: "" };
     },
     sleep: async () => {},
     now: () => "2026-11-16T00:00:00.000Z",
   };
-  return { deps, log, docker: dockerBin };
+  return { deps, log, urls, docker: dockerBin };
 }
 const commitOf = new Map();
 const make = (id) => {
@@ -77,7 +82,7 @@ const make = (id) => {
 
 const opts = (w, rel, state, extra = {}) => ({
   release: rel, state, config: C1, proposal: P1, logs: "/srv/logs", docker: w.docker, tunnelBinary: TB, tunnelDir: TD, project: "reach", imageRepo: "reach-server",
-  port: 8787, adminPort: 8788, retries: 2, intervalMs: 0, ...extra,
+  port: 8787, adminPort: 8788, adminBind: ADMIN_BIND, adminAllowFrom: ADMIN_ALLOW, retries: 2, intervalMs: 0, ...extra,
 });
 const stateDir = () => path.join(base, `state-${counter++}`);
 
@@ -213,9 +218,39 @@ test("the command line requires the operator's target inputs and has no defaults
   assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p"]), /missing --logs/);
   assert.throws(() => parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l"]), /missing --tunnel-binary/);
   assert.throws(() => parseArgs(["frobnicate", "--state", "/s"]), /usage/);
-  const a = parseArgs(["deploy", "--state", "/s", "--release", "/r", "--config", "/c", "--proposal", "/p", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"]);
-  assert.deepEqual([a.port, a.adminPort, a.docker, a.project], [8787, 8788, "docker", "reach"]);
-  assert.equal(parseArgs(["rollback", "--state", "/s", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"]).command, "rollback");
+  const base = ["--state", "/s", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"];
+  const deployBase = [...base, "--release", "/r", "--config", "/c", "--proposal", "/p"];
+  const admin = ["--admin-bind", "127.0.0.1", "--admin-allow-from", "203.0.113.0/24"];
+  const a = parseArgs(["deploy", ...deployBase, ...admin]);
+  assert.deepEqual([a.port, a.adminPort, a.docker, a.project, a.adminBind, a.adminAllowFrom], [8787, 8788, "docker", "reach", "127.0.0.1", "203.0.113.0/24"]);
+  assert.deepEqual([parseArgs(["rollback", ...base, ...admin]).command, parseArgs(["rollback", ...base, ...admin]).adminAllowFrom], ["rollback", "203.0.113.0/24"]);
+});
+
+test("the Admin exposure policy is explicit: deploy and rollback refuse a missing or empty bind or allowlist, and status needs neither", () => {
+  const base = ["--state", "/s", "--logs", "/l", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"];
+  const deployBase = [...base, "--release", "/r", "--config", "/c", "--proposal", "/p"];
+  for (const command of [["deploy", deployBase], ["rollback", base]]) {
+    assert.throws(() => parseArgs([command[0], ...command[1]]), /missing --admin-bind/);
+    assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "127.0.0.1"]), /missing --admin-allow-from/);
+    assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "", "--admin-allow-from", "127.0.0.1"]), /--admin-bind must not be empty/);
+    assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "127.0.0.1", "--admin-allow-from", ""]), /--admin-allow-from must not be empty/);
+  }
+  assert.equal(parseArgs(["status", "--state", "/s"]).command, "status");
+});
+
+test("deploy and rollback hand the explicit Admin bind and allowlist to Compose, never an ambient value", async () => {
+  process.env.REACH_ADMIN_BIND = "ambient-must-not-win";
+  const w = world();
+  const state = stateDir();
+  try {
+    await deploy(opts(w, make("b1").dir, state), w.deps);
+    await deploy(opts(w, make("b2").dir, state), w.deps);
+    await rollback(opts(w, "", state), w.deps);
+  } finally {
+    delete process.env.REACH_ADMIN_BIND;
+  }
+  assert.equal(w.log.length, 3);
+  assert.ok(w.log.every((l) => l.adminBind === ADMIN_BIND && l.adminAllowFrom === ADMIN_ALLOW), "deploy, deploy and rollback all carry the same explicit policy");
 });
 
 test("the deployment sources define no private target and run no background updater", () => {
@@ -312,4 +347,24 @@ test("a data plane that answers 503 (no active configuration) fails the smoke ch
   const { exit, evidence } = await deploy(opts(w, make("b8").dir, stateDir()), w.deps);
   assert.equal(exit, 1);
   assert.deepEqual(evidence.checks.find((c) => c.name === "smoke-data-plane"), { name: "smoke-data-plane", ok: false, data_plane_status: 503 });
+});
+
+test("readiness and running identity come from the service plane's release manifest and never from the Admin plane", async () => {
+  const w = world();
+  const { exit } = await deploy(opts(w, make("b1").dir, stateDir()), w.deps);
+  assert.equal(exit, 0);
+  assert.ok(w.urls.length > 0 && w.urls.every((u) => !/\/admin\b|:8788/.test(u)), `no Admin URL is requested: ${w.urls.join(" ")}`);
+  assert.ok(w.urls.includes("http://127.0.0.1:8787/release/manifest"));
+});
+
+test("a manifest that is malformed, or names another build, never promotes the candidate and the previous deployment is restored", async () => {
+  for (const [label, w] of [["malformed", world({ malformed: new Set(["reach-server:b2"]) })], ["wrong identity", world({ wrongIdentity: new Set(["reach-server:b2"]) })]]) {
+    const state = stateDir();
+    await deploy(opts(w, make("b1").dir, state), w.deps);
+    const { exit, evidence } = await deploy(opts(w, make("b2").dir, state), w.deps);
+    assert.equal(exit, 1, label);
+    assert.equal(evidence.result, "candidate-failed", label);
+    assert.equal(evidence.rollback, "restored", label);
+    assert.equal(status({ state }).current.build_id, "b1", label);
+  }
 });
