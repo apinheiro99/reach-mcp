@@ -120,6 +120,10 @@ test("production delivery: jobs run on the docker-prod runner, call the controll
   assert.match(shared, /tags:\n\s+- docker-prod/, "deploy and rollback run only on the docker-prod runner");
   assert.match(block(".deploy-release"), /extends: \.deploy-job/, "deploy jobs share the production lock, runner and evidence");
   assert.match(block("Rollback Production"), /node deploy\/prod\/deploy\.mjs rollback /, "rollback calls the controller locally");
+  for (const [name, job] of [["deploy", block(".deploy-release")], ["rollback", block("Rollback Production")]]) {
+    assert.match(job, /--admin-bind "\$REACH_ADMIN_BIND" --admin-allow-from "\$REACH_ADMIN_ALLOW_FROM"/, `${name} passes the Admin exposure variables from GitLab`);
+  }
+  assert.doesNotMatch(ci, new RegExp(["192", "168"].join("\\.") + "\\.|\\b10\\.\\d+\\.\\d+\\.\\d+|\\b172\\.(1[6-9]|2\\d|3[01])\\."), "no private network literal in the pipeline");
   assert.doesNotMatch(ci, /DEPLOY_[A-Z_]+|remote-deploy|SSH_KEY|known_hosts/, "no SSH transport or DEPLOY_* target variable in the production path");
   assert.doesNotMatch(ci, /docker (build|compose|push|run)|ssh |scp /, "no deployment logic in the YAML");
 });

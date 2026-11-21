@@ -15,7 +15,7 @@ Mutable Server configuration is file-backed under the deployment-provided persis
 - The OpenAI Secure MCP Tunnel routes only `/mcp` on 8787.
 - Client↔Server runtime uses direct **WS** on the controlled/local network.
 - **TLS/WSS is not required in V1.**
-- Admin exposure defaults to host loopback. Any wider exposure requires an explicit deployment/network boundary and direct-peer allowlist.
+- The Server's own Admin default is host loopback. In the production container the Admin listener is non-loopback, so the deployment supplies `REACH_ADMIN_BIND` (host publication) and `REACH_ADMIN_ALLOW_FROM` (direct-peer allowlist) explicitly; there is no default for either.
 
 Server flags that shape the admin plane: `--admin-host` (default loopback), `--admin-allow-from <addr-or-cidr,...>` (direct peers admitted; required whenever `--admin-host` is not loopback) `--admin-user <name>` (the operator label shown top right in the Admin UI; defaults to `admin`; one value, set by the deployment) and `--dev-live-reload` (DEV only, off by default).
 

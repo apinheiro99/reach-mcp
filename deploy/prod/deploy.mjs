@@ -1,7 +1,7 @@
 // Controlled production delivery for the canonical release: one transaction around build-image.mjs and compose.yaml. It runs ON the
 // deployment host; the host, credentials and paths are operator inputs (flags / environment), never defaults of this repository.
-//   node deploy/prod/deploy.mjs deploy   --release <dir> --state <dir> --config <file> --proposal <file> --logs <dir> [options]
-//   node deploy/prod/deploy.mjs rollback --state <dir> --config-from-state ... (uses the recorded previous deployment)
+//   node deploy/prod/deploy.mjs deploy   --release <dir> --state <dir> --config <file> --proposal <file> --logs <dir> --admin-bind <addr> --admin-allow-from <addr-or-cidr,...> [options]
+//   node deploy/prod/deploy.mjs rollback --state <dir> --logs <dir> --admin-bind <addr> --admin-allow-from <list> ... (uses the recorded previous deployment)
 //   node deploy/prod/deploy.mjs status   --state <dir>
 // State (<state>/state.json) keeps two known-good deployments, `current` and `previous`, each: build_id, repository_commit, image,
 // config, proposal (paths only, never contents), deployed_at. A candidate becomes `current` only after the Server answers healthy,
@@ -106,6 +106,7 @@ function apply(deps, opts, d) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
     REACH_IMAGE: d.image, REACH_CONFIG_FILE: d.config, REACH_PROPOSAL_FILE: d.proposal, REACH_LOG_DIR: opts.logs,
     REACH_PORT: String(opts.port), REACH_ADMIN_PORT: String(opts.adminPort),
+    REACH_ADMIN_BIND: opts.adminBind, REACH_ADMIN_ALLOW_FROM: opts.adminAllowFrom,
     REACH_TUNNEL_BINARY: opts.tunnelBinary, REACH_TUNNEL_DIR: opts.tunnelDir,
   });
 }
@@ -215,8 +216,13 @@ export function parseArgs(argv) {
     retries: Number(flags.retries ?? 30), intervalMs: Number(flags["interval-ms"] ?? 2000), ...(flags.evidence === undefined ? {} : { evidence: path.resolve(flags.evidence) }),
   };
   const tunnel = () => ({ tunnelBinary: path.resolve(need("tunnel-binary")), tunnelDir: path.resolve(need("tunnel-dir")) });
-  if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), config: path.resolve(need("config")), proposal: path.resolve(need("proposal")), logs: path.resolve(need("logs")), ...tunnel() };
-  if (command === "rollback") return { command, ...opts, logs: path.resolve(need("logs")), ...tunnel() };
+  // The Admin exposure is security policy: every command that applies Compose names it, an unset CI variable (empty value) is refused, and there is no default.
+  const admin = () => {
+    for (const name of ["admin-bind", "admin-allow-from"]) if (need(name) === "") throw new Error(`--${name} must not be empty`);
+    return { adminBind: flags["admin-bind"], adminAllowFrom: flags["admin-allow-from"] };
+  };
+  if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), config: path.resolve(need("config")), proposal: path.resolve(need("proposal")), logs: path.resolve(need("logs")), ...tunnel(), ...admin() };
+  if (command === "rollback") return { command, ...opts, logs: path.resolve(need("logs")), ...tunnel(), ...admin() };
   if (command === "status") return { command, ...opts };
   throw new Error("usage: deploy.mjs deploy|rollback|status --state <dir> ...");
 }
