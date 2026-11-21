@@ -5,7 +5,7 @@
 // listener (MCP, Client WSS, health, public release downloads) and the private admin listener (Web UI and admin API).
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { parseFlags, parsePort } from "@reach-mcp/shared/cli";
+import { CliError, parseFlags, parsePort } from "@reach-mcp/shared/cli";
 import { createAdminHandler } from "./admin.ts";
 import { DirectoryArtifactSource } from "./artifacts.ts";
 import { AuditWriter } from "./audit.ts";
@@ -32,12 +32,17 @@ export type ServerArgs = {
   enrollFrom?: string;
   /** Optional directory holding the release manifest and Client artifacts that the public release routes serve. */
   artifacts?: string;
+  /** Direct peers (comma separated addresses or CIDRs) allowed on the admin listener; required when it is not bound to loopback. */
+  adminAllowFrom?: string;
+  /** DEV only: reload an open admin page when the watched process restarts. Off unless this switch is given. */
+  devLiveReload: boolean;
 };
 
 const LOOPBACK = "127.0.0.1";
+const LOOPBACK_HOSTS = [LOOPBACK, "::1", "localhost"];
 
 export const SERVER_USAGE =
-  "usage: server --config <file> --proposal <file> --logs <dir> --port <n> --admin-port <n> --build <id> [--host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>] [--enroll-from <addr-or-cidr,...>]";
+  "usage: server --config <file> --proposal <file> --logs <dir> --port <n> --admin-port <n> --build <id> [--host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>] [--enroll-from <addr-or-cidr,...>] [--admin-allow-from <addr-or-cidr,...>] [--dev-live-reload]";
 
 export function parseServerArgs(argv: readonly string[]): ServerArgs {
   const flags = parseFlags(argv, {
@@ -52,20 +57,27 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     "repository-commit": {},
     artifacts: {},
     "enroll-from": {},
+    "admin-allow-from": {},
+    "dev-live-reload": { boolean: true },
   });
   const text = (name: string) => flags[name] as string;
+  const adminHost = (flags["admin-host"] as string | undefined) ?? LOOPBACK;
+  // The admin routes have no login of their own, so a listener that leaves loopback must name who may reach it.
+  if (!LOOPBACK_HOSTS.includes(adminHost) && flags["admin-allow-from"] === undefined) throw new CliError("flag --admin-host outside loopback needs --admin-allow-from");
   return {
     config: text("config"),
     proposal: text("proposal"),
     logs: text("logs"),
     host: (flags.host as string | undefined) ?? LOOPBACK,
     port: parsePort("port", text("port")),
-    adminHost: (flags["admin-host"] as string | undefined) ?? LOOPBACK,
+    adminHost,
     adminPort: parsePort("admin-port", text("admin-port")),
     build: text("build"),
     ...(flags["repository-commit"] === undefined ? {} : { repositoryCommit: text("repository-commit") }),
     ...(flags.artifacts === undefined ? {} : { artifacts: text("artifacts") }),
     ...(flags["enroll-from"] === undefined ? {} : { enrollFrom: text("enroll-from") }),
+    ...(flags["admin-allow-from"] === undefined ? {} : { adminAllowFrom: text("admin-allow-from") }),
+    devLiveReload: flags["dev-live-reload"] === true,
   };
 }
 
@@ -97,7 +109,7 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
   const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, ...(args.enrollFrom === undefined ? {} : { canEnrollFrom: parseTrustedSources(args.enrollFrom) }), logger, audit });
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
-  const admin = createServer(createAdminHandler({ ...common, logger, audit }));
+  const admin = createServer(createAdminHandler({ ...common, logger, audit, devLiveReload: args.devLiveReload, ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
   const release = createReleaseHandler({ audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
   const server = createHttpServer({ ...common, release });
   const stop = async () => {

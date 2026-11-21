@@ -17,6 +17,8 @@ Mutable Server configuration is file-backed under the deployment-provided persis
 - **TLS/WSS is not required in V1.**
 - Admin exposure defaults to host loopback. Any wider exposure requires an explicit deployment/network boundary and direct-peer allowlist.
 
+Server flags that shape the admin plane: `--admin-host` (default loopback), `--admin-allow-from <addr-or-cidr,...>` (direct peers admitted; required whenever `--admin-host` is not loopback) and `--dev-live-reload` (DEV only, off by default).
+
 ## Client lifecycle
 
 A Client is installed once per machine.

@@ -33,6 +33,17 @@ test("server args: required flags, loopback defaults for both listeners, valid p
   }
 });
 
+test("admin exposure: loopback and no live reload by default; leaving loopback needs a named peer list; live reload is an explicit DEV switch", () => {
+  const d = dirs();
+  const defaults = parseServerArgs(argv(d));
+  assert.deepEqual([defaults.adminHost, defaults.devLiveReload, defaults.adminAllowFrom], ["127.0.0.1", false, undefined]);
+  assert.equal(parseServerArgs(argv(d, ["--dev-live-reload"])).devLiveReload, true);
+  assert.throws(() => parseServerArgs(argv(d, ["--admin-host", "0.0.0.0"])), CliError, "a non-loopback admin listener without a peer list is refused");
+  const lan = parseServerArgs(argv(d, ["--admin-host", "0.0.0.0", "--admin-allow-from", "203.0.113.5"]));
+  assert.deepEqual([lan.adminHost, lan.adminAllowFrom], ["0.0.0.0", "203.0.113.5"]);
+  assert.equal(parseServerArgs(argv(d, ["--admin-host", "::1"])).adminHost, "::1", "loopback needs no peer list");
+});
+
 test("setup mode: with no config the admin works and the data plane fails closed; the first config opens it without a restart", async () => {
   const d = dirs();
   const server = await startServer(parseServerArgs(argv(d)));
@@ -133,7 +144,7 @@ test("the Server process refuses bad arguments with a usage line and exit code 2
 
 test("composition owner audit: each owner is built once, in runtime.ts only", async () => {
   const { readdirSync: ls } = await import("node:fs");
-  const files = [...ls(SRC).map((f) => path.join(SRC, f)), ...ls(path.join(ROOT, "packages", "client", "src")).map((f) => path.join(ROOT, "packages", "client", "src", f))];
+  const files = [...ls(SRC, { recursive: true, encoding: "utf8" }).map((f) => path.join(SRC, f)), ...ls(path.join(ROOT, "packages", "client", "src")).map((f) => path.join(ROOT, "packages", "client", "src", f))].filter((f) => f.endsWith(".ts"));
   const count = (re: RegExp) => files.filter((f) => !f.endsWith("runtime.ts")).filter((f) => re.test(readFileSync(f, "utf8")));
   assert.deepEqual(count(/new ServerConfigStore\(|new ClientConnectionRegistry\(|new ProposalStore\(|new RotatingTextWriter\(|= createHttpServer\(|= createAdminHandler\(|= createReleaseHandler\(|new ClientTransport\(|new ClientDispatcher\(/), []);
   const runtime = readFileSync(path.join(SRC, "runtime.ts"), "utf8");
@@ -149,7 +160,7 @@ test("DEV unit files: only the approved /reach layout, no credential, no obsolet
     const exec = text.split("\n").find((l) => l.startsWith("ExecStart="));
     assert.ok(exec, `${n} has an ExecStart`);
     const installed = n.includes("client");
-    assert.ok(exec.startsWith(installed ? "ExecStart=/usr/local/bin/node /opt/reach-mcp-client/reach-client.mjs " : "ExecStart=/usr/local/bin/node packages/"), "runs node directly, no shell; the Client runs the installed artifact, never the source tree");
+    assert.ok(exec.startsWith(installed ? "ExecStart=/usr/local/bin/node /opt/reach-mcp-client/reach-client.mjs " : "ExecStart=/usr/local/bin/node --watch packages/"), "runs node directly (server in watch mode), no shell; the Client runs the installed artifact, never the source tree");
     if (installed) assert.ok(!/packages\/|WorkingDirectory/.test(text.replace(/^#.*$/gm, "")), "no source checkout dependency in the Client unit");
     assert.ok(!/reach-private\/(client|server)\//.test(text), "private runtime files live under reach-private/runtime/");
     assert.ok(!/\/etc\/|\/var\/|\/reach\/runtime|reach\.env|client\.env|Environment|sh -c|credential=|token|password|secret/i.test(text.replace(/^#.*$/gm, "")), `${n}: no secret, env or obsolete path`);
