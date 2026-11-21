@@ -47,21 +47,18 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$archive" ] && [ -n "$bootstrap" ] && [ -n "$build" ] || usage
 
-# An absolute, plain path with at least two segments, so "/" and "/usr" are never an install target.
+# An absolute, plain path that is not "/". Depth is not a safety property; a non-empty directory that is not a REACH install is refused below.
 check_path() {
   case "$2" in
     /*) ;;
     *) die "$1 must be an absolute path" ;;
   esac
+  [ "$2" != / ] || die "$1 must not be /"
   case "$2" in
     *[!A-Za-z0-9._/\ -]*) die "$1 may contain only letters, digits, space and . _ / -" ;;
   esac
   case "$2/" in
     */../* | */./* | *//*) die "$1 must not contain empty, . or .. segments" ;;
-  esac
-  case "${2#/}" in
-    */*) ;;
-    *) die "$1 must be at least two segments deep" ;;
   esac
 }
 
