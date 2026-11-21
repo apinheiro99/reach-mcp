@@ -6,7 +6,7 @@ export const THEME_CSS = `
   color-scheme:dark;
   --c-bg:#050607;--c-surface:#0b0d10;--c-elevated:#101318;--c-border:rgba(255,255,255,.1);--c-border-strong:rgba(255,255,255,.18);
   --c-text:#f3f4f6;--c-muted:#8c939d;
-  --c-accent:#f2b829;--c-accent-hover:#ffd45a;--c-accent-contrast:#0b0d10;--c-accent-soft:rgba(242,184,41,.14);--c-glow:rgba(242,184,41,.32);
+  --c-accent:#f2b829;--c-accent-hover:#ffd45a;--c-accent-contrast:#0b0d10;--c-accent-soft:rgba(242,184,41,.14);
   --c-ok:#2ddf8a;--c-warn:#f2b829;--c-bad:#ff667a;
   --c-ok-soft:rgba(45,223,138,.14);--c-warn-soft:rgba(242,184,41,.14);--c-bad-soft:rgba(255,102,122,.14);
   --c-card:rgba(11,13,16,.72);--c-overlay:rgba(5,6,7,.55);
@@ -17,7 +17,7 @@ export const THEME_CSS = `
   color-scheme:light;
   --c-bg:#f6f6f4;--c-surface:#ffffff;--c-elevated:#ffffff;--c-border:rgba(0,0,0,.12);--c-border-strong:rgba(0,0,0,.22);
   --c-text:#15171a;--c-muted:#5c636d;
-  --c-accent:#c98f00;--c-accent-hover:#e0a200;--c-accent-contrast:#ffffff;--c-accent-soft:rgba(201,143,0,.12);--c-glow:rgba(201,143,0,.25);
+  --c-accent:#c98f00;--c-accent-hover:#e0a200;--c-accent-contrast:#ffffff;--c-accent-soft:rgba(201,143,0,.12);
   --c-ok:#14803f;--c-warn:#c98f00;--c-bad:#c0233a;
   --c-ok-soft:rgba(20,128,63,.12);--c-warn-soft:rgba(201,143,0,.12);--c-bad-soft:rgba(192,35,58,.12);
   --c-card:rgba(255,255,255,.8);--c-overlay:rgba(255,255,255,.6);

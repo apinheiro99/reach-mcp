@@ -81,10 +81,9 @@ async function renderOverview(view) {
     UI.el("div", { className: "donut-wrap" }, donut([{ tone: "ok", count: count.enabled }, { tone: "warn", count: count.pending }, { tone: "bad", count: count.disabled }], total), legend)] });
 
   const name = (id) => (clients.find((c) => c.client_id === id) || {}).display_name || id;
-  const seen = (s) => s.last_seen;
-  const recent = [...sessions].sort((a, b) => (seen(b) || 0) - (seen(a) || 0)).slice(0, 4);
+  const recent = [...sessions].sort((a, b) => (b.last_seen || 0) - (a.last_seen || 0)).slice(0, 4);
   const activity = UI.card({ icon: "pulse", title: "Recent Client Activity", subtitle: "Latest client connection and status", children: recent.length
-    ? recent.map((s) => UI.row({ icon: s.online ? "check-circle" : "wifi-off", tone: s.online ? "ok" : undefined, title: name(s.client_id), detail: s.online ? "Client connected (online)" : "Client offline", aside: seen(s) ? ago(seen(s)) : "never seen" }))
+    ? recent.map((s) => UI.row({ icon: s.online ? "check-circle" : "wifi-off", tone: s.online ? "ok" : undefined, title: name(s.client_id), detail: s.online ? "Client connected (online)" : "Client offline", aside: s.last_seen ? ago(s.last_seen) : "never seen" }))
     : [UI.unavailable("No clients configured yet")] });
 
   const healthRow = (icon, title, pill) => UI.row({ icon, title, aside: pill });
