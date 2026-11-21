@@ -14,6 +14,7 @@ import { AuditWriter } from "./audit.ts";
 import { ConfigError, ServerConfigStore } from "./config.ts";
 import { ClientConnectionRegistry } from "./connections.ts";
 import { createHttpServer } from "./http-server.ts";
+import { createInstallHandler, installerFacts } from "./install-discovery.ts";
 import { createReleaseHandler } from "./release.ts";
 import { OperationalLogger } from "./logging.ts";
 import { parseTrustedSources } from "./trusted-network.ts";
@@ -111,9 +112,11 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
   const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, logger, audit });
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
-  const admin = createServer(createAdminHandler({ ...common, logger, audit, devLiveReload: args.devLiveReload, logsDir: args.logs, ...(args.artifacts === undefined ? {} : { artifactsDir: args.artifacts }), ...(args.adminUser === undefined ? {} : { adminUser: args.adminUser }), ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
-  const release = createReleaseHandler({ audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
-  const server = createHttpServer({ ...common, release });
+  const artifacts = args.artifacts === undefined ? undefined : new DirectoryArtifactSource(args.artifacts);
+  const admin = createServer(createAdminHandler({ ...common, logger, audit, installers: installerFacts(artifacts), devLiveReload: args.devLiveReload, logsDir: args.logs, ...(args.artifacts === undefined ? {} : { artifactsDir: args.artifacts }), ...(args.adminUser === undefined ? {} : { adminUser: args.adminUser }), ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
+  const release = createReleaseHandler({ audit, ...(artifacts === undefined ? {} : { artifacts }) });
+  const install = createInstallHandler({ audit, ...(artifacts === undefined ? {} : { artifacts }) });
+  const server = createHttpServer({ ...common, release, install });
   const stop = async () => {
     connections.stop();
     await Promise.all([close(server), close(admin)]);

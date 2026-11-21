@@ -59,14 +59,13 @@ test("System: only facts the Server knows; storage is the configured directories
 });
 
 test("API: the catalog lists only implemented routes; status comes from owner facts, never from calling the routes", async () => {
-  const active = endpointCatalog({ configActive: true, artifactsConfigured: true });
-  assert.deepEqual(active.map((e) => `${e.method} ${e.path}`), ["GET /health", "POST /mcp", "GET /release/manifest", "GET /release/artifacts/:name", "WS /client"]);
-  assert.ok(!active.some((e) => /install\.(sh|ps1)/.test(e.path)), "routes that do not exist are not listed");
+  const active = endpointCatalog({ configActive: true, artifactsConfigured: true, installers: { sh: true, ps1: true } });
+  assert.deepEqual(active.map((e) => `${e.method} ${e.path}`), ["GET /", "GET /install.sh", "GET /install.ps1", "GET /health", "POST /mcp", "GET /release/manifest", "GET /release/artifacts/:name", "WS /client"]);
   assert.deepEqual(new Set(active.map((e) => e.status)), new Set(["healthy"]));
-  assert.deepEqual(endpointCatalog({ configActive: false, artifactsConfigured: false }).map((e) => e.status), ["unavailable", "unavailable", "not_configured", "not_configured", "unavailable"]);
+  assert.deepEqual(endpointCatalog({ configActive: false, artifactsConfigured: false, installers: { sh: false, ps1: false } }).map((e) => e.status), ["healthy", "not_configured", "not_configured", "unavailable", "unavailable", "not_configured", "not_configured", "unavailable"]);
   const rt = await start();
   const api = await rt.get("/admin/api/endpoints");
-  assert.deepEqual(api.counts, { http: 4, websocket: 1, healthy: 0, errors: 3, connected_clients: 0 });
+  assert.deepEqual(api.counts, { http: 7, websocket: 1, healthy: 1, errors: 3, connected_clients: 0 });
   assert.deepEqual(Object.keys(api.requests).sort(), ["completed", "failed", "in_flight", "timed_out"], "only the counters the Server really keeps");
   await rt.close();
 });
