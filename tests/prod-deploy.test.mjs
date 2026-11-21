@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { deploy, parseArgs, rollback, status } from "../deploy/prod/deploy.mjs";
-import { buildManifest, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.mjs";
+import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.mjs";
 
 const base = mkdtempSync(path.join(tmpdir(), "reach-deploy-"));
 const BEARER = "deploy-bearer-" + "Qw83Zk17";
@@ -38,7 +38,9 @@ function release(buildId, commit) {
     writeFileSync(path.join(dir, t.role === "server" ? "server" : "artifacts", name), bytes);
     return { role: t.role, platform: t.platform, name, bytes };
   });
-  writeFileSync(path.join(dir, "artifacts", "manifest.json"), JSON.stringify(buildManifest({ buildId, repositoryCommit: commit, records })));
+  const installers = INSTALLERS.map(({ name }) => ({ name, bytes: Buffer.from(`${name} stand-in`) }));
+  for (const i of installers) writeFileSync(path.join(dir, "artifacts", i.name), i.bytes);
+  writeFileSync(path.join(dir, "artifacts", "manifest.json"), JSON.stringify(buildManifest({ buildId, repositoryCommit: commit, records, installers })));
   return dir;
 }
 

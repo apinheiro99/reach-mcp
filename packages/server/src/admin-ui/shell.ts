@@ -90,7 +90,7 @@ async function refreshVersion() {
   const r = await api("GET", "/admin/api/state");
   if (!r.ok) return;
   const h = r.json.health;
-  document.getElementById("version-text").textContent = h.server_build + (h.repository_commit ? " (" + h.repository_commit.slice(0, 7) + ")" : "");
+  document.getElementById("version-text").textContent = h.server_build;
   document.getElementById("version").dataset.state = h.status === "ok" ? "ok" : "";
 }
 let poller = null;

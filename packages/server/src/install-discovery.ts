@@ -42,7 +42,7 @@ export function createInstallHandler(deps: { artifacts?: ArtifactSource; audit?:
     const authority = host !== undefined && SAFE_AUTHORITY.test(host) ? host : PLACEHOLDER;
     const available = installerFacts(deps.artifacts);
     const commands = [
-      ...(available.sh ? [["Linux", `curl -fsSL http://${authority}/install.sh | sudo sh`]] : []),
+      ...(available.sh ? [["Linux", `curl -fsSL http://${authority}/install.sh | sudo sh -s -- --server-origin http://${authority}`]] : []),
       ...(available.ps1 ? [["Windows (PowerShell)", `irm http://${authority}/install.ps1 | iex`]] : []),
     ];
     const body = `<!doctype html>\n<meta charset="utf-8">\n<title>Install the REACH Client</title>\n<h1>Install the REACH Client</h1>\n${

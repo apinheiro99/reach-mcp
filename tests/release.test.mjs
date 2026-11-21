@@ -8,7 +8,7 @@ import path from "node:path";
 import process from "node:process";
 import { collectEntries, tgz, zip } from "../scripts/release/archive.mjs";
 import { selectClient } from "./release/select-client.mjs";
-import { buildManifest, sha256, validateManifest } from "../scripts/release/manifest.mjs";
+import { buildManifest, INSTALLERS, sha256, validateManifest } from "../scripts/release/manifest.mjs";
 
 const COMMIT = "a".repeat(40);
 const scratch = () => mkdtempSync(path.join(tmpdir(), "reach-release-unit-"));
@@ -16,6 +16,8 @@ const entries = [
   { path: "reach-x/b.txt", data: Buffer.from("bravo"), mode: 0o644 },
   { path: `reach-x/${"deep/".repeat(30)}file.ts`, data: Buffer.from("deep file"), mode: 0o755 },
 ];
+
+const INSTALLER_BYTES = INSTALLERS.map(({ name }) => ({ name, bytes: Buffer.from(`${name} stand-in`) }));
 
 test("tgz and zip: system tools extract the exact bytes, equal input gives equal archives", () => {
   const dir = scratch();
@@ -43,7 +45,7 @@ test("a symlink is refused: an archive can never depend on one", () => {
 test("manifest v2: one build id, exact compatibility, hashes from the final bytes; every incoherence is reported", () => {
   const bytes = Buffer.from("archive bytes");
   const records = [["server", "linux-x64", "reach-server-linux-x64.tgz"], ["client", "linux-x64", "reach-client-linux-x64.tgz"], ["client", "win32-x64", "reach-client-win32-x64.zip"]].map(([role, platform, name]) => ({ role, platform, name, bytes }));
-  const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records });
+  const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records, installers: INSTALLER_BYTES });
   assert.deepEqual(validateManifest(m), []);
   assert.deepEqual([m.release.build_id, m.server.build_id, m.client.build_id, m.compatibility], ["rel-1", "rel-1", "rel-1", { strategy: "exact", accepted_client_builds: ["rel-1"] }]);
   assert.deepEqual(m.artifacts[0], { role: "server", platform: "linux-x64", os: "linux", arch: "x64", name: "reach-server-linux-x64.tgz", sha256: sha256(bytes), size_bytes: bytes.length, download_path: null });
@@ -63,7 +65,7 @@ test("manifest v2 requires exactly server/linux-x64, client/linux-x64 and client
   const bytes = Buffer.from("x");
   const rec = (role, platform, name) => ({ role, platform, name, bytes });
   const all = [rec("server", "linux-x64", "s.tgz"), rec("client", "linux-x64", "c1.tgz"), rec("client", "win32-x64", "c2.zip")];
-  const check = (records) => validateManifest(buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records }));
+  const check = (records) => validateManifest(buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records, installers: INSTALLER_BYTES }));
   assert.deepEqual(check(all), []);
   assert.match(check(all.filter((r) => r.platform !== "win32-x64")).join(), /required client\/win32-x64 is missing/);
   assert.match(check(all.filter((r) => !(r.role === "client" && r.platform === "linux-x64"))).join(), /required client\/linux-x64 is missing/);
@@ -88,7 +90,7 @@ test("the builder refuses a missing or invalid build id, a bad commit and a non-
 
 test("manifest v2: an installer selects exactly one Client by os/arch and gets its relative path, hash and size; the Server is not advertised as public", () => {
   const records = [["server", "linux-x64", "s.tgz"], ["client", "linux-x64", "c-lin.tgz"], ["client", "win32-x64", "c-win.zip"]].map(([role, platform, name]) => ({ role, platform, name, bytes: Buffer.from(name) }));
-  const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records });
+  const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records, installers: INSTALLER_BYTES });
   assert.deepEqual(validateManifest(m), []);
   const lin = selectClient(m, "linux", "x64");
   const win = selectClient(m, "win32", "x64");
@@ -106,4 +108,16 @@ test("manifest v2: an installer selects exactly one Client by os/arch and gets i
   assert.match(bad((x) => ((x.artifacts[1].download_path = "/release/artifacts/other.tgz"), x)), /download_path must be/);
   assert.match(bad((x) => (delete x.artifacts[1].download_path, x)), /download_path must be/);
   assert.match(bad((x) => ((x.artifacts[0].download_path = "/release/artifacts/s.tgz"), x)), /null \(not publicly served\)/);
+});
+
+test("manifest v2 declares the public installers: a missing, renamed, mispathed or unhashed installer is rejected", () => {
+  const records = [["server", "linux-x64", "s.tgz"], ["client", "linux-x64", "c1.tgz"], ["client", "win32-x64", "c2.zip"]].map(([role, platform, name]) => ({ role, platform, name, bytes: Buffer.from(name) }));
+  const m = buildManifest({ buildId: "rel-1", repositoryCommit: COMMIT, records, installers: INSTALLER_BYTES });
+  assert.deepEqual(m.installers, [{ name: "install.sh", os: "linux", sha256: sha256(INSTALLER_BYTES[0].bytes), size_bytes: INSTALLER_BYTES[0].bytes.length, download_path: "/install.sh" }]);
+  const bad = (edit) => validateManifest(edit(JSON.parse(JSON.stringify(m)))).join();
+  assert.match(bad((x) => (delete x.installers, x)), /installers must list exactly install.sh/);
+  assert.match(bad((x) => ((x.installers[0].name = "other.sh"), x)), /must be install.sh for linux/);
+  assert.match(bad((x) => ((x.installers[0].download_path = "/release/artifacts/install.sh"), x)), /download_path must be \/install.sh/);
+  assert.match(bad((x) => ((x.installers[0].sha256 = "x"), x)), /installers\[0\].sha256/);
+  assert.match(bad((x) => ((x.installers[0].size_bytes = 0), x)), /installers\[0\].size_bytes/);
 });

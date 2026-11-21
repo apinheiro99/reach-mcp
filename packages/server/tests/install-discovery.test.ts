@@ -13,7 +13,7 @@ import { endpointCatalog } from "../src/endpoint-catalog.ts";
 const SH = Buffer.from("#!/bin/sh\necho canonical linux installer\n");
 const PS1 = Buffer.from("Write-Output 'canonical windows installer'\r\n");
 const BEARER = "mcp-bearer-" + "Kq83Zr20";
-const LINUX = (host: string) => `curl -fsSL http://${host}/install.sh | sudo sh`;
+const LINUX = (host: string) => `curl -fsSL http://${host}/install.sh | sudo sh -s -- --server-origin http://${host}`;
 const WINDOWS = (host: string) => `irm http://${host}/install.ps1 | iex`;
 
 type Options = { sh?: boolean; ps1?: boolean; active?: boolean; source?: ArtifactSource | null };

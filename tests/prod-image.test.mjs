@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { buildImage, stageContext } from "../deploy/prod/build-image.mjs";
 import { LAYOUT, serverArgs } from "../deploy/prod/entrypoint.mjs";
-import { buildManifest, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.mjs";
+import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.mjs";
 
 const PROD = path.join(import.meta.dirname, "..", "deploy", "prod");
 const text = (name) => readFileSync(path.join(PROD, name), "utf8");
@@ -30,7 +30,9 @@ function release(name = "rel") {
     writeFileSync(path.join(dir, t.role === "server" ? "server" : "artifacts", fileName), bytes);
     return { role: t.role, platform: t.platform, name: fileName, bytes };
   });
-  writeFileSync(path.join(dir, "artifacts", "manifest.json"), JSON.stringify(buildManifest({ buildId: BUILD_ID, repositoryCommit: COMMIT, records })));
+  const installers = INSTALLERS.map(({ name }) => ({ name, bytes: Buffer.from(`${name} stand-in`) }));
+  for (const i of installers) writeFileSync(path.join(dir, "artifacts", i.name), i.bytes);
+  writeFileSync(path.join(dir, "artifacts", "manifest.json"), JSON.stringify(buildManifest({ buildId: BUILD_ID, repositoryCommit: COMMIT, records, installers })));
   return dir;
 }
 
