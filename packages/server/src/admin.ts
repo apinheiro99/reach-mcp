@@ -11,7 +11,6 @@ import { buildHealth, type HealthDeps } from "./health.ts";
 import type { ProposalStore } from "./proposals.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
-const CREDENTIAL_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/credential$/;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
 const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
@@ -101,12 +100,6 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
       const id = decodeURIComponent(decision[1] as string);
       const result = decision[2] === "approve" ? proposals.approve(id) : proposals.reject(id);
       return send(res, DECISION_HTTP[result.status], { ok: result.status === "approved" || result.status === "rejected", ...result, config: config.editableView() });
-    }
-    const credential = CREDENTIAL_ROUTE.exec(pathname);
-    if (credential) {
-      if (method !== "POST") return send(res, 405);
-      const clientId = decodeURIComponent(credential[1] as string);
-      return change(res, "credential_issue", clientId, () => ({ credential: config.issueCredential(clientId) }));
     }
     send(res, 404);
   }

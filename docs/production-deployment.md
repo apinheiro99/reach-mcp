@@ -1,10 +1,10 @@
 # Production deployment
 
-This page defines the public production deployment contract. It intentionally contains no operator-specific host, private-repository or secret values.
+This file defines only the production deployment contract. Architecture and security rationale live in [architecture.md](architecture.md).
 
 ## Topology
 
-One REACH installation is one Compose project, `reach`, with two services:
+One REACH installation is one Compose project with exactly two services:
 
 ```text
 ChatGPT
@@ -13,86 +13,61 @@ OpenAI Secure MCP Tunnel
    |
 reach-tunnel
    |
-   | internal Compose network, MCP path only
    v
 reach-server:8787/mcp
 
-Authorized LAN Clients ---------> reach-server:8787/client
-Authorized LAN installers ------> reach-server:8787/release/...
-Operator (host loopback) -------> reach-server:8788/admin
+Authorized Clients ----------> reach-server:8787/client
+Installers ------------------> reach-server:8787/release/...
+Operator --------------------> reach-server:8788/admin
 ```
 
-The Server owns two listeners. **8787** carries `/mcp`, `/client`, `/health` and the read-only release routes under `/release/...`, published on a reachable bind (`REACH_BIND`, all host addresses by default). **8788** carries only `/` and `/admin/...` (Web UI, administrative API, setup mode), published on host loopback by default (`REACH_ADMIN_BIND`; never a broad address). Nothing listens on 8789.
+- `reach-server` owns the application, Admin UI/API and both listeners.
+- `reach-tunnel` owns only the OpenAI Secure MCP Tunnel.
+- The tunnel routes only `/mcp`.
+- Client runtime uses direct **WS** on the controlled/local network.
+- **TLS/WSS is not required in V1.**
+- 8788 defaults to host loopback because the MVP admin plane has no application login. Wider exposure requires an explicit network boundary plus direct-peer allowlist.
 
-`reach-server` owns the application and its two listeners. `reach-tunnel` owns only the Secure MCP Tunnel client. The tunnel publishes no host port and routes only `/mcp`. The Server does not depend on tunnel health; the tunnel waits until the Server service listener responds before it starts. Both services restart automatically through Compose.
+## Distribution
 
-Bindings are configurable. A deployment may use an explicit LAN address, a trusted interface or a broader bind narrowed by host/network firewall policy. The product contract is reachability and separation of planes, not a hardcoded subnet or interface.
+The production Server image carries the release manifest and canonical Linux/Windows Client artifacts. Installers may retrieve only catalog-gated release routes; there is no directory listing or arbitrary artifact path.
 
-## Client distribution
-
-The production Server image carries the exact release `artifacts/` tree that belongs to the deployed Server build, including:
-
-- `manifest.json`;
-- `reach-client-linux-x64.tgz`;
-- `reach-client-win32-x64.zip`.
-
-Authorized target machines retrieve the manifest and platform Client archive from the release routes of the Server, verify the archive against the manifest, install it explicitly with the platform installer, then connect to `/client` with their protected Client bootstrap.
-
-SSH tunneling, manual file relay and source checkout are not part of the normal Client installation contract.
+End users do not compile REACH.
 
 ## Persistent root
 
-The operator supplies one persistent root for the installation. Its backing storage is an operator decision: local disk, mounted filesystem or another durable host path.
+The operator supplies one durable host path mounted into the Server as `/reach-private`. It is the single top-level persistent/private mount for installation-specific runtime data.
 
-The deployment derives its explicit runtime inputs from that root. At minimum, production needs persistent locations for:
+If the path does not exist and can be created, create it. If it is unusable, fail clearly. Never silently use ephemeral storage.
 
-- Server configuration;
-- pending proposal state;
-- operational logs;
-- deployment controller state/evidence;
-- tunnel configuration and credentials;
-- the installed tunnel-client binary when it is operator-supplied.
+An empty persistent root is a supported first-run condition and places REACH in setup mode until valid configuration exists.
 
-The product does not require a source checkout or a private repository inside either container.
+## Client authorization
 
-### Empty root
+A new Client registers with its Client-owned Ed25519 public key and becomes **Pending**. It has no operational access until a human selects **Enable** in the Admin UI/API.
 
-An empty persistent root is a supported first-run condition. REACH starts in setup mode: the data plane stays unavailable until the operator completes the initial configuration through the private administrative UI.
+Disable closes the active session and refuses reconnect/use. Rotate Key remains Client-generated; only the replacement public key reaches the Server.
 
-### Pre-seeded root
-
-An operator may populate the persistent root from existing backup/recovery material before starting REACH. This is deployment/bootstrap behavior, not a public-product dependency.
-
-## Secrets and rotation
-
-Secrets stay outside the images and public repository. They are mounted into the relevant service from the persistent runtime material.
-
-For tunnel credential rotation, replace the credential in the operator's persistent source, refresh the runtime copy if needed, and restart/redeploy only `reach-tunnel`. No `reach-server` image rebuild is required.
+No trusted-network auto-admission, manual key copy, TLS/WSS requirement or third reverse-proxy/TLS container is part of V1.
 
 ## CI/CD
 
-The canonical production path is:
+Canonical production flow:
 
 ```text
 validation -> Build Release -> Deploy Production
 ```
 
-`Deploy Production` runs automatically after the release succeeds. `Rollback Production` remains manual.
+Rollback remains explicit. The existing deployment controller remains the single deployment transaction owner.
 
-On a Task branch (`feature/task-*`) the same validation and `Build Release` run for that pipeline's exact SHA, and `Deploy Candidate` runs automatically, with no button, only after `Build Release` passes (it needs every validation job, so a failed validation never exposes it). It deploys through the same `deploy/prod/deploy.mjs` transaction, `production` resource group, evidence and rollback, for live acceptance before merge. It never runs for a tag.
+## Acceptance
 
-`deploy/prod/deploy.mjs` is the only deployment transaction owner. It validates required external inputs before building/starting and records known-good deployment state for rollback.
+Production is accepted when:
 
-## Operational validation
-
-A production rollout is accepted only when:
-
-- the Server is healthy;
-- running build id and repository commit match the release;
-- the protected MCP data plane responds as expected;
-- an authorized LAN Client can reach `/client`;
-- an unauthenticated GET of the release manifest and the declared Linux/Windows Client artifacts succeeds on 8787 from another host, nothing else under the release routes is served, and from another host nothing answers on 8788;
-- the admin routes are not reachable through the MCP tunnel and nothing listens on 8788 or 8789;
-- the Secure MCP Tunnel reaches MCP;
-- restarting only the tunnel does not disturb the Server;
-- restarting the full stack restores Server identity and tunnel reachability without manual repair.
+- Server health and build identity match the release;
+- MCP responds through the OpenAI tunnel;
+- an authorized Enabled Client can connect over WS;
+- Pending Clients cannot perform operational work;
+- canonical Linux/Windows release artifacts are retrievable and hash-verifiable;
+- admin routes are not exposed through the MCP tunnel;
+- restart preserves persistent state and restores Server/tunnel operation.

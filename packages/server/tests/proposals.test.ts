@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { hashCredential, ProposalStore } from "../src/index.ts";
 import { CLIENT_MARKER, MCP_MARKER, startRuntime } from "./runtime-fixture.ts";
+import { LAPTOP } from "./identity-fixture.ts";
 
 type Rt = Awaited<ReturnType<typeof startRuntime>>;
 const proposalFile = (rt: Rt) => path.join(path.dirname(rt.file), "proposal.json");
 
-/** A view Client without its read-only credential flag, as an edit may carry it. */
+/** A view Client without its read-only enrollment flag, as an edit may carry it. */
 const plain = (c: ReturnType<Rt["config"]["editableView"]>["clients"][number]) => ({ client_id: c.client_id, display_name: c.display_name, enabled: c.enabled, projects: c.projects });
 
 /** The current editable Clients, with one project's mode changed: a small, valid AI edit. */
@@ -43,7 +44,7 @@ test("propose: stores only a redacted base and a secret-free edit, and changes n
 test("propose: secret fields, invalid edits and a second proposal create nothing", async () => {
   const rt = await startRuntime();
   const good = edit(rt);
-  for (const bad of [{ ...good, mcp_bearer: "attacker-bearer-0123456789" }, { clients: good.clients.map((c) => ({ ...c, credential_sha256: "a".repeat(64) })) }, { clients: [{ client_id: "x", enabled: true, projects: [] }] }, { clients: "no" }]) {
+  for (const bad of [{ ...good, mcp_bearer: "attacker-bearer-0123456789" }, { clients: good.clients.map((c) => ({ ...c, public_key: "a".repeat(43) })) }, { clients: [{ client_id: "x", enabled: true, projects: [] }] }, { clients: "no" }]) {
     assert.equal(rt.proposals.propose(bad).status, "invalid");
   }
   assert.equal(rt.proposals.pending(), null);
@@ -60,7 +61,7 @@ test("approve: activates through the config owner, syncs policies exactly once, 
   assert.deepEqual(rt.proposals.approve(id), { status: "approved" });
   assert.equal(sync.n, 1);
   assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_write");
-  assert.equal(rt.config.credentialDigestFor("laptop"), hashCredential(CLIENT_MARKER), "credentials survive an approved edit");
+  assert.equal(rt.config.publicKeyFor("laptop"), LAPTOP.publicKey, "public keys survive an approved edit");
   assert.equal(rt.proposals.pending(), null);
   assert.equal(rt.proposals.approve(id).status, "not_found");
   await rt.close();
@@ -142,12 +143,12 @@ test("a tampered proposal file fails closed: unknown or secret fields anywhere m
   const LEAK = "leak-marker-" + "Zq41";
   const tampers: [string, (string | number)[], unknown][] = [
     ["top-level unknown", ["extra"], LEAK],
-    ["base client digest", ["base", "clients", 0, "credential_sha256"], LEAK],
+    ["base client key", ["base", "clients", 0, "public_key"], LEAK],
     ["base client bearer", ["base", "clients", 0, "mcp_bearer"], LEAK],
     ["base project unknown", ["base", "clients", 0, "projects", 0, "surprise"], LEAK],
     ["base top-level unknown", ["base", "mcp_bearer_sha256"], LEAK],
     ["edit bearer", ["edit", "mcp_bearer"], LEAK],
-    ["edit digest", ["edit", "clients", 0, "credential_sha256"], LEAK],
+    ["edit key", ["edit", "clients", 0, "public_key"], LEAK],
     ["edit project unknown", ["edit", "clients", 0, "projects", 0, "surprise"], LEAK],
     ["bad time", ["created_at"], "yesterday"],
   ];

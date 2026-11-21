@@ -1,12 +1,10 @@
 # Install
 
-## Current state
+REACH is pre-alpha. End users consume prebuilt artifacts; source checkout is for development only.
 
-REACH is still pre-alpha, but the repository now produces installable release artifacts. Public production deployment is not yet declared generally available, but the repository now contains the validated production Server image/Compose/CD reference path.
+## Development from source
 
-## Build from source (development)
-
-Requirements: Node.js 24 or newer, npm and Git.
+Requirements: Node.js 24+, npm and Git.
 
 ```sh
 git clone <repository-url> reach-mcp
@@ -15,60 +13,62 @@ npm install
 npm run validate
 ```
 
-Development uses the npm workspace source tree. A source checkout is not the Client installation contract.
+## Server installation
 
-## Release artifacts
+Canonical distribution:
 
-One release build uses one opaque build id for Server and Client:
+- prebuilt Server image;
+- root `compose.yaml`;
+- root `.env.example`;
+- local `.env`;
+- one installation-specific persistent path, mounted as `/reach-private`.
+
+Normal install:
 
 ```sh
-npm run release -- --build-id <build-id> --out <release-dir>
-node scripts/release.mjs verify --out <release-dir>
+git clone <repository-url>
+cd <repository>
+cp .env.example .env
+docker compose up -d
 ```
 
-The release directory contains:
+Update:
 
-```text
-artifacts/
-  manifest.json
-  reach-client-linux-x64.tgz
-  reach-client-win32-x64.zip
-server/
-  reach-server-linux-x64.tgz
+```sh
+docker compose pull
+docker compose up -d
 ```
 
-`manifest.json` records the repository commit, the shared Server/Client build id, exact compatibility, and the SHA-256/size of every final artifact. Manifest schema v1 requires exactly those three runtime artifacts.
+The persistent root must survive container recreation. REACH must fail clearly rather than silently fall back to ephemeral storage.
 
 ## Client installation
 
-A REACH Client is installed once per machine, not once per project. Normal installation is zero-touch from an authorized target-host agent: the installer obtains and verifies the canonical artifact, the Client generates its own `client_id` and Ed25519 keypair locally, enrollment sends only the public key to the Server, protected local state is created automatically, the service is installed, and the persistent outbound connection is proven. The Client private key never leaves the machine.
+The Server exposes the canonical install commands:
 
-### Linux
+Linux:
 
-Default install directory: `/opt/reach-mcp-client`.
+```sh
+curl -fsSL http://REACH-SERVER/install.sh | sudo sh
+```
 
-The supported normal path is one non-interactive onboarding command executed by an authorized agent on the target host. It resolves the Server endpoint from deployment/private defaults or explicit invocation context, downloads and verifies `reach-client-linux-x64.tgz`, creates protected local identity/state, enrolls automatically, installs the runtime and systemd service, starts it, and verifies connection. The low-level artifact installer remains an internal building block, not the operator workflow.
+Windows:
 
-`--install-dir` may explicitly override the default. Insecure `ws://` remains an explicit development/test choice; normal secure deployments use the configured transport policy.
+```powershell
+irm http://REACH-SERVER/install.ps1 | iex
+```
 
-### Windows
+Installer contract:
 
-Default install directory: `C:\\Program Files\\REACH\\Client`.
+1. detect platform/architecture;
+2. read the Server release manifest;
+3. download the correct prebuilt Client artifact;
+4. verify SHA-256;
+5. install the native service;
+6. generate Client-owned Ed25519 identity locally;
+7. register with the Server as **Pending**;
+8. wait for human **Enable** through the Admin UI/API;
+9. connect over **WS** and prove the private key.
 
-Windows follows the same zero-touch onboarding contract as Linux: one authorized target-host action resolves/downloads/verifies the canonical Windows artifact, creates the Client identity and protected local state, enrolls automatically, installs the machine-level service/task, starts it and verifies connection. Platform-specific packaging differs; identity, admission, policy and operator experience do not.
+The private key never leaves the Client. V1 does not require TLS/WSS, trusted-network auto-admission, manual bootstrap or end-user compilation.
 
-`-InstallDir` may explicitly override the default. Native Windows execution still requires real-host proof before general availability.
-
-## Server distribution
-
-The Server release artifact is self-contained and does not require Git/workspace links. The production reference deployment is one Compose project (`reach`) with separate `reach-server` and `reach-tunnel` services, controlled CD and explicit rollback. See [production-deployment.md](production-deployment.md).
-
-The Server uses two ports: 8787 for `/mcp`, `/client`, `/health` and the read-only release downloads under `/release/...`, and 8788 for the private Web UI/admin (host loopback by default). The OpenAI MCP tunnel routes only `/mcp` on 8787.
-
-## Upgrade
-
-Upgrade is always explicit: obtain/build the intended release, verify it, replace the installed/deployed artifact, restart, and verify health. REACH never upgrades itself silently.
-
-## Configuration
-
-See [configuration.md](configuration.md).
+See [architecture.md](architecture.md) for the full system contract and [production-deployment.md](production-deployment.md) for production topology.

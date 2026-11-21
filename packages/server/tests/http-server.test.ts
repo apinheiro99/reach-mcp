@@ -7,6 +7,7 @@ import net from "node:net";
 import WebSocket from "ws";
 import { ClientConnectionRegistry, createHttpServer, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { CLIENT_MARKER, requestsOf, startRuntime, until, MCP_MARKER } from "./runtime-fixture.ts";
+import { IDLE, signedHello } from "./identity-fixture.ts";
 
 test("auth owner: exactly one Bearer token is read; hashing and digest comparison are stable and constant-time shaped", () => {
   assert.equal(bearerCredential({ authorization: "Bearer abc123" }), "abc123");
@@ -48,9 +49,10 @@ test("the Client WebSocket upgrade shares the same listener and still goes throu
   const wrongPath = await rt.connectClient("/elsewhere");
   assert.equal(await wrongPath.opened, false, "other upgrade paths are refused");
   const client = await rt.connectClient("/client");
-  await until(() => client.frames.length === 2, "welcome and policy");
-  assert.equal(client.frames[0]!.kind, "welcome");
-  assert.equal(client.frames[1]!.kind, "policy_sync");
+  await until(() => client.frames.length === 3, "challenge, welcome and policy");
+  assert.equal(client.frames[0]!.kind, "challenge");
+  assert.equal(client.frames[1]!.kind, "welcome");
+  assert.equal(client.frames[2]!.kind, "policy_sync");
   assert.equal(rt.connections.status().length, 1);
   assert.equal(requestsOf(client).length, 0);
   await rt.close();
@@ -90,19 +92,22 @@ test("two real Authorization header lines are refused even when both are the rig
   await rt.close();
 });
 
-test("a Client upgrade with two Authorization lines fails admission; a single line is admitted", async () => {
+test("a Client upgrade needs no Authorization header: a hello signed with the wrong key is refused and the right key is admitted", async () => {
   const rt = await startRuntime();
-  const ws = new WebSocket(`ws://127.0.0.1:${rt.port}/client`, { headers: { Authorization: [`Bearer ${CLIENT_MARKER}`, `Bearer ${CLIENT_MARKER}`] as unknown as string } });
-  const frames: { kind: string; error?: { code: string } }[] = [];
-  ws.on("message", (d) => frames.push(JSON.parse(d.toString())));
+  const ws = new WebSocket(`ws://127.0.0.1:${rt.port}/client`, { headers: { Authorization: `Bearer ${CLIENT_MARKER}` } });
+  const frames: { kind: string; nonce?: string; error?: { code: string } }[] = [];
+  ws.on("message", (d) => {
+    const frame = JSON.parse(d.toString());
+    frames.push(frame);
+    if (frame.kind === "challenge") ws.send(JSON.stringify(signedHello(IDLE, "laptop", frame.nonce)));
+  });
   ws.on("error", () => undefined);
-  await new Promise<void>((r) => ws.once("open", () => r()));
-  ws.send(JSON.stringify({ kind: "hello", client_id: "laptop", credential: CLIENT_MARKER, client_build: "ok-1" }));
-  await until(() => frames.length > 0, "an answer");
-  assert.equal(frames[0]!.error?.code, "AUTH_FAILED");
+  await until(() => frames.length > 1, "an answer");
+  assert.equal(frames[0]!.kind, "challenge");
+  assert.equal(frames[1]!.error?.code, "AUTH_FAILED", "the header grants nothing and a foreign key fails");
   ws.terminate();
   const good = await rt.connectClient();
-  await until(() => good.frames.length === 2, "single line admitted");
+  await until(() => good.frames.length === 3, "challenge, welcome and policy snapshot");
   await rt.close();
 });
 

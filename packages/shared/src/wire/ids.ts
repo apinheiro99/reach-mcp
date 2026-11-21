@@ -15,8 +15,12 @@ export const ProjectId = printable(128);
 export const RequestId = printable(128);
 /** The actual build identifier or tag of one side, compared for equality of compatibility by the Server, never parsed. */
 export const BuildId = printable(128);
-/** Secret-bearing: used only inside the client hello and never echoed by any error or helper. */
-export const Credential = printable(1024);
+/** Ed25519 public key: the raw 32 bytes as unpadded base64url. Not secret; the Server stores it as the Client identity. */
+export const PublicKey = z.string().regex(/^[A-Za-z0-9_-]{43}$/, "must be a 32-byte base64url Ed25519 public key");
+/** Ed25519 signature over a Server challenge: 64 bytes as unpadded base64url. */
+export const Signature = z.string().regex(/^[A-Za-z0-9_-]{86}$/, "must be a 64-byte base64url Ed25519 signature");
+/** A fresh Server challenge: 32 random bytes as unpadded base64url, valid for one connection only. */
+export const Nonce = z.string().regex(/^[A-Za-z0-9_-]{43}$/, "must be a 32-byte base64url nonce");
 
 /** A relative path as the caller wrote it; the shared filesystem policy decides whether it is acceptable. */
 export const WirePath = z.string().max(WIRE_MAX_PATH);

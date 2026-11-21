@@ -4,24 +4,28 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
+import { generateIdentityKey, newNonce, verifyChallenge } from "@reach-mcp/shared/identity";
 import { ClientHello } from "@reach-mcp/shared/wire";
 import { ClientDispatcher, ClientTransport, parseBootstrap, type FrameHandler, type TransportOptions } from "../src/index.ts";
 
-const CRED = "cred-marker-" + "Wt41pLm";
+const KEY = generateIdentityKey();
+/** The Client private key: the secret that must never appear in any state, error, URL or frame. */
+const CRED = KEY.privateKey;
 const root = mkdtempSync(path.join(tmpdir(), "reach-transport-"));
 
-type Seen = { headers: Record<string, string | string[] | undefined>; url: string; frames: unknown[] };
+type Seen = { headers: Record<string, string | string[] | undefined>; url: string; frames: unknown[]; nonce: string };
 type Harness = { port: number; seen: Seen[]; sockets: ServerSocket[]; close(): Promise<void> };
 
-async function server(onConnection: (socket: ServerSocket, seen: Seen) => void, autoPong = true): Promise<Harness> {
+async function server(onConnection: (socket: ServerSocket, seen: Seen) => void, autoPong = true, challenge = true): Promise<Harness> {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1", autoPong });
   const seen: Seen[] = [];
   const sockets: ServerSocket[] = [];
   wss.on("connection", (socket, req) => {
-    const entry: Seen = { headers: req.headers, url: req.url ?? "", frames: [] };
+    const entry: Seen = { headers: req.headers, url: req.url ?? "", frames: [], nonce: newNonce() };
     seen.push(entry);
     sockets.push(socket);
     socket.on("message", (data) => entry.frames.push(JSON.parse(data.toString())));
+    if (challenge) socket.send(JSON.stringify({ kind: "challenge", nonce: entry.nonce }));
     onConnection(socket, entry);
   });
   await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
@@ -38,7 +42,7 @@ async function server(onConnection: (socket: ServerSocket, seen: Seen) => void, 
 }
 
 const boot = (port: number, id = "laptop-1") =>
-  parseBootstrap(`REACH_SERVER_URL=ws://127.0.0.1:${port}/ws\nREACH_CLIENT_ID=${id}\nREACH_CLIENT_CREDENTIAL=${CRED}\nREACH_ROOTS=${JSON.stringify([root])}`, { allowInsecureWs: true });
+  parseBootstrap(`REACH_SERVER_URL=ws://127.0.0.1:${port}/ws\nREACH_CLIENT_ID=${id}\nREACH_CLIENT_IDENTITY_KEY=${CRED}\nREACH_ROOTS=${JSON.stringify([root])}`, { allowInsecureWs: true });
 
 /** Manual clock and timers so backoff and heartbeat are deterministic. */
 function clock() {
@@ -77,7 +81,7 @@ const opts = (c: ReturnType<typeof clock>, extra: Partial<TransportOptions> = {}
   build: "build-1", now: c.now, schedule: c.schedule, random: () => 0.5, backoff: { initialMs: 100, maxMs: 400, jitter: 0.2 }, heartbeat: { intervalMs: 50, staleMs: 120 }, ...extra,
 });
 
-test("auth: bearer header on the upgrade, no credential in the URL, exactly one valid hello, connected only after welcome", async () => {
+test("auth: no credential on the upgrade or in the URL, one hello signed over the server's challenge, connected only after welcome", async () => {
   const srv = await server((s) => s.once("message", () => welcome(s)));
   const c = clock();
   const t = new ClientTransport(boot(srv.port), opts(c));
@@ -85,15 +89,47 @@ test("auth: bearer header on the upgrade, no credential in the URL, exactly one 
   await until(() => srv.seen[0]?.frames.length === 1, "hello");
   await until(() => t.snapshot().state === "connected", "connected");
   const seen = srv.seen[0]!;
-  assert.equal(seen.headers.authorization, `Bearer ${CRED}`);
+  assert.equal(seen.headers.authorization, undefined, "nothing secret rides on the upgrade");
   assert.ok(!seen.url.includes(CRED) && !seen.url.includes("?"));
   assert.equal(seen.headers["sec-websocket-extensions"], undefined, "permessage-deflate is not offered");
   assert.equal(seen.headers["sec-websocket-protocol"], undefined, "no subprotocol");
-  assert.equal(ClientHello.safeParse(seen.frames[0]).success, true);
-  assert.deepEqual(seen.frames[0], { kind: "hello", client_id: "laptop-1", credential: CRED, client_build: "build-1" });
+  const hello = ClientHello.parse(seen.frames[0]);
+  assert.deepEqual([hello.client_id, hello.client_build, hello.public_key], ["laptop-1", "build-1", KEY.publicKey]);
+  assert.equal(verifyChallenge(hello.public_key, seen.nonce, "laptop-1", hello.signature), true, "the signature proves possession over this connection's challenge");
+  assert.ok(!JSON.stringify(seen.frames).includes(CRED), "the private key never travels");
   assert.ok(!JSON.stringify(t.snapshot()).includes(CRED));
   t.stop();
   await srv.close();
+});
+
+test("reconnect answers a new challenge: the earlier signature is not reusable", async () => {
+  const srv = await server((s) => s.once("message", () => welcome(s)));
+  const c = clock();
+  const t = new ClientTransport(boot(srv.port), opts(c));
+  t.start();
+  await until(() => t.snapshot().state === "connected", "connected");
+  srv.sockets[0]!.terminate();
+  await until(() => t.snapshot().state === "backoff", "backoff");
+  c.advance(100);
+  await until(() => srv.seen.length === 2 && t.snapshot().state === "connected", "reconnected");
+  const [first, second] = srv.seen.map((x) => ClientHello.parse(x.frames[0]));
+  assert.notEqual(srv.seen[0]!.nonce, srv.seen[1]!.nonce);
+  assert.notEqual(first!.signature, second!.signature);
+  assert.equal(verifyChallenge(second!.public_key, srv.seen[1]!.nonce, "laptop-1", first!.signature), false, "the old signature fails on the new challenge");
+  t.stop();
+  await srv.close();
+});
+
+test("a welcome before the challenge was answered, and a second challenge, close the socket", async () => {
+  for (const frames of [[{ kind: "welcome", server_build: "srv-1", compatible: true }], [{ kind: "challenge", nonce: newNonce() }]]) {
+    const srv = await server((s) => { for (const f of frames) s.send(JSON.stringify(f)); }, true, frames[0]!.kind === "challenge");
+    const t = new ClientTransport(boot(srv.port), opts(clock()));
+    t.start();
+    await until(() => t.snapshot().state === "backoff", "protocol violation closed the socket");
+    assert.equal(t.snapshot().lastError?.code, "BAD_REQUEST");
+    t.stop();
+    await srv.close();
+  }
 });
 
 test("open alone is handshaking, not connected", async () => {
@@ -195,8 +231,9 @@ test("backoff grows to the cap, jitter is injected, and the counter resets only 
   c.advance(c.pending()[0]!);
   await until(() => t.snapshot().state === "connected", "connected");
   assert.equal(t.snapshot().attempts, 0);
-  assert.deepEqual(srv.seen.at(-1)!.frames[0], { kind: "hello", client_id: "laptop-1", credential: CRED, client_build: "build-1" }, "same identity and build after reconnecting");
-  assert.ok(srv.seen.every((s) => s.headers.authorization === `Bearer ${CRED}`), "same credential on every attempt");
+  const last = ClientHello.parse(srv.seen.at(-1)!.frames[0]);
+  assert.deepEqual([last.client_id, last.client_build, last.public_key], ["laptop-1", "build-1", KEY.publicKey], "same identity and build after reconnecting");
+  assert.ok(srv.seen.every((s) => s.headers.authorization === undefined), "no credential header on any attempt");
   t.stop();
   await srv.close();
 });

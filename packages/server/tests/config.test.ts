@@ -4,18 +4,21 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ConfigError, hashCredential, ServerConfigStore } from "../src/index.ts";
+import { newIdentity } from "./identity-fixture.ts";
 import { PolicySync } from "@reach-mcp/shared/wire";
 
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-config-"));
-const MARKER_A = "cred-marker-" + "Aq83Lm";
-const MARKER_B = "cred-marker-" + "Bz51Pk";
+const KEY_A = newIdentity();
+const KEY_B = newIdentity();
+const MARKER_A = KEY_A.publicKey;
+const MARKER_B = KEY_B.publicKey;
 
 const MCP = { mcp_bearer_sha256: hashCredential("mcp-marker-" + "Kd40") };
 const project = (id: string, root: string, extra: object = {}) => ({ project_id: id, physical_root: root, mode: "read_only", ...extra });
-const client = (id: string, marker: string | null, projects: object[], extra: object = {}) => ({
+const client = (id: string, key: string | null, projects: object[], extra: object = {}) => ({
   client_id: id,
   enabled: true,
-  ...(marker ? { credential_sha256: hashCredential(marker) } : {}),
+  ...(key ? { public_key: key } : {}),
   projects,
   ...extra,
 });
@@ -59,8 +62,9 @@ test("strictness: unknown keys, malformed JSON, bad ids, relative roots, bad mod
   assert.ok(load(withClient({ extra: 1 })));
   assert.ok(load(withClient({ client_id: "" })));
   assert.ok(load(withClient({ client_id: "a\u0001b" })));
-  assert.ok(load(withClient({ credential_sha256: "ABC" })));
-  assert.ok(load(withClient({ credential_sha256: hashCredential("x").toUpperCase() })), "digest must be canonical lowercase");
+  assert.ok(load(withClient({ public_key: "ABC" })));
+  assert.ok(load(withClient({ public_key: MARKER_A + "x" })), "a public key is exactly 32 bytes of base64url");
+  assert.ok(load(withClient({ credential_sha256: "a".repeat(64) })), "the shared credential digest field no longer exists");
   assert.ok(load(withClient({ enabled: "yes" })));
   assert.ok(load(withProject({ physical_root: "relative/path" })));
   assert.ok(load(withProject({ mode: "admin" })));
@@ -76,8 +80,9 @@ test("uniqueness: duplicate client_id and duplicate project_id inside a Client a
   assert.match(load({ ...MCP, clients: [client("c", MARKER_A, [project("p", "/a"), project("p", "/b")])] }), /duplicate project_id within a client/);
 });
 
-test("an enabled Client needs a credential digest; a disabled one may keep or lack it", () => {
-  assert.match(load({ ...MCP, clients: [client("c", null, [])] }), /needs a credential digest/);
+test("an enabled Client needs a public key and keys are unique; a disabled one may keep or lack it", () => {
+  assert.match(load({ ...MCP, clients: [client("c", null, [])] }), /needs a public key/);
+  assert.match(load({ ...MCP, clients: [client("a", MARKER_A, []), client("b", MARKER_A, [])] }), /duplicate public key/);
   assert.equal(load({ ...MCP, clients: [client("c", null, [], { enabled: false })] }), "");
   assert.equal(load({ ...MCP, clients: [client("c", MARKER_A, [], { enabled: false })] }), "");
 });
@@ -111,34 +116,31 @@ test("an invalid reload keeps the previous snapshot exactly; a valid reload repl
 });
 
 test("effective policies are shared-valid, carry only operational fields, and exist only for an enabled registered Client", () => {
-  const store = new ServerConfigStore(write({ ...MCP, clients: [...valid().clients, client("off", MARKER_A, [project("p", "/x")], { enabled: false })] }));
+  const store = new ServerConfigStore(write({ ...MCP, clients: [...valid().clients, client("off", newIdentity().publicKey, [project("p", "/x")], { enabled: false })] }));
   store.loadInitial();
   const policies = store.effectivePoliciesFor("laptop")!;
   assert.equal(PolicySync.safeParse({ kind: "policy_sync", policies }).success, true);
   assert.deepEqual(policies[0], { project_id: "web", physical_root: "/srv/web", mode: "read_write", writable_globs: ["docs/**"], deny_globs: ["*.key"], limits: { maxReadLines: 100 } });
   const text = JSON.stringify(policies);
-  assert.ok(!text.includes("credential") && !text.includes("display_name") && !text.includes("Work laptop"));
+  assert.ok(!text.includes("public_key") && !text.includes("display_name") && !text.includes("Work laptop"));
   assert.equal(store.effectivePoliciesFor("off"), null, "disabled");
   assert.equal(store.effectivePoliciesFor("nobody"), null, "unknown");
-  assert.equal(store.credentialDigestFor("off"), null);
-  assert.equal(store.credentialDigestFor("laptop"), hashCredential(MARKER_A));
+  assert.equal(store.publicKeyFor("off"), null);
+  assert.equal(store.publicKeyFor("laptop"), MARKER_A);
   policies[0]!.mode = "read_only";
   assert.equal(store.effectivePoliciesFor("laptop")![0]!.mode, "read_write", "callers get copies");
 });
 
-test("credentials: the hash is stable lowercase SHA-256; no plaintext or digest appears in the public view or in errors", () => {
-  assert.equal(hashCredential(MARKER_A), hashCredential(MARKER_A));
-  assert.match(hashCredential(MARKER_A), /^[0-9a-f]{64}$/);
-  assert.notEqual(hashCredential(MARKER_A), hashCredential(MARKER_B));
+test("keys: no public key appears in the public snapshot, and the file holds a public key but never a private one", () => {
   const file = write(valid());
   const store = new ServerConfigStore(file);
   store.loadInitial();
   const publicText = JSON.stringify(store.snapshot());
-  for (const secret of [MARKER_A, MARKER_B, hashCredential(MARKER_A), "credential_sha256"]) assert.ok(!publicText.includes(secret), "public snapshot is free of credential material");
-  assert.ok(!readFileSync(file, "utf8").includes(MARKER_A), "the file holds only the digest");
-  writeFileSync(file, JSON.stringify({ ...MCP, clients: [client("c", MARKER_A, [], { credential_sha256: hashCredential(MARKER_A).toUpperCase() })] }));
+  for (const secret of [MARKER_A, MARKER_B, "public_key", "credential_sha256"]) assert.ok(!publicText.includes(secret), "public snapshot is free of key material");
+  assert.ok(!readFileSync(file, "utf8").includes(KEY_A.privateKey), "the file never holds a private key");
+  writeFileSync(file, JSON.stringify({ ...MCP, clients: [client("c", MARKER_A, [], { public_key: MARKER_A + "!" })] }));
   const message = problems(() => store.reload());
-  assert.ok(message && !message.includes(hashCredential(MARKER_A)) && !message.includes(MARKER_A), "errors never echo values");
+  assert.ok(message && !message.includes(MARKER_A), "errors never echo values");
 });
 
 test("the config module holds no network, session, watcher, database or UI code", () => {
@@ -197,20 +199,20 @@ test("activateCandidate: a failed write leaves the previous active snapshot inta
   assert.equal(store.snapshot().clients.length, 2, "no partial active change");
 });
 
-test("applyEdit: keeps stored digests by client_id, hashes a new bearer, and never returns a digest or the plaintext", () => {
+test("applyEdit: keeps stored public keys by client_id, hashes a new bearer, and never returns a key or the plaintext", () => {
   const file = write(valid());
   const store = new ServerConfigStore(file);
   store.loadInitial();
   const bearer = "new-bearer-" + "Qr72Hs9x";
   const edit = { mcp_bearer: bearer, clients: store.snapshot().clients.map((c) => ({ ...c, display_name: "renamed" })) };
   store.applyEdit(edit);
-  assert.equal(store.credentialDigestFor("laptop"), hashCredential(MARKER_A), "digest carried over");
+  assert.equal(store.publicKeyFor("laptop"), MARKER_A, "public key carried over");
   assert.equal(store.mcpBearerDigest(), hashCredential(bearer));
   const stored = readFileSync(file, "utf8");
   assert.ok(!stored.includes(bearer), "the plaintext is never persisted");
   const view = JSON.stringify(store.editableView());
-  assert.ok(!view.includes(hashCredential(MARKER_A)) && !view.includes("sha256"), "the editable view carries no digest");
-  assert.equal(store.editableView().clients[0]?.has_credential, true);
+  assert.ok(!view.includes(MARKER_A) && !view.includes("sha256"), "the editable view carries no key");
+  assert.equal(store.editableView().clients[0]?.has_public_key, true);
   assert.throws(() => store.applyEdit({ clients: [] , extra: 1 }), ConfigError);
 });
 
@@ -224,16 +226,21 @@ test("applyEdit: the first configuration needs a bearer, and validation errors n
   assert.equal(store.isActive(), true);
 });
 
-test("issueCredential: returns a strong plaintext once and stores only its digest", () => {
+test("enrollClient: one atomic write of a new Client with its public key and no project; known ids and reused keys are refused", () => {
   const file = write(valid());
   const store = new ServerConfigStore(file);
   store.loadInitial();
-  const credential = store.issueCredential("desktop");
-  assert.ok(credential.length >= 40);
-  assert.equal(store.credentialDigestFor("desktop"), hashCredential(credential));
-  assert.ok(!readFileSync(file, "utf8").includes(credential));
-  assert.notEqual(store.issueCredential("desktop"), credential, "each call is a new credential");
-  assert.throws(() => store.issueCredential("nobody"), ConfigError);
+  const fresh = newIdentity();
+  store.enrollClient("newbox", fresh.publicKey, "New box");
+  assert.equal(store.publicKeyFor("newbox"), fresh.publicKey);
+  assert.deepEqual(store.effectivePoliciesFor("newbox"), []);
+  assert.equal(store.isKnownClient("newbox"), true);
+  const stored = readFileSync(file, "utf8");
+  assert.ok(stored.includes(fresh.publicKey) && !stored.includes(fresh.privateKey));
+  assert.throws(() => store.enrollClient("newbox", newIdentity().publicKey), ConfigError, "a known client_id is never re-enrolled");
+  assert.throws(() => store.enrollClient("other", fresh.publicKey), ConfigError, "a registered public key cannot enroll a second id");
+  assert.equal(store.isKnownClient("other"), false);
+  assert.equal(store.snapshot().clients.length, 3, "the failed enrollments changed nothing");
 });
 
 test("logging settings: defaults when omitted, bounded, editable through the one owner and persisted", () => {

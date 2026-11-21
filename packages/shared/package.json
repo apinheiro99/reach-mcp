@@ -11,6 +11,7 @@
   "exports": {
     "./filesystem": "./src/filesystem/index.ts",
     "./wire": "./src/wire/index.ts",
+    "./identity": "./src/identity.ts",
     "./cli": "./src/cli.ts",
     "./timers": "./src/timers.ts",
     "./testing/pdf-fixture": "./src/testing/pdf-fixture.ts"

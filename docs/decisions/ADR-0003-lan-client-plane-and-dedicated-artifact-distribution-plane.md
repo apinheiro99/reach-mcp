@@ -1,47 +1,44 @@
-# ADR-0003 — Two production ports: reachable service and downloads, private admin
+# ADR-0003 — Two production ports: reachable service plane and private admin plane
 
-**Status:** Accepted (revised 2026-11-19; supersedes the three-port version of 2026-11-18)  
-**Date:** 2026-11-18
+**Status:** Accepted  
+**Date:** 2026-11-18  
+**Revised:** 2026-11-20
 
 ## Context
 
-REACH Clients dial the Server with authenticated outbound WSS, so a production Server cannot be reachable only from host loopback. The canonical release also carries the Client archives that other machines must be able to download without SSH, source checkout or manual relay.
-
-The first version of this decision gave each responsibility its own TCP port (8787 service/client, 8788 admin, 8789 artifacts). The Product Owner then simplified to one port, but making that one listener reachable by Client machines would also expose the Web UI/admin API, which has no login of its own and is private by design. The Product Owner therefore decided on two ports: 8787 for everything Clients and ChatGPT need, 8788 only for the private Web UI/admin. There is no 8789; release downloads live on 8787. Nothing else about the approved architecture changes.
+Clients and installers must reach REACH without exposing the private Admin UI/API broadly. The earlier three-port design was simplified.
 
 ## Decision
 
-The production Server has **two listeners**.
+The production Server has exactly two listeners.
 
-**8787 (service, reachable by Client machines)**:
+### 8787 — service plane
 
-- `/mcp` — ChatGPT-facing MCP; the only route the OpenAI Secure MCP Tunnel carries;
-- `/client` — authenticated Client WSS;
+- `/mcp` — ChatGPT-facing MCP; the only route carried by the OpenAI Secure MCP Tunnel;
+- `/client` — authenticated Client **WS**;
 - `/health` — protected health;
-- `/release/manifest` and `/release/artifacts/<name>` — read-only, catalog-gated release downloads, with no credential: downloading and installing a Client needs network reachability only.
+- `/release/...` — read-only, catalog-gated release/installer surface.
 
-**8788 (private admin)**:
+### 8788 — admin plane
 
-- `/` and `/admin/...` — Web UI and administrative API, including first-boot setup mode. No other route, and never routed through the MCP tunnel.
+- `/` and `/admin/...` — Web UI, administrative API and setup mode.
 
-The two families never share a port: no admin route answers on 8787 and no service or release route answers on 8788.
+Admin routes never answer on 8787 and service/release routes never answer on 8788. Nothing listens on 8789.
 
-Every route family keeps the behavior and authentication it had when it had its own port, except the release routes, which need no credential. Setup mode, Web UI configuration, autosave, HITL and enrollment are unchanged. Nothing listens on 8789.
+V1 uses direct WS for Client runtime on the controlled/local network; TLS/WSS is not required.
 
 ## Deployment consequences
 
-- The production Compose stack still has exactly two services, `reach-server` and `reach-tunnel`, and publishes two ports: 8787 (`REACH_BIND`/`REACH_PORT`, all host addresses by default so Client machines can reach it; the operator may narrow it to one address) and 8788 (`REACH_ADMIN_BIND`/`REACH_ADMIN_PORT`, host loopback by default; never a broad address).
-- The tunnel routes only `/mcp`; the admin and release routes are not tunnel routes.
-- The container healthcheck and the deploy controller read identity from the admin status route on 8788 and smoke the service listener on 8787.
+- Compose keeps exactly two services: `reach-server` and `reach-tunnel`.
+- `reach-server` owns both listeners.
+- `reach-tunnel` routes only `/mcp`.
+- 8788 defaults to host loopback; wider exposure requires an explicit network boundary and direct-peer allowlist.
+- Release routes are read-only and catalog-gated.
 
 ## Security invariants
 
-- the admin routes are never routed through the MCP tunnel and are never published on a broad address by default;
-- release routes are read-only and catalog-gated, no arbitrary file serving;
-- Clients still require their own identity and credential for WSS;
-- secrets are not baked into public images or public repositories.
-
-## Consequences
-
-- Two listeners, two ports, one healthcheck; the exposure boundary is the port.
-- Owners are unchanged: `runtime.ts` composes, `auth.ts` authenticates MCP and Clients, `artifacts.ts` owns the catalog, `admin.ts` owns the admin routes, `release.ts` owns the public release routes, `deploy/prod/deploy.mjs` owns the deploy transaction.
+- Admin routes never traverse the MCP tunnel.
+- Clients use Client-owned Ed25519 identity.
+- Unknown Clients are Pending until explicit human Enable.
+- No trusted-network auto-admission.
+- Secrets are never baked into public images or repositories.

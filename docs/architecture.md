@@ -68,7 +68,7 @@ The current Dev MCP is a working prototype and provides proven implementation pa
 - Zod;
 - ChatGPT-facing MCP using Streamable HTTP.
 
-Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. `GET /health` returns a minimal snapshot behind the same bearer (401 when missing or wrong, 503 with no body while no configuration is active): `status`, `server_build`, `repository_commit` (injected, otherwise null), `uptime_seconds`, `config_active`, every configured Client joined with its live session (`client_id`, `enabled`, `online`, `client_build` and `last_seen`, null while disconnected) and request totals (`in_flight`, `completed`, `failed`, `timed_out`); it never includes roots, credentials or paths. Every other path answers 404; there is no admin UI or MCP session state on this listener. Each MCP tool result carries the `request_id` that travelled on the wire to the Client. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
+Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. `GET /health` is the single service-plane health contract and stays behind the same bearer: missing/wrong bearer returns 401; while no configuration is active it returns 503; with active configuration it returns the minimal operational snapshot (`status`, `server_build`, `repository_commit`, `uptime_seconds`, `config_active`, Client online/build/last-seen state and request totals). It never includes roots, private keys, bearer values, credentials or paths. There is no second readiness route. Every other non-release path answers 404; there is no admin UI or MCP session state on this listener. Each MCP tool result carries the `request_id` that travelled on the wire to the Client. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
 
 REACH should remain Node/TypeScript unless a concrete blocker appears.
 
@@ -109,7 +109,7 @@ REACH Server
     +-- central configuration authority
     +-- routing / health / audit / logs
     |
-    +====== authenticated persistent WSS ======+
+    +====== authenticated persistent WS ======+
     |                                         |
     v                                         v
 REACH Client                              REACH Client
@@ -120,7 +120,7 @@ Host / VM / Container A                  Host / VM / Container B
 
 Target machines do not expose an inbound REACH port.
 
-Each Client initiates one authenticated outbound WSS connection to the Server.
+Each Client initiates one authenticated outbound WS connection to the Server.
 
 Clients may be on different hosts, networks, clouds or countries. They only need outbound reachability to the Server.
 
@@ -130,7 +130,7 @@ The Server exposes **two listeners** with separate responsibilities. **8787** is
 
 The OpenAI Secure MCP Tunnel routes only `/mcp` on 8787. Client machines reach the Server directly on the local/private network; Client↔Server traffic does not depend on the OpenAI tunnel.
 
-Administrative reachability is not hardcoded in public source. The deployment/private configuration defines the allowed source IP or CIDR for 8788; by default in the owner's environment this is the same trusted network as the development/operator machine. The listener/firewall exposure enforces that boundary. The Web UI may later change Clients, projects, roots, modes and key rotation, but it is not required for first installation.
+Administrative reachability is not hardcoded in public source. Port 8788 has no application login in the MVP, so its protection is the network boundary: production defaults to host loopback. A non-loopback bind is an explicit deployment exception and is supported only with an equivalent firewall/network boundary plus an explicit source IP/CIDR allowlist. The allowlist is checked against the direct peer address, never `X-Forwarded-For`; proxying the admin plane is out of scope for now. The Web UI may later change Clients, projects, roots, modes and key rotation, but it is not required for first installation.
 
 Release download and first enrollment require only service-plane network reachability. No admin tunnel, manual credential relay or manual bootstrap editing is part of the normal onboarding path.
 
@@ -157,7 +157,7 @@ flowchart LR
     GPT -->|"MCP requests"| OAI
     OAI -->|"Streamable HTTP / MCP"| REACH
     U -->|"Admin / Setup / HITL approval"| REACH
-    HOSTS -->|"Clients initiate authenticated outbound WSS"| REACH
+    HOSTS -->|"Clients initiate authenticated outbound WS"| REACH
     GIT -.->|"Build / release artifacts"| REACH
 
     classDef human fill:#ffe082,stroke:#f57f17,color:#212121,stroke-width:2px;
@@ -215,8 +215,8 @@ flowchart TB
     HITL --> CFG
     CFG --> ROUTER
     CFG --> PRIV
-    ROUTER <==>|"Authenticated persistent WSS"| CA
-    ROUTER <==>|"Authenticated persistent WSS"| CB
+    ROUTER <==>|"Authenticated persistent WS"| CA
+    ROUTER <==>|"Authenticated persistent WS"| CB
     CA --> DA --> FSA --> RA
     DA --> QA --> FSA
     CB --> DB --> FSB --> RB
@@ -252,7 +252,7 @@ flowchart LR
         SCONF["Config Manager"]
         SHITL["Proposal / HITL Manager"]
         SOBS["Health / Logs / Audit"]
-        SWSS["WSS Session Manager"]
+        SWS["WS Session Manager"]
     end
 
     subgraph SHARED["packages/shared"]
@@ -265,7 +265,7 @@ flowchart LR
     end
 
     subgraph CLIENT["packages/client"]
-        CWSS["WSS Connector"]
+        CWS["WS Connector"]
         CAUTH["Ed25519 Identity + Challenge Auth"]
         CDISPATCH["Operation Dispatcher"]
         CQUEUE["Per-project Mutation Queue"]
@@ -277,21 +277,21 @@ flowchart LR
     SMCP --> SHITL
     SADMIN --> SCONF
     SADMIN --> SHITL --> SCONF
-    SROUTE --> SREG --> SWSS
+    SROUTE --> SREG --> SWS
     SCONF --> SROUTE
     SROUTE --> SOBS
 
-    SWSS <==> CWSS
-    CWSS --> CAUTH
-    CWSS --> CDISPATCH
+    SWS <==> CWS
+    CWS --> CAUTH
+    CWS --> CDISPATCH
     CDISPATCH --> CQUEUE
     CDISPATCH --> CFS
     CQUEUE --> CFS
     CROOT --> CFS
 
     SMCP -.-> SCHEMA
-    SWSS -.-> SCHEMA
-    CWSS -.-> SCHEMA
+    SWS -.-> SCHEMA
+    CWS -.-> SCHEMA
     CDISPATCH -.-> SCHEMA
     CFS -.-> SAFETY
     CFS -.-> REDACT
@@ -303,9 +303,9 @@ flowchart LR
     classDef shared fill:#b39ddb,stroke:#4527a0,color:#21104b,stroke-width:2px;
     classDef client fill:#c5e1a5,stroke:#558b2f,color:#1d3510,stroke-width:2px;
 
-    class SMCP,SADMIN,SROUTE,SREG,SCONF,SHITL,SOBS,SWSS server;
+    class SMCP,SADMIN,SROUTE,SREG,SCONF,SHITL,SOBS,SWS server;
     class SCHEMA,TYPES,ERR,SAFETY,REDACT,BOUNDS shared;
-    class CWSS,CAUTH,CDISPATCH,CQUEUE,CROOT,CFS client;
+    class CWS,CAUTH,CDISPATCH,CQUEUE,CROOT,CFS client;
 ```
 
 ### C4 — Code / module responsibility view
@@ -320,7 +320,7 @@ flowchart TB
             CONFIG_S["config/*"]
             ADMIN_S["admin/*"]
             OBS_S["observability/*"]
-            TRANS_S["transport/wss/*"]
+            TRANS_S["transport/ws/*"]
         end
 
         subgraph CLIENT["packages/client"]
@@ -393,13 +393,16 @@ sequenceDiagram
     C->>C: Generate client_id + Ed25519 keypair locally
     C->>C: Keep private key local only
     C->>S: Enrollment(public key + non-secret metadata)
-    S->>S: Auto-admit from trusted service network/default policy
-    S-->>C: Enrollment accepted + effective project/policy defaults
+    S->>S: Verify proof of private-key possession
+    S->>S: Register Client as Pending with public key only
+    S-->>C: Pending; no operational access
+    O->>S: Enable Client through Admin UI/API
+    S->>S: Mark Client Enabled
     C->>C: Persist private key + local bootstrap/anchors with restrictive permissions
     C->>S: Open persistent WebSocket
     S-->>C: Random challenge
     C-->>S: Ed25519 signature(challenge)
-    S->>S: Verify signature with stored public key
+    S->>S: Verify signature with stored public key and Enabled state
     S-->>C: Connection accepted
     S->>S: Mark Client ONLINE
     A-->>O: Connected
@@ -421,7 +424,7 @@ sequenceDiagram
     G->>M: operation(client, project, relative path)
     M->>R: Typed request + request_id
     R->>R: Resolve logical Client/project
-    R->>C: Request over existing WSS
+    R->>C: Request over existing WS
     C->>F: Validate operation
 
     alt Read-only operation
@@ -483,7 +486,7 @@ sequenceDiagram
     participant S as 🔥 REACH Server
     participant UI as 🟡 Web UI
 
-    C->>S: WSS connect + authenticate
+    C->>S: WS connect + authenticate
     S-->>C: Accepted
     loop While healthy
         C->>S: heartbeat / keepalive
@@ -500,7 +503,7 @@ sequenceDiagram
     rect rgb(232, 245, 233)
         Note over C: Client becomes available again
         C->>C: Bounded reconnect backoff
-        C->>S: New WSS connection with same identity
+        C->>S: New WS connection with same identity
         S->>S: Confirm old session is not healthy
         S-->>C: Accepted
         S-->>UI: ONLINE
@@ -520,7 +523,8 @@ sequenceDiagram
 
     alt Configuration missing/incomplete
         S->>S: Enter SETUP MODE
-        M-->>M: Data-plane disabled
+        M-->>M: /mcp and /client refuse normal operation
+        M-->>O: /health remains protected and reports 503; canonical /release files remain read-only
         M-->>O: Setup required + operator-facing setup location
         O->>UI: Open the administrative Web UI over HTTP
         UI->>S: Valid initial configuration
@@ -681,21 +685,22 @@ Each Client has:
 
 ### Zero-touch enrollment
 
-Normal enrollment is automatic when an authorized agent can access the target machine and the machine can reach the Server service plane:
+Normal enrollment is zero-touch up to registration when an authorized agent can access the target machine and the machine can reach the Server service plane:
 
 1. the agent downloads the correct platform Client artifact from the Server and verifies the release manifest/hash;
 2. the Client generates its `client_id` and Ed25519 keypair locally;
-3. the Client keeps the private key in protected local state and sends only its public key plus non-secret enrollment metadata to the Server;
-4. the Server auto-admits the first connection according to the configured trusted-network/default-onboarding policy;
-5. the Server stores the Client identity/public key and returns effective logical project/policy defaults;
-6. the Client stores the Server endpoint, local private key and physical root anchors in protected local state;
-7. the Client opens a persistent outbound WebSocket;
-8. the Server sends a fresh random challenge and the Client signs it with Ed25519;
-9. the Server verifies the signature with the stored public key and accepts the connection.
+3. the Client keeps the private key in protected local state and sends only its public key plus non-secret enrollment metadata and proof of private-key possession to the Server;
+4. the Server stores the Client identity/public key as **Pending**; Pending Clients have no operational access;
+5. a human explicitly selects **Enable** in the Admin UI/API;
+6. the Server marks the Client **Enabled** and returns effective logical project/policy defaults;
+7. the Client stores the Server endpoint, local private key and physical root anchors in protected local state;
+8. the Client opens a persistent outbound WebSocket;
+9. the Server sends a fresh random challenge and the Client signs it with Ed25519;
+10. the Server verifies the signature and Enabled state before accepting the connection.
 
-The normal operator interaction is one instruction: access machine X and install the Client. No Web UI data entry, manual credential copy/paste, admin-port tunnel or hand-written bootstrap is part of first enrollment.
+The normal operator interaction is one instruction to install the Client plus the explicit human Enable gate. No credential copy/paste, admin-port tunnel or hand-written bootstrap is part of first enrollment. Disabled Clients are disconnected and refused until re-enabled.
 
-The default initial project/root may be proposed from the install agent's current working directory. Any required confirmation is about that root choice only, not about identity or credentials. Controlled write access starts at `temp/**` unless private deployment configuration says otherwise.
+There is no hardcoded/default project root. The installer may propose the install agent's current working directory, but that root exists only after an unambiguous choice or explicit confirmation is persisted as the Client's local root anchor and mapped logically by the Server. Any normal question is about that root choice only, never identity or credentials. Controlled write access starts at `temp/**` unless private deployment configuration says otherwise.
 
 ### Key rotation
 
@@ -735,7 +740,7 @@ The Client initiates transport because the Server may not be able to open an inb
 
 The Server does not need to know which ChatGPT conversation originated a request.
 
-Multiple conversations may issue concurrent requests through the same MCP endpoint and same Client WSS connection.
+Multiple conversations may issue concurrent requests through the same MCP endpoint and same Client WS connection.
 
 Every operation has a unique request/correlation identifier. Responses must correlate to the correct request and never mix.
 
@@ -831,7 +836,7 @@ There is no generic Save/Confirm button for ordinary configuration changes.
 
 ## 12. AI-assisted configuration and HITL
 
-REACH may expose typed administrative MCP operations so ChatGPT can inspect and propose configuration.
+REACH may expose only the small typed administrative surface needed for the MVP: inspect current configuration, create/replace the single pending proposal, and inspect proposal status. No generic administrative CRUD layer is required.
 
 All AI/MCP-originated configuration mutations are proposal-based, regardless of whether a field is classified as security-sensitive:
 
@@ -841,7 +846,7 @@ All AI/MCP-originated configuration mutations are proposal-based, regardless of 
 4. human operator explicitly approves/rejects;
 5. only after approval does Server atomically activate the change.
 
-Human-originated ordinary Web UI edits continue to use autosave.
+Human-originated ordinary Web UI edits continue to use autosave. The MVP keeps at most one active pending AI proposal; a newly accepted proposal replaces the previous pending candidate rather than creating a workflow system. Approval always revalidates the candidate against the current configuration before atomic activation.
 
 This is explicit **human-in-the-loop (HITL)** governance.
 
@@ -895,10 +900,10 @@ Never log secrets/credentials/file contents by default.
 
 ### Rotation
 
-Operational logs rotate:
+Operational logs use one rotation mechanism with two triggers:
 
-- at midnight;
-- earlier if configurable maximum file size is reached.
+- midnight;
+- configurable maximum file size.
 
 Default retention: **5 days**.
 
@@ -917,7 +922,7 @@ Default audit scope is broad/enabled. Web UI may allow categories to be disabled
 Compact records should include the minimum useful context:
 
 - timestamp;
-- actor/source;
+- actor/source (`operator-ui`, `mcp-proposal`, `client-enrollment` or `system`);
 - client;
 - project/root;
 - operation/action;
@@ -927,10 +932,10 @@ Compact records should include the minimum useful context:
 
 Do not record file contents, credentials or secrets.
 
-Audit uses the same rotation model:
+Audit uses the same single rotation mechanism:
 
-- midnight rotation;
-- earlier rotation by size;
+- midnight trigger;
+- earlier trigger by size;
 - default 5-day retention;
 - Web UI configurable.
 
@@ -986,7 +991,7 @@ One release build produces, from the same opaque build identity and repository c
 
 Client installation is machine-level. Linux uses the installed release artifact plus systemd; Windows uses the installed release artifact plus a native Scheduled Task/startup mechanism. No native `.exe`/ELF compilation is required for MVP. Direct `git clone` remains valid for development only and is not the installation contract.
 
-The installer/bootstrap remains simple and explicit: binaries are installed to the machine-level install directory, while bootstrap/secrets/root anchors remain in a separate operator-owned protected file. REACH never silently updates itself.
+The installer/onboarding remains simple and explicit: binaries are installed to the machine-level install directory, while the Client's protected local state is created on that machine and stores the Server endpoint, `client_id`, Ed25519 private key and local root anchors. Only the public key is Server-side identity material. The normal production path has no hand-written bootstrap or Server-issued Client secret; any manual bootstrap file retained in DEV is migration compatibility, not the target contract. REACH never silently updates itself.
 
 ### Windows filesystem safety
 
@@ -1014,7 +1019,7 @@ Do **not** introduce:
 
 At connection time, Server and Client report their actual running opaque build identifier for observability and troubleshooting.
 
-For manifest schema v1 and the runtime gate, compatibility is deliberately exact: `client_build == server_build`. The release manifest records the same build id for release, Server and Client and declares `compatibility.strategy = "exact"` with exactly that Client build accepted. An incompatible Client is rejected explicitly.
+For manifest schema v1 and the runtime gate, compatibility is deliberately exact: `client_build == server_build`. The release manifest records the same build id for release, Server and Client and declares `compatibility.strategy = "exact"` with exactly that Client build accepted. An incompatible Client is rejected explicitly. This deliberately means a Server upgrade can leave older Clients offline until they are explicitly upgraded; that is accepted MVP behavior, not a signal to add version negotiation.
 
 No independent protocol number, negotiation framework, SemVer layer or version-range parser is introduced.
 
@@ -1099,7 +1104,7 @@ Do not hide limitations and do not overstate maturity.
 ### Minimum gate for changing status to generally usable
 
 1. **Security baseline**
-   - authenticated WSS;
+   - authenticated WS;
    - unique Client Ed25519 identities with Client-held private keys;
    - root confinement;
    - symlink refusal;
@@ -1223,7 +1228,7 @@ The next work is execution:
 
 1. retain the CI independence already established;
 2. port proven safe filesystem primitives;
-3. implement Client identity/enrollment and persistent WSS;
+3. implement Client identity/enrollment and persistent WS;
 4. implement Server routing and configuration;
 5. implement setup mode/Web UI/HITL;
 6. implement logging/audit;

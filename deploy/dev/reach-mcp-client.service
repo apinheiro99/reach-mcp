@@ -1,5 +1,5 @@
 # REACH MCP Client on the DEV container, run from the installed release artifact (deploy/client/install-linux.sh), not from a source
-# checkout. The endpoint, Client id, credential and root anchors live only in the bootstrap
+# checkout. The endpoint, Client id, private key and root anchors live only in the bootstrap
 # file below (mode 0600), never in this unit. --allow-insecure-ws is the explicit DEV switch for a ws:// loopback endpoint.
 [Unit]
 Description=REACH MCP Client (DEV)

@@ -27,22 +27,29 @@ import {
   toWireError,
   WireError,
   WireFault,
+  ServerChallenge,
 } from "../src/wire/index.ts";
 
-// Opaque marker standing in for a credential; not shaped like any real secret.
+// A marker standing in for secret material that must never be echoed; not shaped like any real key.
 const CRED = "cred-marker-" + "Qz81mVx";
-const hello = { kind: "hello", client_id: "laptop-1", credential: CRED, client_build: "build-2026.11.0001" };
+const hello = { kind: "hello", client_id: "laptop-1", client_build: "build-2026.11.0001", public_key: "A".repeat(43), signature: "B".repeat(86) };
 const request = (operation: unknown, extra: object = {}) => ({ kind: "request", request_id: "req-1", project_id: "proj-a", operation, ...extra });
 
-test("handshake: a valid hello parses; empty identity, build or credential, and unknown keys are rejected", () => {
+test("handshake: a valid hello parses; empty identity or build, malformed key or signature, and unknown keys are rejected", () => {
   assert.ok(parseWire(ClientHello, hello).ok);
-  for (const field of ["client_id", "credential", "client_build"]) {
+  for (const field of ["client_id", "client_build", "public_key", "signature"]) {
     for (const bad of ["", "x".repeat(2000), "a\nb", "a\u0000b", 42, undefined]) {
       assert.equal(ClientHello.safeParse({ ...hello, [field]: bad }).success, false, `${field}=${JSON.stringify(bad)?.slice(0, 20)}`);
     }
   }
   assert.equal(ClientHello.safeParse({ ...hello, extra: 1 }).success, false);
   assert.equal(ClientHello.safeParse({ ...hello, kind: "request" }).success, false);
+  assert.equal(ClientHello.safeParse({ ...hello, credential: CRED }).success, false, "the shared Client credential no longer exists on the wire");
+  assert.equal(ClientHello.safeParse({ ...hello, public_key: "A".repeat(44) }).success, false, "a public key is exactly 32 bytes");
+  assert.equal(ClientHello.safeParse({ ...hello, signature: "B".repeat(85) }).success, false, "a signature is exactly 64 bytes");
+  assert.equal(ClientHello.safeParse({ ...hello, display_name: "Work laptop" }).success, true);
+  assert.equal(ServerChallenge.safeParse({ kind: "challenge", nonce: "N".repeat(43) }).success, true);
+  for (const bad of [{ kind: "challenge" }, { kind: "challenge", nonce: "short" }, { kind: "challenge", nonce: "N".repeat(43), extra: 1 }]) assert.equal(ServerChallenge.safeParse(bad).success, false);
 });
 
 test("there is no protocol field or version negotiation anywhere in the contract", () => {
@@ -56,8 +63,8 @@ test("there is no protocol field or version negotiation anywhere in the contract
   }
 });
 
-test("a credential is never echoed: validation errors name paths and codes only", () => {
-  for (const bad of [{ ...hello, extra: CRED }, { ...hello, credential: CRED + "\n" }, { ...hello, client_id: "" }, { ...hello, credential: CRED.repeat(100) }]) {
+test("a submitted value is never echoed: validation errors name paths and codes only", () => {
+  for (const bad of [{ ...hello, extra: CRED }, { ...hello, signature: CRED + "\n" }, { ...hello, client_id: "" }, { ...hello, public_key: CRED.repeat(100) }]) {
     const out = parseWire(ClientHello, bad);
     assert.equal(out.ok, false);
     if (!out.ok) {
@@ -90,7 +97,7 @@ test("request envelope: needs request_id, project_id and a known typed operation
     assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list" }, { project_id: bad })).success, false);
   }
   assert.equal(RequestEnvelope.safeParse(request({ op: "shell_exec", command: "ls" })).success, false, "unsupported operation");
-  assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list" }, { credential: CRED })).success, false, "no credential after the handshake");
+  assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list" }, { signature: CRED })).success, false, "nothing is signed or authenticated after the handshake");
   assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list" }, { conversation_id: "c" })).success, false, "no conversation identity");
   assert.equal(RequestEnvelope.safeParse(request({ op: "fs_list", unknown: 1 })).success, false, "strict operation objects");
   assert.equal(RequestEnvelope.safeParse(request({ op: "git_commit" })).success, false, "no mutating Git operation exists");
@@ -100,12 +107,12 @@ test("request envelope: needs request_id, project_id and a known typed operation
 const policyFrame = { kind: "policy_sync", policies: [{ project_id: "p1", physical_root: "/srv/p1", mode: "read_only" }] };
 const responseFrame = { kind: "response", request_id: "req-1", ok: true, result: { op: "fs_write", path: "a.txt", bytes: 3 } };
 
-test("direction: the Client sends hello and responses, the Server sends welcome, reject, policy and requests", () => {
+test("direction: the Client sends hello and responses, the Server sends challenge, welcome, reject, policy and requests", () => {
   assert.equal(ClientMessage.safeParse(hello).success, true);
   assert.equal(ClientMessage.safeParse(responseFrame).success, true);
   assert.equal(ClientMessage.safeParse(request({ op: "fs_list" })).success, false, "a request is never Client -> Server");
   assert.equal(ClientMessage.safeParse(policyFrame).success, false);
-  for (const frame of [{ kind: "welcome", server_build: "b", compatible: true }, { kind: "reject", error: { code: "AUTH_FAILED", message: "m" } }, policyFrame, request({ op: "fs_list" })]) {
+  for (const frame of [{ kind: "challenge", nonce: "N".repeat(43) }, { kind: "welcome", server_build: "b", compatible: true }, { kind: "reject", error: { code: "AUTH_FAILED", message: "m" } }, policyFrame, request({ op: "fs_list" })]) {
     assert.equal(ServerMessage.safeParse(frame).success, true, JSON.stringify(frame).slice(0, 40));
   }
   assert.equal(ServerMessage.safeParse(responseFrame).success, false, "a response is never Server -> Client");

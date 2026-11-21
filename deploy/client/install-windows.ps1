@@ -1,6 +1,6 @@
 # Machine-level REACH Client install for Windows, from the release artifact (reach-client-win32-x64.zip): one Client per machine,
 # never per project. The install directory and the bootstrap file are separate: binaries go to the install directory, while the
-# endpoint, Client id, credential and root anchors stay only in the operator's protected bootstrap file, which this script never
+# endpoint, Client id, private key and root anchors stay only in the operator's protected bootstrap file, which this script never
 # reads or copies. Startup is one plain Scheduled Task running Node on the installed launcher; REACH has no supervisor of its own.
 # Install and update are explicit operator actions; nothing here updates itself.
 param(

@@ -4,10 +4,12 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
+import { IDLE, LAPTOP, signedHello } from "./identity-fixture.ts";
 import { ClientConnectionRegistry, createHttpServer, hashCredential, ProposalStore, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
 
 export const MCP_MARKER = "mcp-marker-" + "Kd40";
-export const CLIENT_MARKER = "cred-marker-" + "Wn68";
+/** The laptop Client's private key: the secret the tests prove never appears on the Server side. */
+export const CLIENT_MARKER = LAPTOP.privateKey;
 export const PHYSICAL_ROOT = "/srv/private-web-root";
 
 type Frame = { kind: string; request_id?: string; operation?: { op: string; [k: string]: unknown }; policies?: unknown[] };
@@ -19,8 +21,8 @@ export async function startRuntime(extra: Partial<ConnectionOptions> = {}) {
     JSON.stringify({
       mcp_bearer_sha256: hashCredential(MCP_MARKER),
       clients: [
-        { client_id: "laptop", display_name: "Work laptop", enabled: true, credential_sha256: hashCredential(CLIENT_MARKER), projects: [{ project_id: "web", physical_root: PHYSICAL_ROOT, mode: "read_write" }, { project_id: "api", physical_root: "/srv/api", mode: "read_only" }] },
-        { client_id: "idle", enabled: true, credential_sha256: hashCredential(CLIENT_MARKER), projects: [{ project_id: "p", physical_root: "/srv/p", mode: "read_only" }] },
+        { client_id: "laptop", display_name: "Work laptop", enabled: true, public_key: LAPTOP.publicKey, projects: [{ project_id: "web", physical_root: PHYSICAL_ROOT, mode: "read_write" }, { project_id: "api", physical_root: "/srv/api", mode: "read_only" }] },
+        { client_id: "idle", enabled: true, public_key: IDLE.publicKey, projects: [{ project_id: "p", physical_root: "/srv/p", mode: "read_only" }] },
       ],
     }),
   );
@@ -33,18 +35,22 @@ export async function startRuntime(extra: Partial<ConnectionOptions> = {}) {
   const port = (server.address() as AddressInfo).port;
   const sockets: WebSocket[] = [];
 
-  /** Connects a fake Client on the upgrade path; it answers nothing by itself. */
-  const connectClient = async (clientPath = "/client", id = "laptop") => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}${clientPath}`, { headers: { Authorization: `Bearer ${CLIENT_MARKER}` } });
+  /** Connects a fake Client on the upgrade path, answers the Server's challenge with a signed hello and nothing else. */
+  const connectClient = async (clientPath = "/client", id = "laptop", identity = id === "idle" ? IDLE : LAPTOP) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${clientPath}`);
     sockets.push(ws);
     const frames: Frame[] = [];
-    ws.on("message", (d) => frames.push(JSON.parse(d.toString())));
+    ws.on("message", (d) => {
+      const frame = JSON.parse(d.toString()) as Frame & { nonce?: string };
+      frames.push(frame);
+      if (frame.kind === "challenge" && frame.nonce) ws.send(JSON.stringify(signedHello(identity, id, frame.nonce)));
+    });
     const opened = new Promise<boolean>((resolve) => {
       ws.once("open", () => resolve(true));
       ws.once("error", () => resolve(false));
       ws.once("unexpected-response", () => resolve(false));
     });
-    if (await opened) ws.send(JSON.stringify({ kind: "hello", client_id: id, credential: CLIENT_MARKER, client_build: "ok-1" }));
+    await opened;
     return { ws, frames, opened: opened };
   };
 

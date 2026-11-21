@@ -1,6 +1,6 @@
 // The one owner of the pending AI/MCP configuration proposal. At most one proposal exists, kept as one small JSON file:
 // its id, time, the redacted editable configuration it was based on, and the secret-free edit. It never holds the active
-// configuration, a digest or a credential. A proposal activates only when a human approves it, and only through
+// configuration, a key or a credential. A proposal activates only when a human approves it, and only through
 // ServerConfigStore.applyEdit; if the configuration changed since the proposal was made it is stale and nothing is merged.
 import { randomUUID } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
@@ -109,8 +109,8 @@ export class ProposalStore {
 
   #diff(stored: StoredProposal): DiffEntry[] {
     const before = leaves(stored.base.clients);
-    const byId = new Map(stored.base.clients.map((c) => [c.client_id, c.has_credential]));
-    const after = leaves(stored.edit.clients.map((c) => ({ ...c, has_credential: byId.get(c.client_id) ?? false })));
+    const byId = new Map(stored.base.clients.map((c) => [c.client_id, c.has_public_key]));
+    const after = leaves(stored.edit.clients.map((c) => ({ ...c, has_public_key: byId.get(c.client_id) ?? false })));
     return [...new Set([...before.keys(), ...after.keys()])]
       .sort()
       .filter((path) => before.get(path) !== after.get(path))

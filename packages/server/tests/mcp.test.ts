@@ -48,7 +48,7 @@ test("annotations are truthful: reads are read-only, writes are not, only remova
 test("discovery shows logical clients, projects, modes and online state, and nothing private", async () => {
   const rt = await startRuntime();
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const r = await call(rt, "reach_discover", {});
   const { clients } = r.body.result.structuredContent;
   assert.deepEqual(clients.map((c: { client_id: string; online: boolean }) => [c.client_id, c.online]), [["laptop", true], ["idle", false]]);
@@ -62,7 +62,7 @@ test("discovery shows logical clients, projects, modes and online state, and not
 test("each operation tool routes the exact shared Operation to the addressed Client and project", async () => {
   const rt = await startRuntime();
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const pending = call(rt, "fs_read", { client_id: "laptop", project_id: "web", path: "src/a.ts", start_line: 2 });
   await until(() => requestsOf(client).length === 1, "request reached the Client");
   const request = requestsOf(client)[0]!;
@@ -81,7 +81,7 @@ test("each operation tool routes the exact shared Operation to the addressed Cli
 test("failures are compact tool errors: unknown project, offline Client, bad arguments never reach a socket", async () => {
   const rt = await startRuntime();
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const cases: [string, object][] = [
     ["fs_list", { client_id: "laptop", project_id: "nope" }],
     ["fs_list", { client_id: "idle", project_id: "p" }],
@@ -102,7 +102,7 @@ test("failures are compact tool errors: unknown project, offline Client, bad arg
 test("concurrent calls are independent: out-of-order answers reach the right caller", async () => {
   const rt = await startRuntime();
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const a = call(rt, "fs_list", { client_id: "laptop", project_id: "web", path: "a" }, 11);
   const b = call(rt, "fs_list", { client_id: "laptop", project_id: "api", path: "b" }, 12);
   await until(() => requestsOf(client).length === 2, "both sent");
@@ -123,7 +123,7 @@ test("concurrent calls are independent: out-of-order answers reach the right cal
 test("a mutation tool that times out on the Client is reported as indeterminate, once", async () => {
   const rt = await startRuntime();
   const client = await rt.connectClient();
-  await until(() => client.frames.length === 2, "admitted");
+  await until(() => client.frames.length === 3, "admitted");
   const pending = call(rt, "fs_remove", { client_id: "laptop", project_id: "web", path: "a.txt" });
   await until(() => requestsOf(client).length === 1, "sent");
   client.ws.terminate();
