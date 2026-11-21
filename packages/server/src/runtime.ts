@@ -30,12 +30,12 @@ export type ServerArgs = {
   adminPort: number;
   build: string;
   repositoryCommit?: string;
-  /** Peer addresses or CIDRs (comma separated) that may enroll a new Client; omitted means nobody can enroll. */
-  enrollFrom?: string;
   /** Optional directory holding the release manifest and Client artifacts that the public release routes serve. */
   artifacts?: string;
   /** Direct peers (comma separated addresses or CIDRs) allowed on the admin listener; required when it is not bound to loopback. */
   adminAllowFrom?: string;
+  /** The operator label shown top right in the admin UI; the product default when omitted. */
+  adminUser?: string;
   /** DEV only: reload an open admin page when the watched process restarts. Off unless this switch is given. */
   devLiveReload: boolean;
 };
@@ -44,7 +44,7 @@ const LOOPBACK = "127.0.0.1";
 const LOOPBACK_HOSTS = [LOOPBACK, "::1", "localhost"];
 
 export const SERVER_USAGE =
-  "usage: server --config <file> --proposal <file> --logs <dir> --port <n> --admin-port <n> --build <id> [--host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>] [--enroll-from <addr-or-cidr,...>] [--admin-allow-from <addr-or-cidr,...>] [--dev-live-reload]";
+  "usage: server --config <file> --proposal <file> --logs <dir> --port <n> --admin-port <n> --build <id> [--host <addr>] [--admin-host <addr>] [--repository-commit <id>] [--artifacts <dir>] [--admin-allow-from <addr-or-cidr,...>] [--admin-user <name>] [--dev-live-reload]";
 
 export function parseServerArgs(argv: readonly string[]): ServerArgs {
   const flags = parseFlags(argv, {
@@ -58,7 +58,7 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     build: { required: true },
     "repository-commit": {},
     artifacts: {},
-    "enroll-from": {},
+    "admin-user": {},
     "admin-allow-from": {},
     "dev-live-reload": { boolean: true },
   });
@@ -77,7 +77,7 @@ export function parseServerArgs(argv: readonly string[]): ServerArgs {
     build: text("build"),
     ...(flags["repository-commit"] === undefined ? {} : { repositoryCommit: text("repository-commit") }),
     ...(flags.artifacts === undefined ? {} : { artifacts: text("artifacts") }),
-    ...(flags["enroll-from"] === undefined ? {} : { enrollFrom: text("enroll-from") }),
+    ...(flags["admin-user"] === undefined ? {} : { adminUser: text("admin-user") }),
     ...(flags["admin-allow-from"] === undefined ? {} : { adminAllowFrom: text("admin-allow-from") }),
     devLiveReload: flags["dev-live-reload"] === true,
   };
@@ -108,10 +108,10 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
     if (!(error instanceof ConfigError)) throw error;
     logger.log("ERROR", "runtime", `configuration is not active, setup mode: ${error.problems.join("; ")}`);
   }
-  const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, ...(args.enrollFrom === undefined ? {} : { canEnrollFrom: parseTrustedSources(args.enrollFrom) }), logger, audit });
+  const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, logger, audit });
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
-  const admin = createServer(createAdminHandler({ ...common, logger, audit, devLiveReload: args.devLiveReload, ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
+  const admin = createServer(createAdminHandler({ ...common, logger, audit, devLiveReload: args.devLiveReload, ...(args.adminUser === undefined ? {} : { adminUser: args.adminUser }), ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
   const release = createReleaseHandler({ audit, ...(args.artifacts === undefined ? {} : { artifacts: new DirectoryArtifactSource(args.artifacts) }) });
   const server = createHttpServer({ ...common, release });
   const stop = async () => {

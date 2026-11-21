@@ -22,7 +22,7 @@ type MissingFsCodes = Exclude<FsErrorCode, (typeof FS_ERROR_CODES)[number]>;
 const allFsCodesListed: MissingFsCodes extends never ? true : never = true;
 void allFsCodesListed;
 
-export const TRANSPORT_ERROR_CODES = ["AUTH_FAILED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD", "BAD_REQUEST", "INTERNAL", "MUTATION_INDETERMINATE"] as const;
+export const TRANSPORT_ERROR_CODES = ["AUTH_FAILED", "PENDING_APPROVAL", "CLIENT_DISABLED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD", "BAD_REQUEST", "INTERNAL", "MUTATION_INDETERMINATE"] as const;
 
 export const WireErrorCode = z.enum([...FS_ERROR_CODES, ...TRANSPORT_ERROR_CODES]);
 export type WireErrorCode = z.infer<typeof WireErrorCode>;

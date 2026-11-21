@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateIdentityKey, importPrivateKey, newNonce, publicKeyFromPrivate, signChallenge, verifyChallenge } from "../src/identity.ts";
+import { generateIdentityKey, importPrivateKey, newNonce, publicKeyFingerprint, publicKeyFromPrivate, signChallenge, verifyChallenge } from "../src/identity.ts";
 
 test("a generated key pair round-trips: the private key re-imports and derives the same public key; keys are canonical base64url", () => {
   const { privateKey, publicKey } = generateIdentityKey();
@@ -27,4 +27,13 @@ test("nonces are 32 random bytes and never repeat; a bad private key errors with
   const leak = "leak-marker-" + "Zq41";
   assert.throws(() => importPrivateKey(leak), (e: unknown) => e instanceof Error && e.message === "invalid Ed25519 private key" && !e.message.includes(leak));
   assert.throws(() => importPrivateKey("A".repeat(64)), /invalid Ed25519 private key/);
+});
+
+test("the fingerprint is a canonical, non-secret digest of the public key only", () => {
+  const a = generateIdentityKey();
+  const b = generateIdentityKey();
+  assert.match(publicKeyFingerprint(a.publicKey), /^ed25519:[0-9a-f]{64}$/);
+  assert.equal(publicKeyFingerprint(a.publicKey), publicKeyFingerprint(a.publicKey), "stable");
+  assert.notEqual(publicKeyFingerprint(a.publicKey), publicKeyFingerprint(b.publicKey));
+  assert.ok(!publicKeyFingerprint(a.publicKey).includes(a.publicKey) && !publicKeyFingerprint(a.publicKey).includes(a.privateKey));
 });

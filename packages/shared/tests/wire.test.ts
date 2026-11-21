@@ -7,6 +7,9 @@ import { FsError } from "../src/filesystem/index.ts";
 import {
   BuildCompatibility,
   ClientHello,
+  ClientRotated,
+  ServerRotateKey,
+  SessionMessage,
   ClientMessage,
   failureResponse,
   FS_ERROR_CODES,
@@ -267,4 +270,19 @@ test("canonical helpers: one failure-response constructor and one mutation-indet
   assert.equal(ResponseEnvelope.safeParse(response).success, true);
   assert.deepEqual(MUTATION_INDETERMINATE_ERROR, { code: "MUTATION_INDETERMINATE", message: "mutation outcome is unknown; it is not retried" });
   assert.equal(WireError.safeParse(MUTATION_INDETERMINATE_ERROR).success, true);
+});
+
+test("rotation frames: the Server asks with a rotation_id, the Client answers with only a public key; both are strict and directional", () => {
+  const ask = { kind: "rotate_key", rotation_id: "rot-1" };
+  const answer = { kind: "rotated", rotation_id: "rot-1", public_key: "A".repeat(43) };
+  assert.equal(ServerMessage.safeParse(ask).success, true);
+  assert.equal(PostWelcomeMessage.safeParse(ask).success, true);
+  assert.equal(ClientMessage.safeParse(ask).success, false, "the Client never asks");
+  assert.equal(ClientMessage.safeParse(answer).success, true);
+  assert.equal(ServerMessage.safeParse(answer).success, false, "the Server never answers");
+  assert.equal(ClientRotated.safeParse({ ...answer, private_key: "x" }).success, false, "no extra field, so no private key can ride along");
+  assert.equal(ClientRotated.safeParse({ ...answer, public_key: "short" }).success, false);
+  assert.equal(ServerRotateKey.safeParse({ ...ask, public_key: answer.public_key }).success, false);
+  assert.equal(SessionMessage.safeParse(answer).success, true);
+  for (const code of ["PENDING_APPROVAL", "CLIENT_DISABLED"]) assert.equal(WireError.safeParse({ code, message: "m" }).success, true, code);
 });

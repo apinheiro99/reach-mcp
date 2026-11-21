@@ -6,7 +6,7 @@ import path from "node:path";
 import { WebSocketServer, type WebSocket as ServerSocket } from "ws";
 import { generateIdentityKey, newNonce, verifyChallenge } from "@reach-mcp/shared/identity";
 import { ClientHello } from "@reach-mcp/shared/wire";
-import { ClientDispatcher, ClientTransport, parseBootstrap, type FrameHandler, type TransportOptions } from "../src/index.ts";
+import { ClientDispatcher, ClientTransport, loadBootstrap, parseBootstrap, type FrameHandler, type TransportOptions } from "../src/index.ts";
 
 const KEY = generateIdentityKey();
 /** The Client private key: the secret that must never appear in any state, error, URL or frame. */
@@ -481,6 +481,78 @@ test("admitted: a result finishing after the socket was replaced is never sent o
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(srv.seen[1]!.frames.length, 1, "only the hello travelled on the new connection");
   assert.equal(calls, 1, "the request was not replayed after reconnecting");
+  t.stop();
+  await srv.close();
+});
+
+test("Pending and Disabled refusals are not terminal: the Client keeps the ordinary backoff and connects once a human enables it, with no manual step", async () => {
+  let enabled = false;
+  const srv = await server((s) => s.once("message", () => (enabled ? welcome(s) : reject("PENDING_APPROVAL")(s))));
+  const c = clock();
+  const t = new ClientTransport(boot(srv.port), opts(c));
+  t.start();
+  await until(() => t.snapshot().state === "backoff", "backoff after Pending");
+  assert.equal(t.snapshot().lastError?.code, "PENDING_APPROVAL");
+  enabled = true;
+  c.advance(c.pending()[0]!);
+  await until(() => t.snapshot().state === "connected", "connected after Enable");
+  t.stop();
+  await srv.close();
+  const refused = await server((s) => s.once("message", () => reject("CLIENT_DISABLED")(s)));
+  const d = new ClientTransport(boot(refused.port), opts(clock()));
+  d.start();
+  await until(() => d.snapshot().state === "backoff", "a Disabled Client waits and retries");
+  assert.equal(d.snapshot().lastError?.code, "CLIENT_DISABLED");
+  d.stop();
+  await refused.close();
+});
+
+test("rotate_key: the Client generates its new pair locally, answers with only the public key, and reconnects proving the new key", async () => {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), "reach-rotate-")), "bootstrap.env");
+  writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:1/ws\nREACH_CLIENT_ID=laptop-1\nREACH_CLIENT_IDENTITY_KEY=${CRED}\nREACH_ROOTS=${JSON.stringify([root])}\n`, { mode: 0o600 });
+  let connections = 0;
+  const srv = await server((s) =>
+    s.on("message", (data) => {
+      const frame = JSON.parse(data.toString()) as { kind: string };
+      if (frame.kind === "hello") {
+        welcome(s);
+        if (connections++ === 0) s.send(JSON.stringify({ kind: "rotate_key", rotation_id: "rot-1" }));
+      }
+    }),
+  );
+  writeFileSync(file, readFileSync(file, "utf8").replace("127.0.0.1:1", `127.0.0.1:${srv.port}`));
+  const bootstrap = loadBootstrap(file, { allowInsecureWs: true });
+  const c = clock();
+  const t = new ClientTransport(bootstrap, opts(c, { handler: new ClientDispatcher({ anchors: [root] }) }));
+  t.start();
+  await until(() => srv.seen[0]?.frames.length === 2, "the rotated answer");
+  const answer = srv.seen[0]!.frames[1] as { kind: string; rotation_id: string; public_key: string };
+  assert.deepEqual(Object.keys(answer).sort(), ["kind", "public_key", "rotation_id"], "nothing but the public key travels");
+  assert.deepEqual([answer.kind, answer.rotation_id], ["rotated", "rot-1"]);
+  assert.notEqual(answer.public_key, KEY.publicKey, "a different pair was generated");
+  assert.equal(answer.public_key, bootstrap.publicKey(), "the Client now holds the key it announced");
+  const stored = readFileSync(file, "utf8");
+  assert.ok(!JSON.stringify(srv.seen[0]!.frames).includes(/REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(stored)![1]!), "the new private key never travels");
+  assert.ok(!stored.includes(CRED), "the old private key is replaced in the file");
+  srv.sockets[0]!.terminate();
+  await until(() => t.snapshot().state === "backoff", "retry armed");
+  c.advance(c.pending()[0]!);
+  await until(() => srv.seen.length === 2, "the Client reconnects");
+  const hello = ClientHello.parse(srv.seen[1]!.frames[0]);
+  assert.equal(hello.public_key, answer.public_key);
+  assert.equal(verifyChallenge(hello.public_key, srv.seen[1]!.nonce, "laptop-1", hello.signature), true, "the reconnect proves the new key");
+  t.stop();
+  await srv.close();
+});
+
+test("rotate_key without a writable bootstrap fails closed without echoing anything and keeps the old identity", async () => {
+  const srv = await server((s) => s.once("message", () => { welcome(s); s.send(JSON.stringify({ kind: "rotate_key", rotation_id: "rot-9" })); }));
+  const bootstrap = boot(srv.port);
+  const t = new ClientTransport(bootstrap, opts(clock(), { handler: new ClientDispatcher({ anchors: [root] }) }));
+  t.start();
+  await until(() => t.snapshot().lastError?.message === "key rotation failed", "rotation refused");
+  assert.equal(bootstrap.publicKey(), KEY.publicKey, "the identity was not replaced");
+  assert.ok(!srv.seen[0]!.frames.some((f) => (f as { kind: string }).kind === "rotated"));
   t.stop();
   await srv.close();
 });

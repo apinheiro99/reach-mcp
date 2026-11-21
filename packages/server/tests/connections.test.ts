@@ -102,7 +102,7 @@ test("admission: challenge first, then welcome and the full policy snapshot; the
   await t.done();
 });
 
-test("authentication failures: wrong key, foreign key, bad signature, replayed signature, unknown and disabled clients", async () => {
+test("authentication failures: wrong key, foreign key, bad signature, replayed signature, and a disabled client with the wrong key", async () => {
   const t = await setup();
   const stranger = newIdentity();
   const first = await t.connect();
@@ -116,7 +116,6 @@ test("authentication failures: wrong key, foreign key, bad signature, replayed s
     { identity: stranger },
     { hello: { ...captured, signature: "A".repeat(86) } },
     { hello: captured },
-    { id: "nobody", identity: stranger },
     { id: "off" },
   ];
   for (const opts of cases) {
@@ -142,46 +141,115 @@ test("every connection gets a fresh unpredictable challenge", async () => {
   await t.done();
 });
 
-test("first enrollment: an unknown client_id on a trusted source is registered with its public key only, then reconnects by challenge", async () => {
-  const t = await setup({ canEnrollFrom: (address) => address === "127.0.0.1" || address === "::ffff:127.0.0.1" });
+test("Pending: an unknown client_id proving its key is registered with the public key only and refused; the stored key then reads as Pending, never as AUTH_FAILED, and never gets access", async () => {
+  const t = await setup();
   const fresh = newIdentity();
   const c = await t.connect({ id: "newbox", identity: fresh, extra: { display_name: "New box" } });
-  await until(() => c.frames.length === 3, "enrolled and admitted");
-  assert.equal(c.frames[1]!.kind, "welcome");
-  assert.equal(t.config.publicKeyFor("newbox"), fresh.publicKey);
-  assert.deepEqual(t.config.effectivePoliciesFor("newbox"), [], "no project until the Server's policy owner adds one");
+  await c.closed;
+  assert.equal(code(c.frames), "PENDING_APPROVAL");
+  assert.equal(c.frames.some((f) => f.kind === "welcome" || f.kind === "policy_sync"), false, "no welcome and no policy before a human Enable");
+  assert.deepEqual(t.config.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey });
+  assert.equal(t.config.effectivePoliciesFor("newbox"), null);
+  assert.deepEqual(t.registry.status(), [], "a Pending registration never becomes a session");
   const stored = readFileSync(configFile, "utf8");
   assert.ok(stored.includes(fresh.publicKey) && !stored.includes(fresh.privateKey), "the file holds only the public key");
-  c.ws.close();
-  await c.closed;
-  await until(() => t.registry.status().length === 0, "closed");
   const again = await t.connect({ id: "newbox", identity: fresh });
-  await until(() => again.frames.length === 3, "reconnect re-authenticated");
-  assert.notEqual(again.frames[0]!.nonce, c.frames[0]!.nonce);
+  await again.closed;
+  assert.equal(code(again.frames), "PENDING_APPROVAL", "registering twice does not duplicate or fail");
+  assert.equal(t.config.snapshot().clients.filter((x) => x.client_id === "newbox").length, 1);
+  const forged = await t.connect({ id: "newbox", identity: newIdentity() });
+  await forged.closed;
+  assert.equal(code(forged.frames), "AUTH_FAILED", "another key cannot use a Pending identity");
+  t.config.setClientEnabled("newbox", true);
+  const admitted = await t.connect({ id: "newbox", identity: fresh });
+  await until(() => admitted.frames.length === 3, "admitted after Enable");
+  assert.equal(admitted.frames[1]!.kind, "welcome");
   await t.done();
 });
 
-test("enrollment is refused off the trusted network, by default, for another key on a known id, and for a reused key", async () => {
+test("registration is refused for an invalid proof, a reused key, an incompatible build and a known id; none of them creates a record", async () => {
   const t = await setup();
-  const fresh = newIdentity();
-  const refused = await t.connect({ id: "newbox", identity: fresh });
-  await refused.closed;
-  assert.equal(code(refused.frames), "AUTH_FAILED", "no trusted source is configured by default");
-  assert.equal(t.config.isKnownClient("newbox"), false);
-  await t.done();
-  const open = await setup({ canEnrollFrom: () => true });
-  const takeover = await open.connect({ id: "laptop", identity: newIdentity() });
-  await takeover.closed;
-  assert.equal(code(takeover.frames), "AUTH_FAILED", "a known id never takes a new key through enrollment");
-  const reused = await open.connect({ id: "another", identity: LAPTOP });
+  const bad = await t.connect({ id: "ghost", identity: newIdentity(), hello: null });
+  const nonce = await (async () => { await until(() => bad.frames.length === 1, "challenge"); return bad.frames[0]!.nonce!; })();
+  bad.ws.send(JSON.stringify({ ...signedHello(newIdentity(), "ghost", nonce), signature: "A".repeat(86) }));
+  await bad.closed;
+  assert.equal(code(bad.frames), "AUTH_FAILED");
+  assert.equal(t.config.admissionOf("ghost"), null, "an invalid signature registers nothing");
+  const reused = await t.connect({ id: "another", identity: LAPTOP });
   await reused.closed;
-  assert.equal(code(reused.frames), "AUTH_FAILED", "a public key already registered cannot enroll a second client_id");
-  assert.equal(open.config.isKnownClient("another"), false);
-  const wrongBuild = await open.connect({ id: "oldbox", identity: newIdentity(), build: "old-9" });
+  assert.equal(code(reused.frames), "AUTH_FAILED", "a public key already registered cannot register a second client_id");
+  assert.equal(t.config.admissionOf("another"), null);
+  const wrongBuild = await t.connect({ id: "oldbox", identity: newIdentity(), build: "old-9" });
   await wrongBuild.closed;
   assert.equal(code(wrongBuild.frames), "INCOMPATIBLE_BUILD");
-  assert.equal(open.config.isKnownClient("oldbox"), false, "an incompatible build is never enrolled");
-  await open.done();
+  assert.equal(t.config.admissionOf("oldbox"), null, "an incompatible build is never registered");
+  const takeover = await t.connect({ id: "laptop", identity: newIdentity() });
+  await takeover.closed;
+  assert.equal(code(takeover.frames), "AUTH_FAILED", "a known id never takes a new key");
+  await t.done();
+});
+
+test("Disable: the live session closes at once, its in-flight request fails, and the stored key is refused as Disabled until Enable", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "admitted");
+  const inFlight = t.registry.route("laptop", "web", { op: "fs_list", path: "" });
+  await until(() => requests(c).length === 1, "request delivered");
+  t.config.setClientEnabled("laptop", false);
+  t.registry.disconnect("laptop");
+  const response = await inFlight;
+  assert.equal(response.ok, false, "the in-flight request fails through the drop path");
+  await c.closed;
+  assert.deepEqual(t.registry.status(), []);
+  const refused = await t.connect();
+  await refused.closed;
+  assert.equal(code(refused.frames), "CLIENT_DISABLED");
+  assert.equal(refused.frames.some((f) => f.kind === "welcome"), false);
+  t.config.setClientEnabled("laptop", true);
+  const back = await t.connect();
+  await until(() => back.frames.length === 3, "re-enabled and admitted");
+  assert.ok(t.registry.lastSeen("laptop") !== null);
+  await t.done();
+});
+
+test("Rotate Key: one typed frame to the connected Client, only its public key comes back, the key is replaced and the session closes; refusals are clean", async () => {
+  const t = await setup();
+  assert.equal(await t.registry.rotateKey("laptop"), "offline", "offline Client");
+  assert.equal(await t.registry.rotateKey("nobody"), "offline", "unknown Client");
+  assert.equal(await t.registry.rotateKey("off"), "offline", "disabled Client");
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "admitted");
+  const rotating = t.registry.rotateKey("laptop");
+  assert.equal(await t.registry.rotateKey("laptop"), "busy", "one rotation per Client at a time");
+  await until(() => c.frames.some((f) => f.kind === "rotate_key"), "rotate frame");
+  const frame = c.frames.find((f) => f.kind === "rotate_key") as unknown as { rotation_id: string };
+  assert.deepEqual(Object.keys(frame).sort(), ["kind", "rotation_id"]);
+  const next = newIdentity();
+  c.ws.send(JSON.stringify({ kind: "rotated", rotation_id: "wrong", public_key: newIdentity().publicKey }));
+  c.ws.send(JSON.stringify({ kind: "rotated", rotation_id: frame.rotation_id, public_key: next.publicKey }));
+  assert.equal(await rotating, "rotated");
+  await c.closed;
+  assert.equal(t.config.admissionOf("laptop")?.publicKey, next.publicKey);
+  assert.ok(!readFileSync(configFile, "utf8").includes(LAPTOP.publicKey), "the old key is gone");
+  const old = await t.connect();
+  await old.closed;
+  assert.equal(code(old.frames), "AUTH_FAILED", "the old key no longer authenticates");
+  const fresh = await t.connect({ identity: next });
+  await until(() => fresh.frames.length === 3, "the new key reconnects");
+  const second = t.registry.rotateKey("laptop");
+  await until(() => fresh.frames.some((f) => f.kind === "rotate_key"), "second rotate frame");
+  t.clock.advance(5000);
+  assert.equal(await second, "timeout", "no answer is bounded by the timeout");
+  const third = t.registry.rotateKey("laptop");
+  fresh.ws.terminate();
+  assert.equal(await third, "offline", "a session that closes first ends the rotation");
+  const dup = await t.connect({ identity: next });
+  await until(() => dup.frames.length === 3, "reconnect");
+  const clash = t.registry.rotateKey("laptop");
+  await until(() => dup.frames.some((f) => f.kind === "rotate_key"), "clash frame");
+  dup.ws.send(JSON.stringify({ kind: "rotated", rotation_id: (dup.frames.find((f) => f.kind === "rotate_key") as unknown as { rotation_id: string }).rotation_id, public_key: DESKTOP.publicKey }));
+  assert.equal(await clash, "refused", "a key that belongs to another Client is refused");
+  await t.done();
 });
 
 test("build gate: an incompatible opaque build is refused with both identifiers and no protocol number", async () => {

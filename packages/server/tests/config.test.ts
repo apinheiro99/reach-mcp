@@ -125,8 +125,8 @@ test("effective policies are shared-valid, carry only operational fields, and ex
   assert.ok(!text.includes("public_key") && !text.includes("display_name") && !text.includes("Work laptop"));
   assert.equal(store.effectivePoliciesFor("off"), null, "disabled");
   assert.equal(store.effectivePoliciesFor("nobody"), null, "unknown");
-  assert.equal(store.publicKeyFor("off"), null);
-  assert.equal(store.publicKeyFor("laptop"), MARKER_A);
+  assert.equal(store.admissionOf("nobody"), null);
+  assert.equal(store.admissionOf("laptop")?.publicKey, MARKER_A);
   policies[0]!.mode = "read_only";
   assert.equal(store.effectivePoliciesFor("laptop")![0]!.mode, "read_write", "callers get copies");
 });
@@ -206,7 +206,7 @@ test("applyEdit: keeps stored public keys by client_id, hashes a new bearer, and
   const bearer = "new-bearer-" + "Qr72Hs9x";
   const edit = { mcp_bearer: bearer, clients: store.snapshot().clients.map((c) => ({ ...c, display_name: "renamed" })) };
   store.applyEdit(edit);
-  assert.equal(store.publicKeyFor("laptop"), MARKER_A, "public key carried over");
+  assert.equal(store.admissionOf("laptop")?.publicKey, MARKER_A, "public key carried over");
   assert.equal(store.mcpBearerDigest(), hashCredential(bearer));
   const stored = readFileSync(file, "utf8");
   assert.ok(!stored.includes(bearer), "the plaintext is never persisted");
@@ -226,21 +226,48 @@ test("applyEdit: the first configuration needs a bearer, and validation errors n
   assert.equal(store.isActive(), true);
 });
 
-test("enrollClient: one atomic write of a new Client with its public key and no project; known ids and reused keys are refused", () => {
+test("registerPendingClient: one atomic write of a new Pending Client with its public key, no project and no access; known ids and reused keys are refused", () => {
   const file = write(valid());
   const store = new ServerConfigStore(file);
   store.loadInitial();
   const fresh = newIdentity();
-  store.enrollClient("newbox", fresh.publicKey, "New box");
-  assert.equal(store.publicKeyFor("newbox"), fresh.publicKey);
-  assert.deepEqual(store.effectivePoliciesFor("newbox"), []);
-  assert.equal(store.isKnownClient("newbox"), true);
+  store.registerPendingClient("newbox", fresh.publicKey, "New box");
+  assert.deepEqual(store.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey }, "the key is known in every status");
+  assert.equal(store.effectivePoliciesFor("newbox"), null, "Pending has no operational access");
   const stored = readFileSync(file, "utf8");
   assert.ok(stored.includes(fresh.publicKey) && !stored.includes(fresh.privateKey));
-  assert.throws(() => store.enrollClient("newbox", newIdentity().publicKey), ConfigError, "a known client_id is never re-enrolled");
-  assert.throws(() => store.enrollClient("other", fresh.publicKey), ConfigError, "a registered public key cannot enroll a second id");
-  assert.equal(store.isKnownClient("other"), false);
-  assert.equal(store.snapshot().clients.length, 3, "the failed enrollments changed nothing");
+  assert.throws(() => store.registerPendingClient("newbox", newIdentity().publicKey), ConfigError, "a known client_id is never registered again");
+  assert.throws(() => store.registerPendingClient("other", fresh.publicKey), ConfigError, "a registered public key cannot register a second id");
+  assert.equal(store.admissionOf("other"), null);
+  assert.equal(store.snapshot().clients.length, 3, "the failed registrations changed nothing");
+});
+
+test("lifecycle: Enable authorizes the same identity, Disable keeps identity, key and projects, and replacing a key is one atomic write that frees the old one", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  const fresh = newIdentity();
+  store.registerPendingClient("newbox", fresh.publicKey);
+  assert.equal(store.clientSummaries().find((c) => c.client_id === "newbox")?.status, "pending");
+  store.setClientEnabled("newbox", true);
+  assert.deepEqual(store.effectivePoliciesFor("newbox"), [], "Enabled: authorized, no project yet");
+  assert.equal(store.clientSummaries().find((c) => c.client_id === "newbox")?.status, "enabled");
+  store.setClientEnabled("newbox", false);
+  assert.equal(store.clientSummaries().find((c) => c.client_id === "newbox")?.status, "disabled", "a human decision ends Pending");
+  assert.equal(store.admissionOf("newbox")?.publicKey, fresh.publicKey, "Disable keeps the identity");
+  store.setClientEnabled("laptop", false);
+  store.setClientEnabled("laptop", true);
+  assert.equal(store.effectivePoliciesFor("laptop")?.length, 2, "re-enable restores the same identity and projects");
+  const next = newIdentity();
+  store.replaceClientPublicKey("newbox", next.publicKey);
+  assert.equal(store.admissionOf("newbox")?.publicKey, next.publicKey);
+  assert.ok(!readFileSync(file, "utf8").includes(fresh.publicKey), "the old key is gone from the file");
+  assert.throws(() => store.replaceClientPublicKey("newbox", MARKER_A), ConfigError, "a key already registered cannot be taken");
+  assert.throws(() => store.setClientEnabled("nobody", true), ConfigError);
+  assert.throws(() => store.replaceClientPublicKey("nobody", next.publicKey), ConfigError);
+  const summary = JSON.stringify(store.clientSummaries());
+  assert.ok(!summary.includes(next.publicKey) && !summary.includes(MARKER_A), "a summary never carries a public key");
+  assert.match(store.clientSummaries()[0]!.fingerprint!, /^ed25519:[0-9a-f]{64}$/);
 });
 
 test("logging settings: defaults when omitted, bounded, editable through the one owner and persisted", () => {

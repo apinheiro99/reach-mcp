@@ -121,19 +121,34 @@ test("Overview shows only API facts: what the Server does not expose is an expli
   assert.equal(overview.match(/UI\.unavailable\(/g)?.length, 5, "failed state request, empty activity list, tunnel, mount and actions");
   assert.ok(/Tunnel status is not exposed/.test(overview) && /Mount status and usage are not exposed/.test(overview) && /action history is not exposed/.test(overview));
   assert.ok(!/Connected|Mounted|142\.6|42 ms|Argus|Prometheus|Tyga/.test(overview), "no mock telemetry from the reference image");
-  assert.ok(/api\("GET", "\/admin\/api\/state"\)/.test(overview) && /api\("GET", "\/admin\/api\/config"\)/.test(overview), "data comes from the existing endpoints only");
+  assert.ok(/api\("GET", "\/admin\/api\/state"\)/.test(overview) && /api\("GET", "\/admin\/api\/clients"\)/.test(overview), "data comes from the Server endpoints only, with one status owner for Clients");
 });
 
-test("page: vanilla and self-contained, debounced autosave about 500 ms, no Save button, no framework, remote script or old logo mark", () => {
-  const debounce = Number(page.match(/DEBOUNCE_MS = (\d+)/)?.[1]);
-  assert.ok(debounce >= 450 && debounce <= 650, "autosave pause is about 500 ms");
-  assert.match(page, /setTimeout\(save, DEBOUNCE_MS\)/);
-  for (const state of ["editing", "saving", "saved", "error"]) assert.ok(page.includes(`say("${state}"`), `autosave state ${state}`);
+test("page: vanilla and self-contained, autosave states, no Save button, no framework, remote script or old logo mark", () => {
+  for (const state of ["saving", "saved", "error"]) assert.ok(page.includes(`say("${state}"`), `autosave state ${state}`);
   assert.ok(!/>\s*Save\s*</i.test(page) && !/UI\.button\("Save/.test(page), "no generic Save button");
   assert.ok(!/<script[^>]*\ssrc=|<link[^>]*rel="stylesheet"|https?:\/\/(?!www\.w3\.org)/.test(page), "no remote or external resource");
   assert.ok(!/react|vue|svelte|angular|jquery|tailwind|vite/i.test(page));
   assert.ok(!/linked-?loop|link-?loop/i.test(page), "the rejected linked-loop mark is not referenced");
   assert.ok(!page.includes("EventSource"), "no live reload outside DEV");
+});
+
+test("Clients screen: the approved reference as structure: six counters in order, one search, one status filter, the five columns, one toggle and one Rotate Key per row, a highlighted Pending row, only canonical components", () => {
+  const clients = uiSource["clients.ts"] as string;
+  const labels = [...clients.matchAll(/UI\.stat\(\{ icon: "[a-z-]+", value: n\.\w+, label: "(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual(labels, ["Total", "Enabled", "Pending", "Disabled", "Online", "Offline"], "the six counters of docs/screens/02_clients.png, in that order");
+  assert.equal(clients.match(/UI\.input\(/g)?.length, 1, "one search field");
+  assert.equal(clients.match(/UI\.select\(/g)?.length, 1, "one status filter");
+  assert.ok(clients.includes('"Client", "Status", "Connection", "Public Key (Fingerprint)", "Actions"'), "the five columns of the reference");
+  assert.equal(clients.match(/UI\.toggle\(/g)?.length, 1, "one Enable/Disable toggle owner");
+  assert.equal(clients.match(/UI\.button\("Rotate Key"/g)?.length, 1, "one Rotate Key action");
+  assert.ok(/tone: c\.status === "pending" \? "warn"/.test(clients) && /Awaiting approval\./.test(clients), "the Pending row is highlighted and says why");
+  assert.ok(/STATUS_PILL = \{ enabled: \["Enabled", "ok"/.test(clients) && /UI\.pill\(label, tone, icon\)/.test(clients), "status uses the canonical pill");
+  assert.ok(/api\("GET", "\/admin\/api\/clients"\)/.test(clients) && /api\("POST", path\)/.test(clients), "the screen only calls the Server lifecycle API");
+  assert.ok(!/status === "enabled" \? .*online|has_public_key|enabled:\s*true/.test(clients), "no status or count is computed from raw config in the UI");
+  assert.equal(clients.match(/every\(load\)/g)?.length, 1, "automatic refresh reuses the shell's one poller");
+  assert.ok(!/setInterval|setTimeout/.test(clients), "no second timer owner");
+  assert.ok(page.includes('data-tone="warn"') || page.includes('tr[data-tone="warn"]'), "the table component owns the row highlight");
 });
 
 test("logo: served from the approved REACH mark, byte for byte, and referenced by the page", async () => {
@@ -186,6 +201,7 @@ test("DEV source watcher: one polling watcher fires once when a source file time
   writeFileSync(file, "x");
   let fired = 0;
   watchSources([dir], () => fired++);
+  await new Promise((r) => setTimeout(r, 300)); // the watcher takes its baseline stat asynchronously; change the file only after it
   const later = new Date(Date.now() + 60_000);
   utimesSync(file, later, later);
   await new Promise((r) => setTimeout(r, 2500));

@@ -10,7 +10,7 @@ import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 
 export type TransportState = "stopped" | "connecting" | "handshaking" | "connected" | "backoff" | "terminal_error";
 
-/** Admission outcomes that need an operator or configuration change: retrying cannot help and must not displace anyone. */
+/** Admission outcomes that need an operator or configuration change: retrying cannot help and must not displace anyone. A Pending or Disabled Client is not here: it keeps the ordinary backoff and connects soon after a human enables it. */
 const TERMINAL_REJECTS: ReadonlySet<string> = new Set(["AUTH_FAILED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD"]);
 
 /** What the transport hands admitted traffic to; the dispatcher implements it. */
@@ -181,6 +181,7 @@ export class ClientTransport {
   #onAdmittedFrame(socket: WebSocket, frame: unknown): void {
     const message = this.#handler ? parseWire(PostWelcomeMessage, frame) : null;
     if (!this.#handler || !message?.ok) return this.#failClosed(socket, "unexpected frame after the handshake");
+    if (message.data.kind === "rotate_key") return this.#rotateKey(socket, message.data.rotation_id);
     if (message.data.kind === "policy_sync") {
       try {
         this.#handler.applyPolicy(message.data);
@@ -198,6 +199,17 @@ export class ClientTransport {
       },
       () => this.#failClosed(socket, "request handler failed"),
     );
+  }
+
+  /** The one rotation path: the Bootstrap owner generates and stores the new pair; only its public key goes back to the Server. */
+  #rotateKey(socket: WebSocket, rotationId: string): void {
+    let publicKey: string;
+    try {
+      publicKey = this.#bootstrap.rotateIdentity();
+    } catch {
+      return this.#failClosed(socket, "key rotation failed");
+    }
+    socket.send(JSON.stringify({ kind: "rotated", rotation_id: rotationId, public_key: publicKey }));
   }
 
   #onPong(socket: WebSocket): void {

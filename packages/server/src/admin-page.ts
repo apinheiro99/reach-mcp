@@ -3,7 +3,7 @@
 // one menu), shell.ts (frame, background, router) and one module per view. The server is the authority on validity, the page
 // only shows what it answers.
 import { API_JS } from "./admin-ui/api-client.ts";
-import { EDITOR_JS } from "./admin-ui/clients-editor.ts";
+import { CLIENTS_CSS, CLIENTS_JS } from "./admin-ui/clients.ts";
 import { COMPONENT_CSS, COMPONENT_JS } from "./admin-ui/components.ts";
 import { DESIGN_CSS } from "./admin-ui/design.ts";
 import { DEV_RELOAD_SCRIPT } from "./admin-ui/dev-reload.ts";
@@ -29,13 +29,13 @@ refreshVersion();
 setInterval(refreshVersion, 5000);
 `;
 
-export function renderAdminPage(options: { devLiveReload?: boolean } = {}): string {
-  const script = ['"use strict";', COMPONENT_JS, API_JS, shellJs(), OVERVIEW_JS, EDITOR_JS, BOOT_JS, options.devLiveReload ? DEV_RELOAD_SCRIPT : ""].join("\n");
+export function renderAdminPage(options: { devLiveReload?: boolean; adminUser?: string } = {}): string {
+  const script = ['"use strict";', COMPONENT_JS, API_JS, shellJs(options.adminUser), OVERVIEW_JS, CLIENTS_JS, BOOT_JS, options.devLiveReload ? DEV_RELOAD_SCRIPT : ""].join("\n");
   return `<!doctype html>
 <html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>REACH Server</title>
 <link rel="icon" href="/admin/assets/reach-logo.png">
-<style>${THEME_CSS}${DESIGN_CSS}${SHELL_CSS}${COMPONENT_CSS}${OVERVIEW_CSS}</style></head><body>
+<style>${THEME_CSS}${DESIGN_CSS}${SHELL_CSS}${COMPONENT_CSS}${OVERVIEW_CSS}${CLIENTS_CSS}</style></head><body>
 ${SHELL_BACKGROUND_HTML}
 ${SHELL_HTML}
 <script>${script}</script></body></html>`;

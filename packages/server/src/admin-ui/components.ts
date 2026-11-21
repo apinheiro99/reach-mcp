@@ -42,11 +42,17 @@ export const COMPONENT_CSS = `
 .input{font:inherit;color:var(--c-text);background:var(--c-surface);border:1px solid var(--c-border-strong);border-radius:var(--radius-control);padding:.45rem .65rem;min-width:0;width:100%}
 .input[data-kind="path"]{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--fs-sm)}
 .input::placeholder{color:var(--c-muted)}
-.btn{font:inherit;font-weight:600;cursor:pointer;color:var(--c-text);background:var(--c-elevated);border:1px solid var(--c-border-strong);border-radius:var(--radius-control);padding:.45rem .9rem}
+.btn{display:inline-flex;align-items:center;gap:var(--sp-2);font:inherit;font-weight:600;cursor:pointer;color:var(--c-text);background:var(--c-elevated);border:1px solid var(--c-border-strong);border-radius:var(--radius-control);padding:.45rem .9rem}
 .btn:hover{border-color:var(--c-accent)}
 .btn[data-variant="primary"]{background:var(--c-accent);color:var(--c-accent-contrast);border-color:var(--c-accent)}
 .btn[data-variant="primary"]:hover{background:var(--c-accent-hover)}
 .btn[data-variant="danger"]{color:var(--c-bad);border-color:var(--c-bad)}
+.btn .icon{width:1.1rem;height:1.1rem}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn:disabled:hover{border-color:var(--c-border-strong)}
+.icon-btn{display:inline-grid;place-items:center;padding:.25rem;background:transparent;border:0;border-radius:var(--radius-control);color:var(--c-muted);cursor:pointer}
+.icon-btn:hover{color:var(--c-accent)}
+.icon-btn .icon{width:1.1rem;height:1.1rem}
 .card[data-variant="inset"]{background:var(--c-surface);box-shadow:none;backdrop-filter:none}
 .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:var(--sp-3)}
 .actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-3)}
@@ -55,6 +61,14 @@ export const COMPONENT_CSS = `
 .table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
 .table th{color:var(--c-muted);font-weight:600;text-align:left;padding:var(--sp-2);border-bottom:1px solid var(--c-border)}
 .table td{padding:var(--sp-2);border-bottom:1px solid var(--c-border);overflow-wrap:anywhere}
+.card[data-variant="table"] .card-body{padding:0;overflow-x:auto}
+.card[data-variant="table"] .table th{padding:var(--sp-4);font-size:var(--fs-md);color:var(--c-text)}
+.card[data-variant="table"] .table td{padding:var(--sp-3) var(--sp-4)}
+.table tr:last-child td{border-bottom:0}
+.table tr[data-tone="warn"] td{background:var(--c-warn-soft);border-bottom-color:transparent}
+.table tr[data-tone="warn"] td:first-child{box-shadow:inset 2px 0 0 var(--c-warn)}
+.table tr[data-note="head"] td{border-bottom:0}
+.table tr[data-note="body"] td{padding-top:0}
 .unavailable{display:flex;align-items:center;gap:var(--sp-2);color:var(--c-muted);font-size:var(--fs-sm);padding:var(--sp-2) 0}
 .unavailable .icon{width:1rem;height:1rem}
 .autosave{display:inline-flex;align-items:center;gap:var(--sp-2);padding:.4rem .9rem;border-radius:var(--radius-pill);border:1px solid var(--c-border-strong);background:var(--c-card);font-size:var(--fs-md);white-space:nowrap}
@@ -85,7 +99,11 @@ const ICONS = {
   folder: "M3 6h6l2 2h10v11H3z",
   bolt: "M13 2L4 14h7l-1 8 9-12h-7z",
   info: "M12 21a9 9 0 100-18 9 9 0 000 18zM12 11v5M12 8h.01",
-  user: "M12 12a4 4 0 100-8 4 4 0 000 8zM4 21v-1a6 6 0 0112 0v1"
+  user: "M12 12a4 4 0 100-8 4 4 0 000 8zM4 21v-1a6 6 0 0112 0v1",
+  box: "M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3zM4 7.5l8 4.5 8-4.5M12 12v9",
+  search: "M11 18a7 7 0 100-14 7 7 0 000 14zM20 20l-4-4",
+  copy: "M9 9h10v11H9zM5 15V4h10",
+  refresh: "M20 11a8 8 0 00-14.5-4M4 4v4h4M4 13a8 8 0 0014.5 4M20 20v-4h-4"
 };
 const UI = {
   el(tag, props, ...kids) { const n = Object.assign(document.createElement(tag), props || {}); n.append(...kids); return n; },
@@ -137,15 +155,34 @@ const UI = {
     return n;
   },
   field(label, control) { return UI.el("label", { className: "field" }, label, control); },
-  button(text, { variant, onClick }) {
-    const n = UI.el("button", { className: "btn", type: "button", textContent: text });
+  button(text, { variant, icon, onClick }) {
+    const n = UI.el("button", { className: "btn", type: "button" }, text);
+    if (icon) n.prepend(UI.icon(icon));
     if (variant) n.dataset.variant = variant;
     n.addEventListener("click", onClick);
     return n;
   },
+  iconButton(icon, label, onClick) {
+    const n = UI.el("button", { className: "icon-btn", type: "button", title: label }, UI.icon(icon));
+    n.setAttribute("aria-label", label);
+    n.addEventListener("click", onClick);
+    return n;
+  },
+  // A row is a list of cells (text or nodes), or { cells, tone, note }: tone highlights the row, note adds a full-width line under it.
   table(headers, rows) {
-    return UI.el("table", { className: "table" }, UI.el("thead", {}, UI.el("tr", {}, ...headers.map((h) => UI.el("th", { textContent: h })))),
-      UI.el("tbody", {}, ...rows.map((r) => UI.el("tr", {}, ...r.map((c) => UI.el("td", { textContent: c }))))));
+    const cell = (c) => UI.el("td", {}, c);
+    const body = rows.flatMap((r) => {
+      const { cells, tone, note } = Array.isArray(r) ? { cells: r } : r;
+      const tr = UI.el("tr", {}, ...cells.map(cell));
+      if (tone) tr.dataset.tone = tone;
+      if (!note) return [tr];
+      tr.dataset.note = "head";
+      const extra = UI.el("tr", {}, UI.el("td", { colSpan: headers.length }, note));
+      if (tone) extra.dataset.tone = tone;
+      extra.dataset.note = "body";
+      return [tr, extra];
+    });
+    return UI.el("table", { className: "table" }, UI.el("thead", {}, UI.el("tr", {}, ...headers.map((h) => UI.el("th", { textContent: h })))), UI.el("tbody", {}, ...body));
   },
   unavailable(text) { return UI.el("div", { className: "unavailable" }, UI.icon("info"), text || "Not exposed yet"); },
   autosave() {
