@@ -9,6 +9,8 @@ param(
   [string]$StateDir = 'C:\ProgramData\REACH\Client'
 )
 $ErrorActionPreference = 'Stop'
+# Progress rendering makes Expand-Archive and friends orders of magnitude slower and can block on a console; the installer never needs it.
+$ProgressPreference = 'SilentlyContinue'
 $DefaultInstallDir = 'C:\Program Files\REACH\Client'
 
 function Fail([string]$Message) { throw "uninstall-windows: $Message" }

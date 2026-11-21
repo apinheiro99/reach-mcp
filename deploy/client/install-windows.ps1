@@ -14,6 +14,8 @@ param(
   [switch]$Start
 )
 $ErrorActionPreference = 'Stop'
+# Progress rendering makes Expand-Archive and friends orders of magnitude slower and can block on a console; the installer never needs it.
+$ProgressPreference = 'SilentlyContinue'
 $Top = 'reach-client'
 
 function Assert-AbsolutePath([string]$Name, [string]$Value) {

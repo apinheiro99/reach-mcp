@@ -6,6 +6,8 @@
 # the Scheduled Task). The archive carries its own pinned Node runtime, so the machine needs no Node. It writes a bootstrap with only the
 # endpoint and a narrow root; the Client generates its own id and private key on first start, nothing here makes or sees them.
 $ErrorActionPreference = 'Stop'
+# Progress rendering makes Expand-Archive and friends orders of magnitude slower and can block on a console; the installer never needs it.
+$ProgressPreference = 'SilentlyContinue'
 $StateDir = if ($env:REACH_STATE_DIR) { $env:REACH_STATE_DIR } else { 'C:\ProgramData\REACH\Client' }
 $InstallDir = if ($env:REACH_INSTALL_DIR) { $env:REACH_INSTALL_DIR } else { 'C:\Program Files\REACH\Client' }
 $RootGiven = [bool]$env:REACH_ROOT
