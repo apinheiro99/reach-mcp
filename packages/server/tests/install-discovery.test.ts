@@ -127,7 +127,7 @@ test("the Host header is printed only when it is safe, escaped always, and a for
   const s = await start();
   const page = async (headers: Record<string, string>) => (await s.call("GET", "/", headers)).body.toString();
   assert.ok((await page({ host: "[::1]:8787" })).includes(LINUX("[::1]:8787")));
-  assert.ok((await page({ host: "10.1.2.3" })).includes(LINUX("10.1.2.3")));
+  assert.ok((await page({ host: "203.0.113.7" })).includes(LINUX("203.0.113.7")));
   for (const hostile of ["evil<script>alert(1)</script>", 'a" onmouseover="x', "a b", "a/b", "a|b", "-bad", "a:99999999"]) {
     const html = await page({ host: hostile });
     assert.ok(html.includes(LINUX("&#60;server-address&#62;")) && !html.includes(hostile), `placeholder for ${JSON.stringify(hostile)}`);

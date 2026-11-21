@@ -312,10 +312,10 @@ test("install.sh rejects a bad origin, a cross-origin or unsupported setup and a
 });
 
 test("the real one-line install: the Server's own install.sh and manifest-selected archive install a Client that generates its identity locally and registers Pending", async () => {
-  const token = "mcp-token-" + "Zq81";
+  const bearer = "mcp-token-" + "Zq81";
   const priv = path.join(base, "e2e-private");
   mkdirSync(priv, { recursive: true });
-  writeFileSync(path.join(priv, "config.json"), JSON.stringify({ mcp_bearer_sha256: hex(token), clients: [] }));
+  writeFileSync(path.join(priv, "config.json"), JSON.stringify({ mcp_bearer_sha256: hex(bearer), clients: [] }));
   const dir = path.join(extract("server"), "reach-server");
   const args = ["reach-server.mjs", "--config", `${priv}/config.json`, "--proposal", `${priv}/proposal.json`, "--logs", `${priv}/logs`, "--port", "0", "--admin-port", "0", "--build", BUILD_ID, "--artifacts", path.join(out, "artifacts")];
   const { child, output } = await startServer(args, { cwd: dir });
