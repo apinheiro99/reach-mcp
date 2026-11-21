@@ -27,7 +27,7 @@ die() {
   exit 2
 }
 
-origin="" root="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
+origin="" root="" root_given="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --test-no-system) system=0; shift; continue ;;
@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
   esac
   case "$1" in
     --server-origin) origin="$2" ;;
-    --root) root="$2" ;;
+    --root) root="$2"; root_given=1 ;;
     --state-dir) state_dir="$2" ;;
     --install-dir) install_dir="$2" ;;
     --unit-dir) unit_dir="$2" ;;
@@ -95,6 +95,36 @@ node_bin="$(command -v node)" || die "Node >= 24 was not found on PATH (sudo may
 [ "$("$node_bin" -p 'process.versions.node.split(".")[0]')" -ge 24 ] 2>/dev/null || die "Node >= 24 is required, found $("$node_bin" -v)"
 [ "$system" = 0 ] || [ "$(id -u)" = 0 ] || die "run as root (sudo sh)"
 
+# Ownership is decided before the first change: what this installer creates is recorded as owned, anything that already existed is never claimed.
+# A rerun keeps the original flags and the root of the first install; a different --root has to wait for an uninstall.
+receipt="$state_dir/install-receipt.json"
+own_state=0 own_root=0 own_user=0
+if [ -f "$receipt" ]; then
+  READ_RECEIPT='
+const fs = require("node:fs");
+let r;
+try { r = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(2); }
+if (r.schema_version !== 1 || r.platform !== "linux" || typeof r.root !== "string" || !r.owned) process.exit(2);
+for (const k of ["install_dir", "state_dir", "bootstrap", "unit_dir"]) if (typeof r[k] !== "string") process.exit(2);
+if (r.unit_name !== "reach-mcp-client.service" || r.bootstrap !== r.state_dir + "/bootstrap.env") process.exit(2);
+process.stdout.write([r.root, r.owned.state_dir ? 1 : 0, r.owned.root ? 1 : 0, r.owned.service_user ? 1 : 0, r.install_dir, r.unit_dir, r.state_dir].join("\n") + "\n");
+'
+  prior="$("$node_bin" -e "$READ_RECEIPT" "$receipt")" || die "the install receipt $receipt is unreadable"
+  prior_root="$(printf '%s\n' "$prior" | sed -n 1p)"
+  own_state="$(printf '%s\n' "$prior" | sed -n 2p)" own_root="$(printf '%s\n' "$prior" | sed -n 3p)" own_user="$(printf '%s\n' "$prior" | sed -n 4p)"
+  # The receipt is the identity of one installation: its runtime and unit coordinates cannot be redefined by a rerun.
+  prior_install="$(printf '%s\n' "$prior" | sed -n 5p)" prior_unit_dir="$(printf '%s\n' "$prior" | sed -n 6p)" prior_state="$(printf '%s\n' "$prior" | sed -n 7p)"
+  [ "$prior_state" = "${state_dir%/}" ] || die "the install receipt $receipt belongs to another state directory"
+  if [ "${install_dir%/}" != "$prior_install" ]; then die "this machine is already installed in $prior_install: uninstall first to change --install-dir"; fi
+  if [ "${unit_dir%/}" != "$prior_unit_dir" ]; then die "this machine is already installed with units in $prior_unit_dir: uninstall first to change --unit-dir"; fi
+  if [ -n "$root_given" ] && [ "$root" != "$prior_root" ]; then die "this machine is already installed with root $prior_root: uninstall first to change it"; fi
+  root="$prior_root"
+else
+  [ -d "$state_dir" ] || own_state=1
+  [ -d "$root" ] || own_root=1
+  if [ "$system" = 1 ] && ! id "$SERVICE_USER" >/dev/null 2>&1; then own_user=1; fi
+fi
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 chmod 700 "$work"
@@ -142,13 +172,21 @@ if (createHash("sha256").update(bytes).digest("hex") !== process.argv[2]) { proc
 # The verified archive carries the low-level installer: the one owner of the atomic swap and the unit.
 tar -xzf "$work/client.tgz" -C "$work" --no-same-owner reach-client/deploy/install-linux.sh || die "the archive has no reach-client/deploy/install-linux.sh"
 
+# A unit of that name that does not run the REACH launcher is someone else's: refuse before the first change (the low-level installer checks again).
+if [ -e "$unit_dir/reach-mcp-client.service" ] && ! grep '^ExecStart=' "$unit_dir/reach-mcp-client.service" | grep -Fq "\"${install_dir%/}/reach-client.mjs\""; then
+  die "$unit_dir/reach-mcp-client.service exists and is not a REACH Client unit: refusing to overwrite it"
+fi
+
 # Machine changes start here, after everything above was validated.
 bootstrap="$state_dir/bootstrap.env"
 if [ "$system" = 1 ] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$state_dir" --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
-mkdir -p "$state_dir" "$root"
-chmod 700 "$state_dir" "$root"
+# An older install without a receipt keeps its bootstrap and its root untouched: no new path is created for it.
+if [ ! -f "$bootstrap" ] || [ -f "$receipt" ]; then
+  mkdir -p "$state_dir" "$root"
+  chmod 700 "$state_dir" "$root"
+fi
 ws="ws://$authority/client"
 if [ -f "$bootstrap" ]; then
   # A rerun keeps the identity and the root; only the endpoint follows the origin given now.
@@ -166,4 +204,16 @@ if [ "$system" = 1 ]; then chown -R "$SERVICE_USER:$SERVICE_USER" "$state_dir"; 
 set -- --archive "$work/client.tgz" --bootstrap "$bootstrap" --build "$build" --install-dir "$install_dir" --unit-dir "$unit_dir" --node "$node_bin" --allow-insecure-ws
 if [ "$system" = 1 ]; then set -- "$@" --user "$SERVICE_USER" --enable; fi
 sh "$work/reach-client/deploy/install-linux.sh" "$@"
+
+# The receipt is written only after a successful install and holds no identity or secret: it is what the uninstaller trusts.
+WRITE_RECEIPT='
+const fs = require("node:fs");
+const [file, installDir, stateDir, bootstrap, root, unitDir, user, ownState, ownRoot, ownUser] = process.argv.slice(1);
+const receipt = { schema_version: 1, platform: "linux", install_dir: installDir, state_dir: stateDir, bootstrap, root, unit_dir: unitDir, unit_name: "reach-mcp-client.service", service_user: user === "" ? null : user, owned: { state_dir: ownState === "1", root: ownRoot === "1", service_user: ownUser === "1" } };
+fs.writeFileSync(file + ".tmp", JSON.stringify(receipt, null, 2) + "\n");
+fs.renameSync(file + ".tmp", file);
+'
+if [ "$system" = 1 ]; then receipt_user="$SERVICE_USER"; else receipt_user=""; fi
+"$node_bin" -e "$WRITE_RECEIPT" "$receipt" "$install_dir" "$state_dir" "$bootstrap" "$root" "$unit_dir" "$receipt_user" "$own_state" "$own_root" "$own_user"
+echo "To remove it later: sudo sh \"$install_dir/deploy/uninstall-linux.sh\" --state-dir \"$state_dir\""
 echo "REACH Client installed. It registers with $origin as Pending; an administrator must Enable it in the Admin UI."

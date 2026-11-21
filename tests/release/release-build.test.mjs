@@ -265,8 +265,10 @@ const installerAsync = (args) =>
   new Promise((resolve) => {
     const child = spawn("sh", [INSTALL_SH, ...args], { env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
+    let stdout = "";
     child.stderr.on("data", (c) => (stderr += c));
-    child.on("exit", (status) => resolve({ status, stderr }));
+    child.stdout.on("data", (c) => (stdout += c));
+    child.on("exit", (status) => resolve({ status, stderr, stdout }));
   });
 const machine = (name) => {
   const root = path.join(base, name);
@@ -393,9 +395,133 @@ test("the Windows Client archive carries the pinned Node runtime and its low-lev
   const win = extract("windows");
   assert.ok(existsSync(path.join(win, "reach-client", "runtime", "node.exe")), "node.exe is inside the Windows archive");
   assert.equal(hex(readFileSync(path.join(win, "reach-client", "runtime", "node.exe"))), "f5109dc868ec38703ad8f305e0aceece717cb60d4889873f434017af4e96cccb", "the pinned node.exe, byte for byte");
-  assert.ok(existsSync(path.join(win, "reach-client", "deploy", "install-windows.ps1")));
+  assert.ok(existsSync(path.join(win, "reach-client", "deploy", "install-windows.ps1")) && existsSync(path.join(win, "reach-client", "deploy", "uninstall-windows.ps1")));
+  assert.ok(!existsSync(path.join(win, "reach-client", "deploy", "uninstall-linux.sh")), "the Windows archive carries only the Windows lifecycle scripts");
   const lin = extract("linux");
-  assert.ok(!existsSync(path.join(lin, "reach-client", "runtime")) && !existsSync(path.join(lin, "reach-client", "deploy", "install-windows.ps1")));
-  assert.ok(existsSync(path.join(lin, "reach-client", "deploy", "install-linux.sh")), "the Linux contract is unchanged");
+  assert.ok(!existsSync(path.join(lin, "reach-client", "runtime")) && !existsSync(path.join(lin, "reach-client", "deploy", "install-windows.ps1")) && !existsSync(path.join(lin, "reach-client", "deploy", "uninstall-windows.ps1")));
+  assert.ok(existsSync(path.join(lin, "reach-client", "deploy", "install-linux.sh")) && existsSync(path.join(lin, "reach-client", "deploy", "uninstall-linux.sh")), "the Linux archive carries its install and uninstall scripts");
   assert.deepEqual(manifest.installers.map((i) => [i.name, i.os, i.download_path]), [["install.sh", "linux", "/install.sh"], ["install.ps1", "win32", "/install.ps1"]]);
+});
+
+// ---- Task #97: the install receipt and the Linux uninstaller, against the real build served by a fake origin ----
+const serveRelease = async () => {
+  const server = createServer((req, res) => {
+    if (req.url === "/release/manifest") return res.end(JSON.stringify(manifest));
+    const artifact = manifest.artifacts.find((a) => a.download_path === req.url);
+    if (artifact) return res.end(readFileSync(path.join(out, "artifacts", artifact.name)));
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+};
+const uninstallSh = (m, extra = []) => spawnSync("sh", [m.uninstall ?? path.join(m.install, "deploy", "uninstall-linux.sh"), "--state-dir", m.state, "--test-no-system", ...extra], { encoding: "utf8", env: { PATH: process.env.PATH } });
+
+test("Linux install writes a secret-free receipt, and uninstall removes exactly what REACH owns and is harmless to repeat", async () => {
+  const { server, origin } = await serveRelease();
+  try {
+    const m = machine("un");
+    const install = await installerAsync(flags(m, origin));
+    assert.equal(install.status, 0, install.stderr);
+    assert.match(install.stdout, /uninstall-linux\.sh" --state-dir/, "the exact local uninstall command is printed");
+    const receiptFile = path.join(m.state, "install-receipt.json");
+    const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+    assert.deepEqual(receipt, { schema_version: 1, platform: "linux", install_dir: m.install, state_dir: m.state, bootstrap: path.join(m.state, "bootstrap.env"), root: `${m.state}/root`, unit_dir: m.units, unit_name: "reach-mcp-client.service", service_user: null, owned: { state_dir: true, root: true, service_user: false } });
+    assert.doesNotMatch(readFileSync(receiptFile, "utf8"), /KEY|CLIENT_ID|secret|token/i, "no identity or secret in the receipt");
+    m.uninstall = path.join(base, "un-copy-uninstall-linux.sh"); // the shipped script deletes its own directory, so the repeat runs a copy
+    writeFileSync(m.uninstall, readFileSync(path.join(m.install, "deploy", "uninstall-linux.sh")));
+    const gone = uninstallSh(m);
+    assert.equal(gone.status, 0, gone.stderr);
+    for (const left of [m.install, path.join(m.units, "reach-mcp-client.service"), path.join(m.state, "bootstrap.env"), receiptFile, `${m.state}/root`, m.state]) assert.ok(!existsSync(left), `${left} is gone`);
+    const again = uninstallSh(m);
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stdout, /Nothing to uninstall/);
+  } finally {
+    server.close();
+  }
+});
+
+test("Linux uninstall keeps a custom root and what it did not create; a rerun keeps the first root and a conflicting --root fails before any change", async () => {
+  const { server, origin } = await serveRelease();
+  try {
+    const m = machine("un-custom");
+    const custom = path.join(base, "un-custom-root");
+    mkdirSync(custom, { recursive: true });
+    writeFileSync(path.join(custom, "sentinel.txt"), "project data");
+    const flagsWithRoot = (root) => [...flags(m, origin), "--root", root];
+    assert.equal((await installerAsync(flagsWithRoot(custom))).status, 0);
+    const receipt = JSON.parse(readFileSync(path.join(m.state, "install-receipt.json"), "utf8"));
+    assert.deepEqual(receipt.owned, { state_dir: true, root: false, service_user: false }, "an existing root is never claimed");
+    const other = path.join(base, "un-other-root");
+    const conflict = await installerAsync(flagsWithRoot(other));
+    assert.equal(conflict.status, 2);
+    assert.match(conflict.stderr, /uninstall first to change it/);
+    assert.ok(!existsSync(other), "the conflicting root was not created");
+    assert.equal((await installerAsync(flags(m, origin))).status, 0, "a rerun without --root keeps the first root");
+    assert.deepEqual(JSON.parse(readFileSync(path.join(m.state, "install-receipt.json"), "utf8")), receipt, "ownership flags and root survive the rerun");
+    assert.equal(uninstallSh(m).status, 0);
+    assert.equal(readFileSync(path.join(custom, "sentinel.txt"), "utf8"), "project data", "the custom root and its data survive");
+    assert.ok(!existsSync(m.install) && !existsSync(m.state), "the runtime and the state directory REACH created are gone");
+  } finally {
+    server.close();
+  }
+});
+
+test("Linux rerun cannot move the install or the unit directory, and a unit that only mentions the launcher at another path is foreign", async () => {
+  const { server, origin } = await serveRelease();
+  try {
+    const m = machine("un-coords");
+    assert.equal((await installerAsync(flags(m, origin))).status, 0);
+    const receiptFile = path.join(m.state, "install-receipt.json");
+    const unitFile = path.join(m.units, "reach-mcp-client.service");
+    const before = [readFileSync(receiptFile, "utf8"), readFileSync(unitFile, "utf8")];
+    const moved = { install: path.join(base, "un-coords-moved", "opt"), units: path.join(base, "un-coords-moved", "units") };
+    const withDirs = (install, units) => ["--server-origin", origin, "--state-dir", m.state, "--install-dir", install, "--unit-dir", units, "--test-no-system"];
+    const newInstall = await installerAsync(withDirs(moved.install, m.units));
+    assert.equal(newInstall.status, 2);
+    assert.match(newInstall.stderr, /uninstall first to change --install-dir/);
+    const newUnits = await installerAsync(withDirs(m.install, moved.units));
+    assert.equal(newUnits.status, 2);
+    assert.match(newUnits.stderr, /uninstall first to change --unit-dir/);
+    assert.ok(!existsSync(path.dirname(moved.install)), "nothing was created at the new coordinates");
+    assert.deepEqual([readFileSync(receiptFile, "utf8"), readFileSync(unitFile, "utf8")], before, "the receipt and the unit are unchanged");
+    assert.equal((await installerAsync(flags(m, origin))).status, 0, "the same coordinates still update in place");
+    // A unit that merely mentions the launcher (a comment, or another install path) is not REACH's.
+    for (const body of [`# reach-client.mjs\n[Service]\nExecStart=/bin/true\n`, `[Service]\nExecStart="/usr/bin/node" "/elsewhere/reach-client.mjs" --bootstrap "/x"\n`]) {
+      writeFileSync(unitFile, body);
+      const refused = await installerAsync(flags(m, origin));
+      assert.equal(refused.status, 2, refused.stderr);
+      assert.match(refused.stderr, /not a REACH Client unit/);
+      assert.equal(readFileSync(unitFile, "utf8"), body, "the foreign unit is untouched");
+    }
+    const lowLevel = spawnSync("sh", [path.join(m.install, "deploy", "install-linux.sh"), "--archive", path.join(out, "artifacts", manifest.artifacts.find((a) => a.role === "client" && a.os === "linux").name), "--bootstrap", path.join(m.state, "bootstrap.env"), "--build", "x", "--install-dir", m.install, "--unit-dir", m.units], { encoding: "utf8" });
+    assert.equal(lowLevel.status, 2);
+    assert.match(lowLevel.stderr, /not a REACH Client unit/, "the low-level installer refuses the same unit");
+    const gone = uninstallSh(m);
+    assert.notEqual(gone.status, 0, "the uninstaller also refuses a unit that does not run the recorded launcher");
+    assert.ok(existsSync(m.install) && existsSync(unitFile), "nothing was removed");
+  } finally {
+    server.close();
+  }
+});
+
+test("Linux install refuses a foreign unit before any change; uninstall without a receipt deletes nothing", async () => {
+  const { server, origin } = await serveRelease();
+  try {
+    const m = machine("un-foreign");
+    mkdirSync(m.units, { recursive: true });
+    const foreign = path.join(m.units, "reach-mcp-client.service");
+    writeFileSync(foreign, "[Service]\nExecStart=/bin/true\n");
+    const refused = await installerAsync(flags(m, origin));
+    assert.equal(refused.status, 2);
+    assert.match(refused.stderr, /not a REACH Client unit/);
+    assert.equal(readFileSync(foreign, "utf8"), "[Service]\nExecStart=/bin/true\n", "the foreign unit is untouched");
+    assert.ok(!existsSync(m.install) && !existsSync(m.state), "no runtime and no state or bootstrap were created");
+    const n = machine("un-noreceipt");
+    assert.equal((await installerAsync(flags(n, origin))).status, 0);
+    rmSync(path.join(n.state, "install-receipt.json"));
+    const guess = uninstallSh(n);
+    assert.ok(existsSync(n.install) && existsSync(path.join(n.units, "reach-mcp-client.service")) && existsSync(path.join(n.state, "bootstrap.env")), `nothing is deleted without a receipt (${guess.stdout}${guess.stderr})`);
+  } finally {
+    server.close();
+  }
 });
