@@ -210,3 +210,19 @@ test("DEV source watcher: one polling watcher fires once when a source file time
   await new Promise((r) => setTimeout(r, 2200));
   assert.equal(fired, 1, "never a second request from the same process");
 });
+
+test("identity badge: one primitive renders either an icon or an image, and Client identities use the canonical REACH mark", () => {
+  const owner = uiSource["components.ts"] as string;
+  assert.ok(/identity\(\{ icon, badgeImageSrc, badgeImageAlt = "", title, subtitle \}\)/.test(owner), "UI.identity takes an optional badge image next to the icon");
+  assert.ok(/badgeImageSrc \? UI\.el\("img", \{ src: badgeImageSrc, alt: badgeImageAlt \}\) : UI\.icon\(icon\)/.test(owner), "exactly one badge visual: the image when given, otherwise the icon");
+  assert.ok(/\n\.identity-badge img\{/.test(owner), "the image sizing is a generic rule of the primitive");
+  assert.ok(!owner.includes("reach-logo.png"), "the generic primitive stays domain-neutral");
+  const clients = uiSource["clients.ts"] as string;
+  const projects = uiSource["projects.ts"] as string;
+  for (const [file, text] of [["clients.ts", clients], ["projects.ts", projects]] as const) {
+    assert.ok(/UI\.identity\(\{ badgeImageSrc: "\/admin\/assets\/reach-logo\.png", title: c\.display_name/.test(text), `${file} shows the Client with the canonical REACH mark`);
+    assert.ok(!/UI\.identity\(\{ icon: "box"/.test(text), `${file} no longer shows a Client as a generic box`);
+  }
+  assert.ok(/UI\.stat\(\{ icon: "box", value: all\.length, label: "Projects" \}\)/.test(projects), "the Projects statistic keeps its box icon");
+  assert.ok(/STATUS_PILL/.test(clients) && /cl-dot/.test(clients), "status pill and connection dot stay in clients.ts");
+});

@@ -80,6 +80,7 @@ export const COMPONENT_CSS = `
 .identity{display:flex;align-items:center;gap:var(--sp-3);min-width:0}
 .identity-badge{display:grid;place-items:center;width:2.6rem;height:2.6rem;flex:none;border-radius:var(--radius-control);background:var(--c-elevated);border:1px solid var(--c-border)}
 .identity-badge .icon{color:var(--c-accent)}
+.identity-badge img{width:70%;height:70%;object-fit:contain}
 .identity-title{font-weight:700;font-size:var(--fs-md)}
 .identity-sub{color:var(--c-muted);font-size:var(--fs-sm)}
 .meter{height:.6rem;border-radius:var(--radius-pill);background:var(--c-border);overflow:hidden}
@@ -148,8 +149,9 @@ const UI = {
   stats(items) { return UI.el("div", { className: "stats" }, ...items); },
   search({ id, placeholder, onInput }) { return UI.el("div", { className: "search" }, UI.icon("search"), UI.input({ id, placeholder, onInput })); },
   toolbar(...kids) { return UI.el("div", { className: "toolbar" }, ...kids); },
-  identity({ icon, title, subtitle }) {
-    return UI.el("div", { className: "identity" }, UI.el("div", { className: "identity-badge" }, UI.icon(icon)),
+  identity({ icon, badgeImageSrc, badgeImageAlt = "", title, subtitle }) {
+    const badge = badgeImageSrc ? UI.el("img", { src: badgeImageSrc, alt: badgeImageAlt }) : UI.icon(icon);
+    return UI.el("div", { className: "identity" }, UI.el("div", { className: "identity-badge" }, badge),
       UI.el("div", {}, UI.el("div", { className: "identity-title", textContent: title }), subtitle ? UI.el("div", { className: "identity-sub", textContent: subtitle }) : ""));
   },
   meter(percent, tone) { const n = UI.el("div", { className: "meter" }, UI.el("span", { style: "width:" + Math.max(0, Math.min(100, percent)) + "%" })); n.setAttribute("role", "meter"); n.setAttribute("aria-valuenow", String(Math.round(percent))); if (tone) n.dataset.tone = tone; return n; },
