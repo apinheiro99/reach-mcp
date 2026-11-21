@@ -4,7 +4,7 @@
 // these routes. They listen on their own private port (8788), never the service port and never the tunnel.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { NO_AUDIT, type Audit } from "./audit.ts";
-import { ConfigError } from "./config.ts";
+import { ConfigError, parseClientDisplayNameUpdate } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
 import { renderAdminPage } from "./admin-page.ts";
 import { LOGO_PNG } from "./admin-ui/assets.ts";
@@ -19,6 +19,7 @@ import type { SourcePolicy } from "./trusted-network.ts";
 const MAX_BODY_BYTES = 1_000_000;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
 const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|rotate-key)$/;
+const DISPLAY_NAME_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/display-name$/;
 const ROTATION_HTTP = { rotated: 200, offline: 409, busy: 409, timeout: 504, refused: 422 } as const;
 const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
@@ -144,6 +145,19 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     if (pathname === "/admin/api/clients") {
       if (method !== "GET") return send(res, 405);
       return config.isActive() ? send(res, 200, clientsView()) : send(res, 200, { clients: [], counts: { total: 0, enabled: 0, pending: 0, disabled: 0, online: 0, offline: 0 } });
+    }
+    const rename = DISPLAY_NAME_ROUTE.exec(pathname);
+    if (rename) {
+      if (method !== "PUT") return send(res, 405);
+      let id: string;
+      let displayName: string;
+      try {
+        id = decodeURIComponent(rename[1] as string);
+        displayName = parseClientDisplayNameUpdate(await readJson(req));
+      } catch (error) {
+        return send(res, 400, { ok: false, problems: error instanceof ConfigError ? error.problems : ["unreadable request"] });
+      }
+      return change(res, "client_display_name", id, () => config.setClientDisplayName(id, displayName));
     }
     const lifecycle = CLIENT_ROUTE.exec(pathname);
     if (lifecycle) {

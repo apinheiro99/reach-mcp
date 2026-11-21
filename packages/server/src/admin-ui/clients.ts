@@ -8,6 +8,7 @@ export const CLIENTS_CSS = `
 .cl-dot[data-online="true"]{background:var(--c-ok);border-color:var(--c-ok)}
 .cl-seen{color:var(--c-muted);font-size:var(--fs-sm);padding-left:1.35rem}
 .cl-fp{display:flex;align-items:center;gap:var(--sp-2);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--fs-sm);white-space:nowrap}
+.cl-name{width:100%;min-width:9rem;font:inherit;font-weight:700;padding:.15rem .4rem}
 .cl-actions{display:flex;align-items:center;gap:var(--sp-3)}
 .cl-note{display:flex;align-items:center;gap:var(--sp-2);color:var(--c-muted)}
 .cl-note strong{color:var(--c-warn)}
@@ -23,11 +24,11 @@ const matchesFilter = (c, filter) => filter === "all" || c.status === filter || 
 const matchesSearch = (c, text) => !text || [c.display_name, c.client_id, c.fingerprint].some((v) => (v || "").toLowerCase().includes(text));
 
 async function renderClients(view) {
-  const ui = { search: "", filter: "all", data: null };
+  const ui = { search: "", filter: "all", data: null, editing: false, timer: 0 };
   const stats = UI.el("div", {});
   const tableHost = UI.el("div", {});
   const toolbar = UI.toolbar(
-    UI.search({ id: "client-search", placeholder: "Search by client name or fingerprint…", onInput: (v) => { ui.search = v.trim().toLowerCase(); draw(); } }),
+    UI.search({ id: "client-search", placeholder: "Search by client name, UUID or fingerprint…", onInput: (v) => { ui.search = v.trim().toLowerCase(); draw(); } }),
     UI.select(FILTERS, "all", (v) => { ui.filter = v; draw(); }));
   view.replaceChildren(stats, toolbar, tableHost);
 
@@ -39,10 +40,27 @@ async function renderClients(view) {
     await load();
   }
 
+  async function saveDisplayName(clientId, displayName) {
+    say("saving", "Saving…");
+    const r = await api("PUT", "/admin/api/clients/" + encodeURIComponent(clientId) + "/display-name", { display_name: displayName });
+    if (r.ok) { ui.editing = false; ui.data.clients.find((c) => c.client_id === clientId).display_name = displayName.trim(); say("saved", "Autosaved · " + clock()); }
+    else say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; "));
+  }
+
+  function scheduleDisplayNameSave(clientId, displayName) {
+    ui.editing = true;
+    say("editing", "Editing…");
+    clearTimeout(ui.timer);
+    ui.timer = setTimeout(() => saveDisplayName(clientId, displayName), 500);
+  }
+
   const row = (c) => {
     const base = "/admin/api/clients/" + encodeURIComponent(c.client_id);
     const [label, tone, icon] = STATUS_PILL[c.status];
-    const name = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: c.display_name || c.client_id, subtitle: c.client_id });
+    const nameInput = UI.input({ value: c.display_name || "", placeholder: c.client_id, onInput: (v) => scheduleDisplayNameSave(c.client_id, v) });
+    nameInput.classList.add("cl-name");
+    nameInput.setAttribute("aria-label", "Client name");
+    const name = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: nameInput, subtitle: c.client_id });
     const dot = UI.el("span", { className: "cl-dot" });
     dot.dataset.online = String(c.online);
     const conn = UI.el("div", { className: "cl-conn" }, UI.el("div", { className: "cl-conn-state" }, dot, c.online ? "Online" : "Offline"), UI.el("div", { className: "cl-seen", textContent: c.last_seen ? ago(c.last_seen) : "—" }));
@@ -76,6 +94,7 @@ async function renderClients(view) {
   }
 
   async function load() {
+    if (ui.editing || tableHost.contains(document.activeElement)) return;
     const r = await api("GET", "/admin/api/clients");
     if (!r.ok) { say("error", "The Server did not answer"); return; }
     ui.data = r.json;

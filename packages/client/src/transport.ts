@@ -6,6 +6,7 @@ import WebSocket from "ws";
 import type { RawData } from "ws";
 import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "@reach-mcp/shared/wire";
 import type { Bootstrap } from "./bootstrap.ts";
+import { suggestClientDisplayName } from "./display-name.ts";
 import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 
 export type TransportState = "stopped" | "connecting" | "handshaking" | "connected" | "backoff" | "terminal_error";
@@ -176,7 +177,9 @@ export class ClientTransport {
   #answerChallenge(socket: WebSocket, nonce: string): void {
     if (this.#answered) return this.#failClosed(socket, "unexpected second challenge");
     this.#answered = true;
-    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce) });
+    const display = suggestClientDisplayName();
+    const suggestedName = display ? { display_name: display } : {};
+    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce), ...suggestedName });
     socket.send(JSON.stringify(hello));
   }
 

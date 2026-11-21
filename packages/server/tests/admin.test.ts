@@ -199,3 +199,31 @@ test("the operator label comes from one value: the product default, or the confi
   assert.ok(!hostile.includes("</script><b>") && hostile.includes("\\u003c/script>"), "a hostile name cannot leave the data string");
   await rt.close();
 });
+
+test("Client display name API: PUT renames through the audited change path; wrong method, malformed or extra fields, bad length and unknown client are refused and change nothing", async () => {
+  const rt = await start(true);
+  rt.config.registerPendingClient("box", newIdentity().publicKey);
+  const url = `${rt.a}/admin/api/clients/box/display-name`;
+  const put = (body: unknown, target = url) => fetch(target, { method: "PUT", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+  const name = () => rt.config.clientSummaries().find((c) => c.client_id === "box")?.display_name;
+  const before = rt.syncs();
+  const ok = await put({ display_name: "  Studio  " });
+  assert.equal(ok.status, 200);
+  assert.equal(name(), "Studio");
+  assert.equal(rt.syncs(), before + 1, "policies are synced once through the one change path");
+  assert.equal(rt.config.admissionOf("box")?.status, "pending", "rename does not change the status");
+  assert.equal((await put({ display_name: "Studio" })).status, 200, "the same rename again is idempotent");
+  assert.equal((await fetch(url, { method: "POST" })).status, 405);
+  assert.equal((await fetch(url, { method: "GET" })).status, 405);
+  assert.equal((await put({ display_name: "A", enabled: true })).status, 400, "extra field");
+  assert.equal((await put({ name: "A" })).status, 400, "wrong field");
+  assert.equal((await put({ display_name: 5 })).status, 400, "wrong type");
+  assert.equal((await put("not json")).status, 400);
+  assert.equal((await put({ display_name: "   " })).status, 422, "blank");
+  assert.equal((await put({ display_name: "q".repeat(101) })).status, 422, "over 100");
+  assert.equal((await put({ display_name: "A" }, `${rt.a}/admin/api/clients/nobody/display-name`)).status, 422, "unknown client");
+  assert.equal((await put({ display_name: "q".repeat(100) })).status, 200, "100 is valid");
+  await put({ display_name: "Final" });
+  assert.equal(name(), "Final");
+  await rt.close();
+});
