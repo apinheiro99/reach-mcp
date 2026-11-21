@@ -1,8 +1,10 @@
 // Live Client sessions on the Server: admission, one active session per client_id, stale detection and request
 // routing. Registered Clients, projects and public keys come only from the config store; nothing a Client says
 // about itself adds a project. Every socket gets a fresh challenge first; the Client's hello proves possession of its
-// Ed25519 key, and only a hello from an unknown client_id on a trusted source enrolls it. One Map holds sessions, one Map holds requests awaiting a response, and a response can
-// only settle the request that was sent on the same session. A request is never sent twice.
+// Ed25519 key. A valid hello from an unknown client_id registers it as Pending and is refused; only a human Enable (config) lets
+// a Client in, and Disable closes its session here. One Map holds sessions, one Map holds requests awaiting a response, one Map
+// holds the key rotations awaiting their answer, and a response can only settle the request that was sent on the same session.
+// A request is never sent twice.
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { newNonce, verifyChallenge } from "@reach-mcp/shared/identity";
@@ -16,13 +18,13 @@ import {
   parseWire,
   RequestEnvelope,
   ResponseEnvelope,
+  SessionMessage,
   type Operation,
   type WireError,
 } from "@reach-mcp/shared/wire";
 import { NO_AUDIT, type Audit } from "./audit.ts";
-import type { ServerConfigStore } from "./config.ts";
+import type { ClientStatus, ServerConfigStore } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
-import { NO_TRUSTED_SOURCES, type SourcePolicy } from "./trusted-network.ts";
 
 export type ConnectionOptions = {
   config: ServerConfigStore;
@@ -30,13 +32,11 @@ export type ConnectionOptions = {
   serverBuild: string;
   /** The whole compatibility rule: true or false for a Client's opaque build identifier. */
   isBuildCompatible: (clientBuild: string) => boolean;
-  /** Whether a first enrollment may come from this peer address; default: nobody. */
-  canEnrollFrom?: SourcePolicy;
   /** Time a new socket has to deliver its hello. */
   handshakeTimeoutMs?: number;
   /** A session silent for this long is stale. */
   staleMs?: number;
-  /** How long a caller of route() waits for a response. */
+  /** How long a caller of route() waits for a response, and the Client for a key rotation. */
   requestTimeoutMs?: number;
   /** Most requests awaiting a response at once, across all Clients. */
   maxPendingRequests?: number;
@@ -48,15 +48,22 @@ export type ConnectionOptions = {
 };
 
 type Session = { clientId: string; socket: WebSocket; build: string; connectedSince: number; lastSeen: number };
+type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
+export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
 
 export type SessionStatus = { client_id: string; client_build: string; connected_since: number; last_seen: number; online: boolean };
 
 const AUTH_FAILED: WireError = { code: "AUTH_FAILED", message: "authentication failed" };
+const PENDING_APPROVAL: WireError = { code: "PENDING_APPROVAL", message: "client is registered and waits for approval" };
+const CLIENT_DISABLED: WireError = { code: "CLIENT_DISABLED", message: "client is disabled" };
 
 export class ClientConnectionRegistry {
   readonly #sessions = new Map<string, Session>();
   readonly #pending = new Map<string, Pending>();
+  readonly #rotations = new Map<string, Rotation>();
+  /** When each Client was last heard, kept after its session ends so the Clients screen can say "seen 2h ago". */
+  readonly #lastHeard = new Map<string, number>();
   readonly #options: ConnectionOptions;
   readonly #handshakeTimeoutMs: number;
   readonly #staleMs: number;
@@ -147,6 +154,45 @@ export class ClientConnectionRegistry {
     return { in_flight: this.#pending.size, completed: this.#completed, failed: this.#failed, timed_out: this.#timedOut };
   }
 
+  /** When the Client was last heard: live while connected, remembered after it left; null if never connected since this process started. */
+  lastSeen(clientId: string): number | null {
+    return this.#sessions.get(clientId)?.lastSeen ?? this.#lastHeard.get(clientId) ?? null;
+  }
+
+  /** Closes the Client's live session now, failing what it carried; the human Disable. The Client is refused on reconnect by its status. */
+  disconnect(clientId: string): void {
+    const session = this.#sessions.get(clientId);
+    if (!session) return;
+    this.#drop(session);
+    session.socket.terminate();
+  }
+
+  /**
+   * Asks the connected, enabled Client to generate a new Ed25519 pair locally and waits for the answer: only its public key
+   * comes back and is STAGED next to the valid key (one atomic config write). Only then is the Client told to commit; it makes the
+   * new key its own and reconnects, and the first hello that proves the staged key promotes it and retires the old one (#admit).
+   * Until that proof the old key keeps working, so no single failure leaves the Client and the Server without a common key.
+   * One rotation per Client at a time; a Client that is not connected is refused, nothing is queued.
+   */
+  rotateKey(clientId: string): Promise<RotationResult> {
+    const session = this.#sessions.get(clientId);
+    if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return Promise.resolve("offline");
+    if (this.#rotations.has(clientId)) return Promise.resolve("busy");
+    const id = this.#newId("rot");
+    return new Promise<RotationResult>((resolve) => {
+      const settle = (result: RotationResult) => {
+        if (!this.#rotations.delete(clientId)) return;
+        cancel();
+        this.#logger.log(result === "rotated" ? "INFO" : "WARNING", "connections", `key rotation ${result} client_id=${clientId}`);
+        this.#audit.record({ actor: "admin", action: "rotate_key", client_id: clientId, result });
+        resolve(result);
+      };
+      const cancel = this.#schedule(() => settle("timeout"), this.#requestTimeoutMs);
+      this.#rotations.set(clientId, { id, session, settle, cancel });
+      if (!this.#send(session, { kind: "rotate_key", rotation_id: id })) settle("offline");
+    });
+  }
+
   status(): SessionStatus[] {
     return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
   }
@@ -165,7 +211,7 @@ export class ClientConnectionRegistry {
    * project must be in the current configuration. Never rejects and never sends the same request twice.
    */
   route(clientId: string, projectId: string, operation: Operation, options: { requestId?: string } = {}): Promise<ResponseEnvelope> {
-    const requestId = options.requestId ?? `req-${randomUUID()}`;
+    const requestId = options.requestId ?? this.#newId("req");
     const refuse = (error: WireError) => Promise.resolve(failureResponse(requestId, error));
     const policies = this.#options.config.effectivePoliciesFor(clientId);
     if (!policies) return refuse({ code: "NOT_FOUND", message: "unknown client" });
@@ -214,6 +260,11 @@ export class ClientConnectionRegistry {
     return mutation ? MUTATION_INDETERMINATE_ERROR : { code: "INTERNAL", message: text };
   }
 
+  /** The one id generator of the registry: a prefix and a random UUID, for requests and rotations alike. */
+  #newId(prefix: string): string {
+    return `${prefix}-${randomUUID()}`;
+  }
+
   #isStale(session: Session): boolean {
     return this.#now() - session.lastSeen >= this.#staleMs;
   }
@@ -243,15 +294,16 @@ export class ClientConnectionRegistry {
     const hello = parseWire(ClientHello, frame);
     if (!hello.ok) return this.#reject(socket, hello.error);
     const { client_id: clientId, client_build: build, public_key: publicKey, signature, display_name: displayName } = hello.data;
-    // A known client must present its stored key; an unknown one proves possession of the key it offers.
-    const { known, key: stored } = this.#identityOf(clientId);
-    const key = known ? stored : publicKey;
-    if (key === null || key !== publicKey || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
-    if (!known && !(this.#options.canEnrollFrom ?? NO_TRUSTED_SOURCES)(remoteAddress)) return this.#reject(socket, AUTH_FAILED);
+    // A registered Client must present a stored key (current or staged) whatever its status; an unknown one proves possession of the key it offers.
+    const known = this.#admissionOf(clientId);
+    const key = known ? [known.publicKey, known.nextPublicKey].find((k) => k !== null && k === publicKey) : publicKey;
+    if (key === undefined || key === null || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
     if (!this.#options.isBuildCompatible(build)) return this.#reject(socket, incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
+    if (!known) return this.#reject(socket, this.#register(clientId, publicKey, displayName) ? PENDING_APPROVAL : AUTH_FAILED);
+    if (known.status !== "enabled") return this.#reject(socket, known.status === "pending" ? PENDING_APPROVAL : CLIENT_DISABLED);
+    if (known.nextPublicKey === publicKey) this.#promoteKey(clientId);
     const existing = this.#sessions.get(clientId);
     if (existing && !this.#isStale(existing)) return this.#reject(socket, { code: "DUPLICATE_CLIENT", message: "client is already connected" });
-    if (!known && !this.#enroll(clientId, publicKey, displayName)) return this.#reject(socket, AUTH_FAILED);
     if (existing) {
       this.#drop(existing);
       existing.socket.terminate();
@@ -265,24 +317,35 @@ export class ClientConnectionRegistry {
     return session;
   }
 
-  /** Whether the client_id is registered and its stored key; with no active configuration it reads as known and keyless, so nobody is enrolled or admitted. */
-  #identityOf(clientId: string): { known: boolean; key: string | null } {
+  /** The registered Client's status and stored key; with no active configuration it reads as registered and keyless, so nobody is registered or admitted. */
+  #admissionOf(clientId: string): { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null } | null {
     try {
-      return { known: this.#options.config.isKnownClient(clientId), key: this.#options.config.publicKeyFor(clientId) };
+      return this.#options.config.admissionOf(clientId);
     } catch {
-      return { known: true, key: null };
+      return { status: "disabled", publicKey: null, nextPublicKey: null };
     }
   }
 
-  /** The one enrollment write; logs and audits it without any key material. */
-  #enroll(clientId: string, publicKey: string, displayName: string | undefined): boolean {
+  /** The Client just proved its staged key: it becomes the key. A failed write is not fatal, the staged key stays valid and the next proof retries. */
+  #promoteKey(clientId: string): void {
     try {
-      this.#options.config.enrollClient(clientId, publicKey, displayName);
+      this.#options.config.promoteClientPublicKey(clientId);
+    } catch {
+      return void this.#logger.log("WARNING", "connections", `key promotion not persisted client_id=${clientId}`);
+    }
+    this.#logger.log("INFO", "connections", `key promoted client_id=${clientId}`);
+    this.#audit.record({ actor: "client", action: "key_promoted", client_id: clientId, result: "ok" });
+  }
+
+  /** The one registration write: an unknown Client becomes Pending; logged and audited without any key material. */
+  #register(clientId: string, publicKey: string, displayName: string | undefined): boolean {
+    try {
+      this.#options.config.registerPendingClient(clientId, publicKey, displayName);
     } catch {
       return false;
     }
-    this.#logger.log("INFO", "connections", `client enrolled client_id=${clientId}`);
-    this.#audit.record({ actor: "client", action: "enroll", client_id: clientId, result: "ok" });
+    this.#logger.log("INFO", "connections", `client registered pending client_id=${clientId}`);
+    this.#audit.record({ actor: "client", action: "register_pending", client_id: clientId, result: "ok" });
     return true;
   }
 
@@ -294,17 +357,35 @@ export class ClientConnectionRegistry {
     } catch {
       return session.socket.terminate();
     }
-    const response = parseWire(ResponseEnvelope, frame);
-    if (!response.ok) return session.socket.terminate();
-    const pending = this.#pending.get(response.data.request_id);
+    const message = parseWire(SessionMessage, frame);
+    if (!message.ok) return session.socket.terminate();
+    if (message.data.kind === "rotated") return this.#onRotated(session, message.data);
+    const pending = this.#pending.get(message.data.request_id);
     // A response settles only the request it answers, and only on the session that carried it; anything else is dropped.
-    if (pending && pending.session === session) pending.settle(response.data);
+    if (pending && pending.session === session) pending.settle(message.data);
+  }
+
+  /** The Client's answer to a rotation: only the one asked, on the session that was asked, stages its new key; it is told to commit only once that is stored. */
+  #onRotated(session: Session, answer: { rotation_id: string; public_key: string }): void {
+    const rotation = this.#rotations.get(session.clientId);
+    if (!rotation || rotation.session !== session || rotation.id !== answer.rotation_id) return;
+    try {
+      this.#options.config.stageClientPublicKey(session.clientId, answer.public_key);
+    } catch {
+      return rotation.settle("refused");
+    }
+    this.#send(session, { kind: "rotate_committed", rotation_id: answer.rotation_id });
+    rotation.settle("rotated");
+    this.#drop(session);
+    session.socket.close();
   }
 
   /** Forgets a session if it is still the registered one and fails the requests it carried. */
   #drop(session: Session): void {
     if (this.#sessions.get(session.clientId) !== session) return;
     this.#sessions.delete(session.clientId);
+    this.#lastHeard.set(session.clientId, session.lastSeen);
+    this.#rotations.get(session.clientId)?.settle("offline");
     this.#logger.log("INFO", "connections", `client disconnected client_id=${session.clientId}`);
     for (const [id, pending] of [...this.#pending]) {
       if (pending.session === session) pending.settle(failureResponse(id, this.#lost(pending.mutation, "client disconnected")));

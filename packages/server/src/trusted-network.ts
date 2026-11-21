@@ -1,11 +1,9 @@
-// The trusted-network test for first enrollment. The allowed sources are a deployment value (a comma-separated list of
-// addresses or CIDRs passed on the command line); nothing here is a built-in range, so an empty list admits nobody.
-// The address checked is the direct socket peer, never a forwarded header.
+// The peer allowlist of the admin listener. The allowed sources are a deployment value (a comma-separated list of addresses
+// or CIDRs passed on the command line); nothing here is a built-in range, so an empty list admits nobody. It never admits a
+// Client: Client admission is the Pending/Enable lifecycle. The address checked is the direct socket peer, never a forwarded header.
 import { BlockList, isIP } from "node:net";
 
 export type SourcePolicy = (address: string | undefined) => boolean;
-
-export const NO_TRUSTED_SOURCES: SourcePolicy = () => false;
 
 const unmap = (address: string): string => (address.toLowerCase().startsWith("::ffff:") && isIP(address.slice(7)) === 4 ? address.slice(7) : address);
 

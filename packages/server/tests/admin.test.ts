@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { newIdentity } from "./identity-fixture.ts";
+import { renderAdminPage } from "../src/admin-page.ts";
 import { ClientConnectionRegistry, createAdminHandler, createHttpServer, hashCredential, ProposalStore, ServerConfigStore } from "../src/index.ts";
 
 const MCP_BEARER = "mcp-bearer-" + "Vt29Qw71";
@@ -78,10 +79,10 @@ test("no response carries a key, digest or bearer; there is no credential route;
   await rt.put({ clients: [{ client_id: "laptop", enabled: true, projects: [] }] }).then((r) => assert.equal(r.status, 422, "enabled without an enrolled key is refused"));
   assert.equal((await fetch(`${rt.a}/admin/api/clients/laptop/credential`, { method: "POST" })).status, 404, "the shared-credential route is gone");
   const identity = newIdentity();
-  rt.config.enrollClient("box", identity.publicKey);
-  assert.equal(rt.config.publicKeyFor("box"), identity.publicKey);
+  rt.config.registerPendingClient("box", identity.publicKey);
+  assert.equal(rt.config.admissionOf("box")?.publicKey, identity.publicKey);
   assert.equal((await rt.put({ clients: [{ client_id: "laptop", enabled: false, projects: [] }, { client_id: "box", enabled: true, projects: [] }] })).status, 200, "the stored key was kept");
-  assert.equal(rt.config.publicKeyFor("box"), identity.publicKey);
+  assert.equal(rt.config.admissionOf("box")?.publicKey, identity.publicKey);
   for (const p of ["/admin/api/config", "/admin/api/state", "/admin"]) {
     const text = await (await fetch(`${rt.a}${p}`)).text();
     for (const leaked of [identity.publicKey, identity.privateKey, MCP_BEARER, hashCredential(MCP_BEARER), "sha256"]) assert.ok(!text.includes(leaked), `${p} leaked a secret`);
@@ -136,15 +137,13 @@ test("admin autosave changes the log size and retention through the config owner
   await rt.close();
 });
 
-test("the page is vanilla: debounced autosave, no Save button, no framework or remote script", async () => {
+test("the page is vanilla: no framework or remote script, no generic Save button; the Clients screen calls only the lifecycle API", async () => {
   const rt = await start();
   const html = await (await fetch(`${rt.a}/admin`)).text();
-  assert.match(html, /DEBOUNCE_MS = \d+/);
-  assert.match(html, /setTimeout\(save, DEBOUNCE_MS\)/);
   assert.ok(!/>\s*Save\s*</i.test(html), "no generic Save button");
-  assert.ok(html.includes('id="log-bytes"') && html.includes('id="log-days"'), "log size and retention fields exist");
-  assert.ok(html.includes('"Approve"') && html.includes('"Reject"') && html.includes("/admin/api/proposal"), "approve and reject exist for a pending proposal");
   assert.ok(!/<script[^>]*\ssrc=|react|vue|svelte|angular|jquery/i.test(html));
+  assert.ok(html.includes("/admin/api/clients") && html.includes("/rotate-key") && html.includes('"/enable"') && html.includes('"/disable"'), "the Clients screen drives the lifecycle API");
+  assert.ok(!html.includes("/admin/api/proposal"), "the proposal flow has no screen of its own");
   assert.equal((await fetch(`${rt.a}/`, { redirect: "manual" })).status, 302);
   await rt.close();
 });
@@ -156,4 +155,47 @@ test("static owner audit: admin holds no schema, store, session or health calcul
   assert.ok(/buildHealth/.test(admin) && /syncAllPolicies/.test(admin));
   const dataPlane = readFileSync(path.join(src, "http-server.ts"), "utf8");
   assert.ok(!/node:fs|syncAllPolicies|ServerConfigStore\(/.test(dataPlane), "the listener only mounts the admin owner, it owns none of it");
+});
+
+test("Clients API: one safe list with counts that add up; Enable and Disable persist through the config owner; Rotate Key refuses what is not an online Enabled Client; nothing leaks a key", async () => {
+  const rt = await start(true);
+  const identity = newIdentity();
+  rt.config.registerPendingClient("box", identity.publicKey, "Friendly box");
+  const list = async () => (await (await fetch(`${rt.a}/admin/api/clients`)).json()) as { clients: { client_id: string; display_name?: string; status: string; online: boolean; fingerprint: string | null; last_seen: number | null }[]; counts: Record<string, number> };
+  let view = await list();
+  assert.deepEqual(view.counts, { total: 2, enabled: 0, pending: 1, disabled: 1, online: 0, offline: 2 });
+  assert.equal(view.counts.pending! + view.counts.enabled! + view.counts.disabled!, view.counts.total, "the statuses always add up");
+  const box = view.clients.find((c) => c.client_id === "box")!;
+  assert.deepEqual([box.display_name, box.status, box.online], ["Friendly box", "pending", false]);
+  assert.match(box.fingerprint!, /^ed25519:[0-9a-f]{64}$/);
+  const text = JSON.stringify(view);
+  assert.ok(!text.includes(identity.publicKey) && !text.includes(identity.privateKey), "the list carries a fingerprint, never a key");
+
+  const post = (id: string, action: string) => fetch(`${rt.a}/admin/api/clients/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+  const before = rt.syncs();
+  assert.equal((await post("box", "enable")).status, 200);
+  assert.equal(rt.config.admissionOf("box")?.status, "enabled");
+  assert.equal(rt.syncs(), before + 1, "policies are pushed once");
+  assert.equal((await post("box", "disable")).status, 200);
+  assert.deepEqual([rt.config.admissionOf("box")?.status, rt.config.admissionOf("box")?.publicKey], ["disabled", identity.publicKey], "Disable keeps the identity");
+  assert.ok(readFileSync(rt.file, "utf8").includes('"enabled": false'), "persisted by the config owner");
+  assert.equal((await post("ghost", "enable")).status, 422, "an unknown client is refused deterministically");
+  assert.equal((await fetch(`${rt.a}/admin/api/clients/%E0%A4%A/enable`, { method: "POST" })).status, 400, "a malformed id is a bad request");
+  assert.equal((await post("box", "rotate-key")).status, 409, "a Client that is not connected cannot rotate");
+  assert.equal((await post("box", "purge")).status, 404, "only the three lifecycle actions exist");
+  assert.equal((await fetch(`${rt.a}/admin/api/clients/box/enable`)).status, 405);
+  assert.equal((await fetch(`${rt.a}/admin/api/clients`, { method: "POST" })).status, 405);
+  view = await list();
+  assert.equal(view.clients.find((c) => c.client_id === "box")?.status, "disabled");
+  await rt.close();
+});
+
+test("the operator label comes from one value: the product default, or the configured name, escaped as data", async () => {
+  const rt = await start();
+  const html = await (await fetch(`${rt.a}/admin`)).text();
+  assert.match(html, /const ADMIN_USER = "admin";/);
+  assert.equal(renderAdminPage({ adminUser: "Anusauipenau" }).includes('const ADMIN_USER = "Anusauipenau";'), true);
+  const hostile = renderAdminPage({ adminUser: '</script><b>"x' });
+  assert.ok(!hostile.includes("</script><b>") && hostile.includes("\\u003c/script>"), "a hostile name cannot leave the data string");
+  await rt.close();
 });

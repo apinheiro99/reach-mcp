@@ -17,6 +17,8 @@ Mutable Server configuration is file-backed under the deployment-provided persis
 - **TLS/WSS is not required in V1.**
 - Admin exposure defaults to host loopback. Any wider exposure requires an explicit deployment/network boundary and direct-peer allowlist.
 
+Server flags that shape the admin plane: `--admin-host` (default loopback), `--admin-allow-from <addr-or-cidr,...>` (direct peers admitted; required whenever `--admin-host` is not loopback) `--admin-user <name>` (the operator label shown top right in the Admin UI; defaults to `admin`; one value, set by the deployment) and `--dev-live-reload` (DEV only, off by default).
+
 ## Client lifecycle
 
 A Client is installed once per machine.
@@ -32,9 +34,11 @@ A Client is installed once per machine.
 
 No trusted-IP/CIDR auto-admission, one-time enrollment token, manual public-key copy/paste or Server-generated Client private key is part of V1.
 
+Ownership, one owner each. `ServerConfigStore` persists the identity and the authorization (public key, Pending/Enabled/Disabled, projects) and is the only writer. `ClientConnectionRegistry` owns the live sessions: it refuses a Pending or Disabled Client (`PENDING_APPROVAL`, `CLIENT_DISABLED`, both retried by the Client with its ordinary backoff, so an Enabled Client connects shortly after the human Enable with no manual step), and closes the session of a Client that is disabled. The Admin handler only calls them: `GET /admin/api/clients` (every Client with status, online/offline, last seen and a public-key fingerprint, plus counts that always add up; never a key), and `POST /admin/api/clients/<client_id>/enable`, `/disable` and `/rotate-key`. The Clients screen is a view over that API and holds no policy.
+
 ## Key rotation
 
-The Admin UI/API requests rotation. The connected Client generates a new Ed25519 keypair locally and sends only the new public key. The Server atomically replaces the old public key; the Client reconnects and proves possession of the new private key.
+The Admin UI/API requests rotation (`POST /admin/api/clients/<client_id>/rotate-key`), only for an Enabled, connected Client; any other Client is refused with `409` and nothing is queued. The Server sends one `rotate_key` frame to that session. The connected Client generates a candidate Ed25519 keypair locally and answers with only the new public key; its valid key is untouched. The Server stages that public key next to the valid one (one atomic write) and then sends `rotate_committed`; the Client writes the candidate through its Bootstrap, and the Server closes the session. The Client reconnects with the new key; the first proof promotes it, and only then is the old key refused. Until that proof either key authenticates, so a failure at any single step leaves the Client and the Server with a common key. One rotation per Client at a time, bounded by the request timeout.
 
 ## Client local state
 

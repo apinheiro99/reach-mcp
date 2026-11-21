@@ -39,13 +39,31 @@ export class Bootstrap {
   readonly endpoint: string;
   readonly clientId: string;
   readonly anchors: readonly string[];
-  readonly #identityKey: KeyObject;
+  #identityKey: KeyObject;
+  readonly #file: string | undefined;
 
-  constructor(endpoint: string, clientId: string, identityKey: KeyObject, anchors: readonly string[]) {
+  constructor(endpoint: string, clientId: string, identityKey: KeyObject, anchors: readonly string[], file?: string) {
     this.endpoint = endpoint;
     this.clientId = clientId;
     this.#identityKey = identityKey;
     this.anchors = anchors;
+    this.#file = file;
+  }
+
+  /**
+   * Generates a candidate Ed25519 pair WITHOUT touching the active identity: the valid key keeps working until `commit` is called.
+   * `publicKey` is all that may leave this process. `commit` writes the candidate to the bootstrap file (every other line kept,
+   * mode 0600, temporary file and rename) and only then makes it the active key.
+   */
+  prepareRotation(): { publicKey: string; commit: () => void } {
+    const file = this.#file;
+    if (!file) throw new BootstrapError(["this bootstrap has no file to rotate the identity in"]);
+    const generated = generateIdentityKey();
+    const commit = () => {
+      writeBootstrapText(file, readFileSync(file, "utf8").replace(/^(\s*REACH_CLIENT_IDENTITY_KEY\s*=).*$/m, (_, head: string) => `${head}${generated.privateKey}`));
+      this.#identityKey = importPrivateKey(generated.privateKey);
+    };
+    return { publicKey: generated.publicKey, commit };
   }
 
   /** The public key the Server stores as this Client's identity (base64url). */
@@ -124,7 +142,7 @@ function canonicalAnchors(value: string, problems: string[]): string[] {
 }
 
 /** Parses bootstrap text; `permissionProblem` is the result of the file-mode check, folded into the same report. */
-export function parseBootstrap(text: string, options: BootstrapOptions = {}, permissionProblem?: string): Bootstrap {
+export function parseBootstrap(text: string, options: BootstrapOptions = {}, permissionProblem?: string, file?: string): Bootstrap {
   const problems: string[] = permissionProblem ? [permissionProblem] : [];
   const values = parseLines(text, problems);
   for (const key of BOOTSTRAP_KEYS) if (!values.has(key)) problems.push(`missing ${key}`);
@@ -141,7 +159,7 @@ export function parseBootstrap(text: string, options: BootstrapOptions = {}, per
   }
   const anchors = values.has("REACH_ROOTS") ? canonicalAnchors(get("REACH_ROOTS"), problems) : [];
   if (problems.length > 0 || !identityKey) throw new BootstrapError(problems);
-  return new Bootstrap(get("REACH_SERVER_URL"), get("REACH_CLIENT_ID"), identityKey, anchors);
+  return new Bootstrap(get("REACH_SERVER_URL"), get("REACH_CLIENT_ID"), identityKey, anchors, file);
 }
 
 export function loadBootstrap(file: string, options: BootstrapOptions = {}): Bootstrap {
@@ -156,19 +174,23 @@ export function loadBootstrap(file: string, options: BootstrapOptions = {}): Boo
     throw new BootstrapError(["bootstrap file is missing or unreadable"]);
   }
   if (options.createIdentity && !permissionProblem && !IDENTITY_KEYS.some((key) => new RegExp(`^\\s*${key}\\s*=`, "m").test(text))) text = writeNewIdentity(file, text);
-  return parseBootstrap(text, options, permissionProblem);
+  return parseBootstrap(text, options, permissionProblem, file);
 }
 
-/** Generates this Client's id and key pair and appends them to the bootstrap file (temporary file, mode 0600, rename). Returns the new text. */
+/** Generates this Client's id and key pair and appends them to the bootstrap file. Returns the new text. */
 function writeNewIdentity(file: string, text: string): string {
   const generated = generateIdentityKey();
-  const next = `${text.endsWith("\n") || text === "" ? text : `${text}\n`}REACH_CLIENT_ID=${randomUUID()}\nREACH_CLIENT_IDENTITY_KEY=${generated.privateKey}\n`;
+  return writeBootstrapText(file, `${text.endsWith("\n") || text === "" ? text : `${text}\n`}REACH_CLIENT_ID=${randomUUID()}\nREACH_CLIENT_IDENTITY_KEY=${generated.privateKey}\n`);
+}
+
+/** The one writer of the bootstrap file: temporary file with mode 0600, then rename. Returns the text it wrote. */
+function writeBootstrapText(file: string, text: string): string {
   const temporary = `${file}.${process.pid}.tmp`;
   try {
-    writeFileSync(temporary, next, { mode: 0o600 });
+    writeFileSync(temporary, text, { mode: 0o600 });
     renameSync(temporary, file);
   } catch {
     throw new BootstrapError(["could not write the Client identity to the bootstrap file"]);
   }
-  return next;
+  return text;
 }

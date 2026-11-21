@@ -83,7 +83,8 @@ test("production delivery: the release job needs every validation job; the defau
   const release = block("Build Release");
   for (const job of validationJobs) assert.match(release, new RegExp(`- "${job}"`), `Build Release must need ${job}`);
   assert.match(release, /stage: release/);
-  assert.match(release, /--build-id "\$CI_COMMIT_SHORT_SHA" --repository-commit "\$CI_COMMIT_SHA"/, "the release identity is the pipeline SHA");
+  assert.match(release, /VERSION="v\$\(date -u -d "\$CI_PIPELINE_CREATED_AT" \+%Y\.%m\)\.\$\(printf "%06d" "\$CI_PIPELINE_IID"\)"/, "the release version is the tag grammar of the green tag job");
+  assert.match(release, /--build-id "\$VERSION" --repository-commit "\$CI_COMMIT_SHA"/, "the release identity is the Git tag version");
   assert.match(release, /extends: \.release-push/);
   const rules = block(".release-push");
   assert.match(rules, /\$CI_COMMIT_TAG'\n\s+when: never/, "no release for tag pipelines");
@@ -104,7 +105,11 @@ test("production delivery: the release job needs every validation job; the defau
   assert.match(candidate, /\$CI_COMMIT_BRANCH =~ \/\^feature\\\/task-\/'\n/, "Task branches only");
   assert.doesNotMatch(candidate, /when: manual|allow_failure/, "PO order: no button, it runs after Build Release passes");
   assert.doesNotMatch(candidate, /\$CI_DEFAULT_BRANCH/, "never the default branch");
-  assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual/);
+  assert.match(block("Rollback Production"), /\$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n\s+when: manual\n\s+allow_failure: true/);
+  // PO order (2026-11-20): a deployment never waits for a click. The only manual job is Rollback, and it must never block the pipeline.
+  const manual = ci.match(/when: manual/g) ?? [];
+  assert.equal(manual.length, ci.match(/when: manual\n\s+allow_failure: true/g)?.length, "every manual job is allow_failure: true, so no pipeline is left blocked in manual");
+  assert.equal(manual.length, 1, "Rollback Production is the only manual job");
   assert.ok(ci.indexOf("  - validate\n") < ci.indexOf("  - release\n") && ci.indexOf("  - release\n") < ci.indexOf("  - deploy\n"), "stage order: validate, release, deploy");
 });
 

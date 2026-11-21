@@ -61,7 +61,7 @@ test("approve: activates through the config owner, syncs policies exactly once, 
   assert.deepEqual(rt.proposals.approve(id), { status: "approved" });
   assert.equal(sync.n, 1);
   assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_write");
-  assert.equal(rt.config.publicKeyFor("laptop"), LAPTOP.publicKey, "public keys survive an approved edit");
+  assert.equal(rt.config.admissionOf("laptop")?.publicKey, LAPTOP.publicKey, "public keys survive an approved edit");
   assert.equal(rt.proposals.pending(), null);
   assert.equal(rt.proposals.approve(id).status, "not_found");
   await rt.close();
