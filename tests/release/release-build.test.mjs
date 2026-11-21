@@ -471,6 +471,39 @@ test("Linux uninstall keeps a custom root and what it did not create; a rerun ke
   }
 });
 
+test("install.sh paths: depth is not a rule: a single-segment existing root is accepted and untouched, / is refused everywhere, and a foreign non-empty state directory is refused by ownership", async () => {
+  const { server, origin } = await serveRelease();
+  try {
+    const refused = machine("root-slash");
+    const slash = await installerAsync([...flags(refused, origin), "--root", "/"]);
+    assert.equal(slash.status, 2);
+    assert.match(slash.stderr, /--root must not be \//);
+    assert.ok(!existsSync(refused.state), "nothing was created for a refused root");
+    for (const flag of ["--state-dir", "--install-dir", "--unit-dir"]) {
+      const base = { "--state-dir": refused.state, "--install-dir": refused.install, "--unit-dir": refused.units };
+      const r = await installerAsync(["--server-origin", origin, ...Object.entries({ ...base, [flag]: "/" }).flat(), "--test-no-system"]);
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, new RegExp(`${flag} must not be /`));
+    }
+    const foreign = path.join(base, "foreign-state");
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(path.join(foreign, "not-reach.txt"), "x");
+    const usr = await installerAsync(["--server-origin", origin, "--state-dir", foreign, "--install-dir", refused.install, "--unit-dir", refused.units, "--test-no-system"]);
+    assert.equal(usr.status, 2);
+    assert.match(usr.stderr, /is not a REACH Client state directory/);
+    assert.equal(readFileSync(path.join(foreign, "not-reach.txt"), "utf8"), "x", "the foreign directory is untouched");
+    const ok = machine("root-single");
+    const modeBefore = statSync("/tmp").mode & 0o7777;
+    const done = await installerAsync([...flags(ok, origin), "--root", "/tmp"]);
+    assert.equal(done.status, 0, done.stderr);
+    assert.equal(statSync("/tmp").mode & 0o7777, modeBefore, "the existing single-segment root keeps its mode");
+    assert.equal(JSON.parse(readFileSync(path.join(ok.state, "install-receipt.json"), "utf8")).root, "/tmp");
+    assert.equal(uninstallSh(ok).status, 0);
+  } finally {
+    server.close();
+  }
+});
+
 test("Linux rerun cannot move the install or the unit directory, and a unit that only mentions the launcher at another path is foreign", async () => {
   const { server, origin } = await serveRelease();
   try {

@@ -65,21 +65,23 @@ abs_path() {
     /*) ;;
     *) die "$1 must be an absolute path" ;;
   esac
+  [ "$2" != / ] || die "$1 must not be /"
   case "$2" in
     *[!A-Za-z0-9._/-]*) die "$1 may contain only letters, digits and . _ / -" ;;
   esac
   case "$2/" in
     */../* | */./* | *//*) die "$1 must not contain empty, . or .. segments" ;;
   esac
-  case "${2#/}" in
-    */*) ;;
-    *) die "$1 must be at least two segments deep" ;;
-  esac
+  # Depth is not a safety property: /scope, /data or /projects are valid. Only / itself is refused. Protection against replacing a
+  # directory that is not REACH's is by ownership below (state directory here, install directory and unit file in install-linux.sh).
 }
 abs_path --state-dir "$state_dir"
 abs_path --install-dir "$install_dir"
 abs_path --unit-dir "$unit_dir"
 state_dir="${state_dir%/}"
+if [ -d "$state_dir" ] && [ -n "$(ls -A "$state_dir")" ] && [ ! -f "$state_dir/install-receipt.json" ] && [ ! -f "$state_dir/bootstrap.env" ]; then
+  die "$state_dir exists, is not empty and is not a REACH Client state directory: refusing to use it"
+fi
 [ -n "$root" ] || root="$state_dir/root"
 abs_path --root "$root"
 root="${root%/}"
