@@ -87,7 +87,7 @@ test("one invocation: manifest valid and coherent, exactly the three archives, h
   assert.deepEqual([manifest.release.build_id, manifest.server.build_id, manifest.client.build_id, manifest.release.repository_commit], [BUILD_ID, BUILD_ID, BUILD_ID, COMMIT]);
   assert.deepEqual(manifest.compatibility, { strategy: "exact", accepted_client_builds: [BUILD_ID] });
   assert.deepEqual(manifest.artifacts.map((a) => a.name).sort(), Object.values(names).sort());
-  assert.deepEqual(files(out).sort(), ["artifacts/manifest.json", "artifacts/install.sh", `artifacts/${names.linux}`, `artifacts/${names.windows}`, `server/${names.server}`].sort());
+  assert.deepEqual(files(out).sort(), ["artifacts/manifest.json", "artifacts/install.sh", "artifacts/install.ps1", `artifacts/${names.linux}`, `artifacts/${names.windows}`, `server/${names.server}`].sort());
   assert.deepEqual(verifyRelease(out), []);
 });
 
@@ -385,4 +385,15 @@ test("the real one-line install: the Server's own install.sh and manifest-select
     if (client) client.kill("SIGKILL");
     await stopChild(child);
   }
+});
+
+test("the Windows Client archive carries the pinned Node runtime and its low-level installer; the Linux archive carries neither a node.exe nor the Windows script", () => {
+  const win = extract("windows");
+  assert.ok(existsSync(path.join(win, "reach-client", "runtime", "node.exe")), "node.exe is inside the Windows archive");
+  assert.equal(hex(readFileSync(path.join(win, "reach-client", "runtime", "node.exe"))), "f5109dc868ec38703ad8f305e0aceece717cb60d4889873f434017af4e96cccb", "the pinned node.exe, byte for byte");
+  assert.ok(existsSync(path.join(win, "reach-client", "deploy", "install-windows.ps1")));
+  const lin = extract("linux");
+  assert.ok(!existsSync(path.join(lin, "reach-client", "runtime")) && !existsSync(path.join(lin, "reach-client", "deploy", "install-windows.ps1")));
+  assert.ok(existsSync(path.join(lin, "reach-client", "deploy", "install-linux.sh")), "the Linux contract is unchanged");
+  assert.deepEqual(manifest.installers.map((i) => [i.name, i.os, i.download_path]), [["install.sh", "linux", "/install.sh"], ["install.ps1", "win32", "/install.ps1"]]);
 });

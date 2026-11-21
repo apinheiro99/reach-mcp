@@ -1,0 +1,101 @@
+# The public one-line REACH Client installer for Windows, served by the Server as /install.ps1 and declared in the release manifest.
+#   $env:REACH_SERVER_ORIGIN='http://<server>'; irm http://<server>/install.ps1 | iex     (elevated PowerShell 5.1 or later)
+# A script piped to iex cannot know where it came from, so the origin is explicit and never guessed. It reads the release manifest
+# (schema v2) from that origin, selects the one client/win32/x64 artifact, downloads it from the manifest's relative path, verifies size
+# and SHA-256, and hands the archive to the low-level installer it carries (deploy\install-windows.ps1, the sole owner of the swap and
+# the Scheduled Task). The archive carries its own pinned Node runtime, so the machine needs no Node. It writes a bootstrap with only the
+# endpoint and a narrow root; the Client generates its own id and private key on first start, nothing here makes or sees them.
+$ErrorActionPreference = 'Stop'
+$StateDir = if ($env:REACH_STATE_DIR) { $env:REACH_STATE_DIR } else { 'C:\ProgramData\REACH\Client' }
+$InstallDir = if ($env:REACH_INSTALL_DIR) { $env:REACH_INSTALL_DIR } else { 'C:\Program Files\REACH\Client' }
+$Root = if ($env:REACH_ROOT) { $env:REACH_ROOT } else { Join-Path $StateDir 'root' }
+$Origin = "$env:REACH_SERVER_ORIGIN".TrimEnd('/')
+
+function Fail([string]$Message) { throw "install.ps1: $Message" }
+
+# A plain http:// authority: host name, IPv4 or bracketed IPv6, an optional port, nothing else.
+if ($Origin -eq '') { Fail 'set $env:REACH_SERVER_ORIGIN to http://<host>[:<port>] first' }
+if ($Origin -notmatch '^http://(?<authority>([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?)$') { Fail 'REACH_SERVER_ORIGIN must be a plain http://host[:port] with no credentials, path, query or fragment' }
+$Authority = $Matches['authority']
+foreach ($pair in @(@('REACH_STATE_DIR', $StateDir), @('REACH_INSTALL_DIR', $InstallDir), @('REACH_ROOT', $Root))) {
+  if ($pair[1] -notmatch '^[A-Za-z]:\\[A-Za-z0-9._ \\-]+$' -or $pair[1] -match '(^|\\)\.\.?(\\|$)|\\\\') { Fail "$($pair[0]) must be an absolute drive path of letters, digits, space and . _ -" }
+}
+if ($Root.TrimEnd('\').Length -le 3) { Fail 'the root must not be a drive root' }
+
+$Arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($Arch -ne 'AMD64') { Fail "unsupported architecture ${Arch}: only x64 is supported" }
+$Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Fail 'run this in an elevated (Administrator) PowerShell' }
+
+$Work = Join-Path ([IO.Path]::GetTempPath()) ("reach-install-" + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $Work | Out-Null
+try {
+  # One fetch policy: plain http to the given origin only, and no redirect at all, so the origin can never be switched silently.
+  function Get-Release([string]$RelativePath, [string]$OutFile) {
+    $request = [Net.HttpWebRequest]::Create("$Origin$RelativePath")
+    $request.AllowAutoRedirect = $false
+    $request.Timeout = 600000
+    $request.ReadWriteTimeout = 600000
+    try { $response = $request.GetResponse() } catch { Fail "could not download $Origin${RelativePath}: $($_.Exception.Message)" }
+    try {
+      if ([int]$response.StatusCode -ne 200) { Fail "$Origin$RelativePath answered $([int]$response.StatusCode)" }
+      $file = [IO.File]::Create($OutFile)
+      try { $response.GetResponseStream().CopyTo($file) } finally { $file.Dispose() }
+    } finally { $response.Close() }
+  }
+
+  $ManifestFile = Join-Path $Work 'manifest.json'
+  Get-Release '/release/manifest' $ManifestFile
+  try { $Manifest = Get-Content -LiteralPath $ManifestFile -Raw | ConvertFrom-Json } catch { Fail 'the release manifest is not valid JSON' }
+  if ($Manifest.schema_version -ne 2) { Fail "unsupported release manifest schema_version $($Manifest.schema_version) (need 2)" }
+  $Hits = @($Manifest.artifacts | Where-Object { $_.role -eq 'client' -and $_.os -eq 'win32' -and $_.arch -eq 'x64' })
+  if ($Hits.Count -ne 1) { Fail "the manifest must list exactly one client artifact for win32/x64, found $($Hits.Count)" }
+  $Artifact = $Hits[0]
+  $Build = $Manifest.client.build_id
+  if ($Artifact.download_path -isnot [string] -or $Artifact.download_path -notmatch '^/release/artifacts/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') { Fail 'the manifest download_path is not a relative /release/artifacts/<name> path' }
+  if ($Artifact.sha256 -isnot [string] -or $Artifact.sha256 -cnotmatch '^[0-9a-f]{64}$') { Fail 'the manifest sha256 is not 64 lowercase hex' }
+  if ($Artifact.size_bytes -isnot [int] -and $Artifact.size_bytes -isnot [long]) { Fail 'the manifest size_bytes is not a positive integer' }
+  if ($Artifact.size_bytes -le 0) { Fail 'the manifest size_bytes is not a positive integer' }
+  if ($Build -isnot [string] -or $Build -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') { Fail 'the manifest client build id is not a plain identifier' }
+
+  $ArchiveFile = Join-Path $Work 'client.zip'
+  Get-Release $Artifact.download_path $ArchiveFile
+  if ((Get-Item -LiteralPath $ArchiveFile).Length -ne $Artifact.size_bytes) { Fail "the downloaded size differs from the manifest $($Artifact.size_bytes)" }
+  if ((Get-FileHash -LiteralPath $ArchiveFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Artifact.sha256) { Fail 'the downloaded SHA-256 differs from the manifest' }
+
+  # The verified archive carries the low-level installer: the one owner of the atomic swap and the Scheduled Task.
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  $Zip = [IO.Compression.ZipFile]::OpenRead($ArchiveFile)
+  try {
+    $Entry = $Zip.GetEntry('reach-client/deploy/install-windows.ps1')
+    if ($null -eq $Entry) { Fail 'the archive has no reach-client/deploy/install-windows.ps1' }
+    $LowLevel = Join-Path $Work 'install-windows.ps1'
+    [IO.Compression.ZipFileExtensions]::ExtractToFile($Entry, $LowLevel)
+    if ($null -eq $Zip.GetEntry('reach-client/runtime/node.exe')) { Fail 'the archive carries no Node runtime (reach-client/runtime/node.exe)' }
+  } finally { $Zip.Dispose() }
+
+  # Machine changes start here, after everything above was validated.
+  $Bootstrap = Join-Path $StateDir 'bootstrap.env'
+  $Endpoint = "ws://$Authority/client"
+  New-Item -ItemType Directory -Path $StateDir, $Root -Force | Out-Null
+  & icacls.exe $StateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+  if ($LASTEXITCODE -ne 0) { Fail 'could not restrict the ACL of the state directory' }
+  $Utf8 = New-Object Text.UTF8Encoding($false)
+  if (Test-Path -LiteralPath $Bootstrap -PathType Leaf) {
+    # A rerun keeps the identity and the root; only the endpoint follows the origin given now.
+    $Text = [IO.File]::ReadAllText($Bootstrap)
+    $Updated = [Text.RegularExpressions.Regex]::Replace($Text, '(?m)^REACH_SERVER_URL=.*$', "REACH_SERVER_URL=$Endpoint")
+    if ($Updated -ne $Text) { [IO.File]::WriteAllText($Bootstrap, $Updated, $Utf8) }
+  } else {
+    $RootJson = $Root.TrimEnd('\').Replace('\', '\\')
+    [IO.File]::WriteAllText($Bootstrap, "REACH_SERVER_URL=$Endpoint`nREACH_ROOTS=[`"$RootJson`"]`n", $Utf8)
+  }
+
+  # A child process with a Bypass policy: a default Windows client refuses to run a .ps1 file, even though iex of this text is allowed.
+  $Shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  & $Shell -NoProfile -ExecutionPolicy Bypass -File $LowLevel -Archive $ArchiveFile -Bootstrap $Bootstrap -Build $Build -InstallDir $InstallDir -AllowInsecureWs -Start
+  if ($LASTEXITCODE -ne 0) { Fail 'the machine installer failed; see its message above' }
+  Write-Output "REACH Client installed. It registers with $Origin as Pending; an administrator must Enable it in the Admin UI."
+} finally {
+  Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
+}

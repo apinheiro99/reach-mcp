@@ -56,8 +56,10 @@ The Server origin is passed explicitly: a script piped from `curl` cannot know w
 Windows:
 
 ```powershell
-irm http://REACH-SERVER/install.ps1 | iex
+$env:REACH_SERVER_ORIGIN='http://REACH-SERVER'; irm http://REACH-SERVER/install.ps1 | iex
 ```
+
+Run it in an elevated PowerShell (5.1 or later) on Windows x64. As on Linux, the Server origin is passed explicitly because a script piped to `iex` cannot know where it came from. No Node install is needed: the Windows Client archive carries its own pinned Node runtime (`runtime\node.exe`, SHA-256-checked when the release is built, and covered by the manifest hash of the archive). The script verifies the manifest-selected `client`/`win32`/`x64` archive (size and SHA-256, no redirect followed), writes a bootstrap with only `ws://<origin>/client` and one narrow root to `C:\ProgramData\REACH\Client` (the ACL allows only SYSTEM and Administrators; the default root is `C:\ProgramData\REACH\Client\root`, never a drive root), installs to `C:\Program Files\REACH\Client` through the low-level installer shipped inside the archive, and starts the `REACH Client` Scheduled Task as SYSTEM. The Client generates its own id and private key on first start and writes them to that bootstrap, which never leaves the machine; the Client then appears **Pending** until an administrator Enables it. Re-running keeps the identity and replaces the runtime atomically.
 
 Installer contract:
 
