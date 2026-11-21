@@ -91,6 +91,10 @@ try {
     if ($null -eq $Zip.GetEntry('reach-client/runtime/node.exe')) { Fail 'the archive carries no Node runtime (reach-client/runtime/node.exe)' }
   } finally { $Zip.Dispose() }
 
+  # A task of that name that does not run the REACH launcher is someone else's: refuse before the first change (the low-level installer checks again).
+  $Occupant = Get-ScheduledTask -TaskName 'REACH Client' -ErrorAction SilentlyContinue
+  if ($null -ne $Occupant -and (($Occupant.Actions | ForEach-Object { "$($_.Arguments)" }) -join ' ') -notlike '*reach-client.mjs*') { Fail "scheduled task 'REACH Client' exists and is not a REACH Client task: refusing to replace it" }
+
   # Machine changes start here, after everything above was validated.
   $Endpoint = "ws://$Authority/client"
   # An older install without a receipt keeps its bootstrap and its root untouched: no new path is created for it.

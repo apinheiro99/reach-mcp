@@ -477,7 +477,7 @@ test("Linux install refuses a foreign unit before any change; uninstall without 
     assert.equal(refused.status, 2);
     assert.match(refused.stderr, /not a REACH Client unit/);
     assert.equal(readFileSync(foreign, "utf8"), "[Service]\nExecStart=/bin/true\n", "the foreign unit is untouched");
-    assert.ok(!existsSync(m.install), "no runtime was installed");
+    assert.ok(!existsSync(m.install) && !existsSync(m.state), "no runtime and no state or bootstrap were created");
     const n = machine("un-noreceipt");
     assert.equal((await installerAsync(flags(n, origin))).status, 0);
     rmSync(path.join(n.state, "install-receipt.json"));

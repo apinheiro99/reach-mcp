@@ -195,5 +195,6 @@ test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-dr
   assert.match(ps, /\$OwnRoot = -not \(Test-Path -LiteralPath \$Root\)/, "ownership is decided before the first change");
   assert.match(ps, /uninstall first to change it/, "a conflicting root fails before any change");
   assert.match(ps, /install-receipt\.json/);
-  assert.match(readFileSync(PS1, "utf8"), /is not a REACH Client task: refusing to replace it/, "a foreign Scheduled Task is refused before any change");
+  assert.match(readFileSync(PS1, "utf8"), /is not a REACH Client task: refusing to replace it/, "a foreign Scheduled Task is refused by the low-level installer too");
+  assert.ok(ps.indexOf("is not a REACH Client task") > 0 && ps.indexOf("is not a REACH Client task") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the public installer refuses a foreign task before creating any state or bootstrap");
 });

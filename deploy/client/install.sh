@@ -165,6 +165,11 @@ if (createHash("sha256").update(bytes).digest("hex") !== process.argv[2]) { proc
 # The verified archive carries the low-level installer: the one owner of the atomic swap and the unit.
 tar -xzf "$work/client.tgz" -C "$work" --no-same-owner reach-client/deploy/install-linux.sh || die "the archive has no reach-client/deploy/install-linux.sh"
 
+# A unit of that name that does not run the REACH launcher is someone else's: refuse before the first change (the low-level installer checks again).
+if [ -e "$unit_dir/reach-mcp-client.service" ] && ! grep -q 'reach-client\.mjs' "$unit_dir/reach-mcp-client.service"; then
+  die "$unit_dir/reach-mcp-client.service exists and is not a REACH Client unit: refusing to overwrite it"
+fi
+
 # Machine changes start here, after everything above was validated.
 bootstrap="$state_dir/bootstrap.env"
 if [ "$system" = 1 ] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
