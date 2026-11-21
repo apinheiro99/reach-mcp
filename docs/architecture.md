@@ -664,6 +664,10 @@ CI/CD definition files such as `.gitlab-ci.yml`, workflow files and equivalent e
 
 All ordinary policy values are centrally configurable through Server/Web UI. Non-negotiable safety invariants remain code-level constraints.
 
+The project access model is one canonical policy object, not an ACL hierarchy and not one project per permission level. `physical_root` defines the readable base scope; `writable_globs` narrows the mutation surface when controlled write is enabled; `deny_globs` are additive restrictions that win over writable allowlists; limits travel with the same effective policy. Server persistence, wire policy sync, Client enforcement and Admin UI all consume that same contract. The Dev MCP's proven `PROJECT_ROOT` + restricted write paths + additive deny rules + trash-delete behavior is the behavioral reference, adapted to REACH's distributed Server-owned policy model rather than copied as a parallel implementation.
+
+The approved Admin interaction is a right-side Project Access drawer over the Projects page, visually matching `docs/screens/REACH 08_MCP Project Access Dashboard.png`. It edits the full project access policy with explicit Save/Cancel; the row-level UI must not imply that adding another logical project is the way to express a narrower writable path.
+
 ### Symlink discovery behavior
 
 Direct operations on a symlink target remain refused. Directory listing and search do not fail merely because a directory contains symlinks; they skip symlink entries and continue safely without traversal.
