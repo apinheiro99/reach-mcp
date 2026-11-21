@@ -1,5 +1,5 @@
 // The one release builder. One invocation takes ONE opaque build id and the repository commit and writes, under --out:
-//   artifacts/manifest.json, artifacts/reach-client-linux-x64.tgz, artifacts/reach-client-win32-x64.zip   (what the Server serves)
+//   artifacts/manifest.json, artifacts/install.sh, artifacts/reach-client-linux-x64.tgz, artifacts/reach-client-win32-x64.zip   (what the Server serves)
 //   server/reach-server-linux-x64.tgz                                                                       (the Server runtime input)
 // Each archive is a self-contained Node >=24 runtime: the REACH packages as ordinary directories under lib/, the production
 // dependency tree installed by npm, and a thin launcher. No workspace link, no Git metadata, no dev dependency, no test.
@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { collectEntries, tgz, zip } from "./release/archive.mjs";
-import { artifactDir, buildManifest, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
+import { artifactDir, buildManifest, INSTALLERS, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 /** package name -> source directory. The closure of each role is derived from its package.json dependencies. */
@@ -57,6 +57,11 @@ function stage(target, buildDir) {
   rmSync(path.join(root, "node_modules", ".package-lock.json"), { force: true });
   copyFileSync(path.join(import.meta.dirname, "release", "launcher.mjs"), path.join(root, `reach-${target.role}.mjs`));
   copyFileSync(path.join(REPO, "LICENSE"), path.join(root, "LICENSE"));
+  if (target.role === "client" && target.os === "linux") {
+    // The public install.sh runs this low-level installer out of the verified archive: it stays the one owner of the swap and the unit.
+    mkdirSync(path.join(root, "deploy"));
+    copyFileSync(path.join(REPO, "deploy", "client", "install-linux.sh"), path.join(root, "deploy", "install-linux.sh"));
+  }
   return root;
 }
 
@@ -70,8 +75,10 @@ export function build({ buildId, repositoryCommit, out }) {
     });
     mkdirSync(path.join(out, SERVED_DIR), { recursive: true });
     mkdirSync(path.join(out, SERVER_DIR), { recursive: true });
+    const installers = INSTALLERS.map(({ name }) => ({ name, bytes: readFileSync(path.join(REPO, "deploy", "client", name)) }));
+    for (const i of installers) writeFileSync(path.join(out, SERVED_DIR, i.name), i.bytes);
     for (const r of records) writeFileSync(path.join(out, artifactDir(r.role), r.name), r.bytes);
-    writeFileSync(path.join(out, SERVED_DIR, MANIFEST_NAME), `${JSON.stringify(buildManifest({ buildId, repositoryCommit, records }), null, 2)}\n`);
+    writeFileSync(path.join(out, SERVED_DIR, MANIFEST_NAME), `${JSON.stringify(buildManifest({ buildId, repositoryCommit, records, installers }), null, 2)}\n`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

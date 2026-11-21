@@ -19,6 +19,8 @@ export const REQUIRED_ARTIFACTS = [
   { role: "client", platform: "linux-x64", os: "linux", arch: "x64" },
   { role: "client", platform: "win32-x64", os: "win32", arch: "x64" },
 ];
+/** The public installer scripts a release carries, served by the Server at these fixed paths. The manifest declares their hash and size, so verifyRelease covers them. */
+export const INSTALLERS = [{ name: "install.sh", os: "linux", download_path: "/install.sh" }];
 const isPublic = (role) => role === "client";
 const targetOf = (role, platform) => REQUIRED_ARTIFACTS.find((t) => t.role === role && t.platform === platform);
 const ROLES = new Set(REQUIRED_ARTIFACTS.map((r) => r.role));
@@ -39,8 +41,8 @@ export function parseCommit(value) {
   return value;
 }
 
-/** records: [{ role, platform, name, bytes }]; hash and size come from the final bytes. */
-export function buildManifest({ buildId, repositoryCommit, records }) {
+/** records: [{ role, platform, name, bytes }]; installers: [{ name, bytes }] for every INSTALLERS entry; hash and size come from the final bytes. */
+export function buildManifest({ buildId, repositoryCommit, records, installers }) {
   return {
     schema_version: MANIFEST_SCHEMA_VERSION,
     release: { build_id: buildId, repository_commit: repositoryCommit },
@@ -57,6 +59,10 @@ export function buildManifest({ buildId, repositoryCommit, records }) {
       size_bytes: bytes.length,
       download_path: isPublic(role) ? `${PUBLIC_DOWNLOAD_PREFIX}${name}` : null,
     })),
+    installers: INSTALLERS.map(({ name, os, download_path }) => {
+      const bytes = installers.find((i) => i.name === name)?.bytes;
+      return { name, os, sha256: bytes && sha256(bytes), size_bytes: bytes?.length, download_path };
+    }),
   };
 }
 
@@ -109,6 +115,17 @@ export function validateManifest(m) {
     if (!SHA256.test(a?.sha256 ?? "")) problems.push(`${at}.sha256 must be 64 lowercase hex`);
     if (!Number.isSafeInteger(a?.size_bytes) || a.size_bytes <= 0) problems.push(`${at}.size_bytes must be a positive integer`);
   });
+  if (!Array.isArray(m.installers) || m.installers.length !== INSTALLERS.length) problems.push(`installers must list exactly ${INSTALLERS.map((i) => i.name).join(", ")}`);
+  else {
+    INSTALLERS.forEach((expected, i) => {
+      const at = `installers[${i}]`;
+      const got = m.installers[i];
+      if (got?.name !== expected.name || got.os !== expected.os) problems.push(`${at} must be ${expected.name} for ${expected.os}`);
+      if (got?.download_path !== expected.download_path) problems.push(`${at}.download_path must be ${expected.download_path}`);
+      if (!SHA256.test(got?.sha256 ?? "")) problems.push(`${at}.sha256 must be 64 lowercase hex`);
+      if (!Number.isSafeInteger(got?.size_bytes) || got.size_bytes <= 0) problems.push(`${at}.size_bytes must be a positive integer`);
+    });
+  }
   const required = new Set(REQUIRED_ARTIFACTS.map((r) => `${r.role}/${r.platform}`));
   for (const pair of required) if (!pairs.has(pair)) problems.push(`artifacts: required ${pair} is missing`);
   for (const [pair, count] of pairs) {
@@ -129,11 +146,12 @@ export function verifyRelease(dir) {
   const problems = validateManifest(manifest);
   if (problems.length > 0) return problems;
   const declared = { [SERVED_DIR]: new Set([MANIFEST_NAME]), [SERVER_DIR]: new Set() };
-  for (const a of manifest.artifacts) {
-    declared[artifactDir(a.role)].add(a.name);
+  for (const a of [...manifest.artifacts, ...manifest.installers]) {
+    const dirName = a.role === undefined ? SERVED_DIR : artifactDir(a.role);
+    declared[dirName].add(a.name);
     let bytes;
     try {
-      bytes = readFileSync(path.join(dir, artifactDir(a.role), a.name));
+      bytes = readFileSync(path.join(dir, dirName, a.name));
     } catch {
       problems.push(`${a.name}: declared but missing`);
       continue;

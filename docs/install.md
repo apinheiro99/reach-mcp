@@ -48,8 +48,10 @@ The Server exposes the canonical install commands. `http://REACH-SERVER/` is a m
 Linux:
 
 ```sh
-curl -fsSL http://REACH-SERVER/install.sh | sudo sh
+curl -fsSL http://REACH-SERVER/install.sh | sudo sh -s -- --server-origin http://REACH-SERVER
 ```
+
+The Server origin is passed explicitly: a script piped from `curl` cannot know where it came from, and nothing is guessed. Prerequisites: Linux x86_64, systemd, `curl`, `tar` and Node >= 24 on root's `PATH`. The installer reads the release manifest from that origin, selects the one `client`/`linux`/`x64` artifact, downloads it from its relative `download_path` (no redirect is followed, so the origin cannot change), verifies size and SHA-256, then installs it with the low-level installer shipped inside the archive. It creates the `reach-mcp` system account (no login) and `/var/lib/reach-mcp-client`, writes a `0600` bootstrap there holding only the endpoint `ws://<origin>/client` and one physical root, `/var/lib/reach-mcp-client/root` by default (never `/`; `--root <abs-dir>` serves a real project directory instead), and enables the `reach-mcp-client` service. The V1 endpoint is `ws://`, so the unit passes `--allow-insecure-ws` on purpose. The Client generates its own id and Ed25519 private key on first start and writes them to that bootstrap; the key never leaves the machine and no script sees it. The Client then appears as **Pending** in the Admin UI until an administrator Enables it. Re-running the installer replaces the runtime atomically and keeps the bootstrap, identity included; only the endpoint follows the origin you pass.
 
 Windows:
 
