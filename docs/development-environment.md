@@ -1,78 +1,52 @@
 # Development environment
 
-How to develop REACH and how to rebuild the development environment. The architecture itself lives in [architecture.md](architecture.md); this page does not restate it. Configuration is in [configuration.md](configuration.md), installation in [install.md](install.md).
+This file documents only the REACH development environment. Architecture lives in [architecture.md](architecture.md); runtime configuration in [configuration.md](configuration.md); installation in [install.md](install.md).
 
 ## Toolchain
 
-- Node.js 24 or newer. The product `engines` contract is `>=24`; a development environment may pin a newer concrete version (the reference environment uses Node 26) as long as it satisfies it. `corepack` is not shipped with Node 26 and is not required.
-- TypeScript, ESM.
-- npm (bundled with Node.js), Git, OpenSSH client, `curl`, `ca-certificates`.
-- Debian 13 (trixie) with systemd is the documented development target. Other Linux distributions work for building.
+- Node.js >=24;
+- TypeScript + ESM;
+- npm + Git;
+- Debian 13 is the reference DEV target.
 
-## Source tree layout
+## Source layout
 
-One umbrella root, mirroring the GitLab group structure:
-
-```
+```text
 /reach/
-  reach-mcp/       product source (this repository)
-  reach-private/   private configuration and recovery (never published)
+  reach-mcp/       product source
+  reach-private/   private runtime/provisioning data
 ```
 
-Keep one persistent copy of the source and do not duplicate repositories inside a container's local filesystem. Installed Client binaries are separate from the source checkout; see [architecture.md](architecture.md) and [install.md](install.md).
+The source tree is an npm workspace under `packages/server`, `packages/client`, `packages/shared` and isolated legacy compatibility code.
 
-The repository is a native npm workspace with explicit package ownership under `packages/server`, `packages/client`, `packages/shared` and isolated `packages/legacy/git-compat`. The obsolete root bootstrap `src/` ownership has been removed.
+## DEV runtime
 
-## Current DEV environment
+The Server runs from the source workspace. The Client uses the installed release artifact. systemd owns process restart; REACH does not supervise itself.
 
-The reference environment is a Debian 13 Incus container managed with systemd:
+The Server uses the same V1 architecture as production:
 
-- `/reach` is an Incus disk device backed by shared storage on the host, so the source survives rebuilding the container.
-- Node comes from the pinned official tarball with its checksum verified, linked into `/usr/local/bin` (`node`, `npm`, `npx`) so non-login shells such as SSH commands and scheduled jobs find it.
-- A systemd timer fetches the CI result tags (below) into the shared clones every 60 seconds. It fetches tags only: never branches, never the work tree.
+- service plane on 8787;
+- admin plane on 8788;
+- direct Client **WS** runtime;
+- Client-owned Ed25519 identity;
+- unknown valid Clients register as **Pending**;
+- a human must **Enable** before operational access;
+- no trusted-network auto-admission;
+- no TLS/WSS requirement in V1.
 
-## DEV runtime (Server and Client)
+DEV may use an explicit insecure-WS switch because the V1 transport itself is WS. Manual DEV bootstrap compatibility may remain temporarily while migration work is incomplete, but it is not the canonical production installation path.
 
-The DEV Server still runs directly from the source workspace with Node's built-in TypeScript support. The DEV Client now follows the machine-install contract: it runs the installed release artifact at `/opt/reach-mcp-client/reach-client.mjs`. Each process is composed in its existing runtime owner; systemd owns restarts and nothing in REACH supervises itself.
+## Runtime paths
 
-Server flags (runtime values only; projects, Clients, public keys, policies and logging settings come from the config file): `--config <file>`, `--proposal <file>`, `--logs <dir>`, `--port <n>`, `--admin-port <n>`, `--build <id>`, and optionally `--host` and `--admin-host` (both default to `127.0.0.1`) `--repository-commit <id>` and `--enroll-from <addr-or-cidr,...>` (the deployment-owned peer addresses or CIDRs allowed to enroll a new Client; without it nobody can enroll). Unknown, duplicate, missing or valueless flags and invalid ports exit with code 2 and a usage line that never repeats a value. With no usable config file the Server starts in setup mode: the admin routes (admin port) work; `/mcp` and `/client` refuse normal operation; `/health` remains the single protected health endpoint and returns 503 after valid bearer authentication; read-only canonical Client release routes remain independent of active configuration. The process prints one line, `reach-server listening port=<port> admin_port=<port>`, and stops cleanly on SIGTERM or SIGINT.
+Reference private runtime state belongs under `/reach/reach-private/runtime/`. Source logs remain under the repository log path during development.
 
-Client flags: `--bootstrap <file>`, `--build <id>` and the explicit DEV switch `--allow-insecure-ws`, which only enables the bootstrap option that accepts a `ws://` endpoint. In DEV, the bootstrap file is a legacy/migration carrier for the same protected local state used by the target zero-touch contract: endpoint, Client id, Ed25519 private key and root anchors. It is mode 0600; on first run the Client generates its id and key pair and persists them there. This manual DEV bootstrap is not the production onboarding contract and never becomes a Server-issued credential. The Client and the Server must be given the same `--build` value; that equality is the whole compatibility rule for now.
+Do not copy Client private keys into Server or recovery state.
 
-DEV units live in `deploy/dev/` (`reach-mcp-server.service`, `reach-mcp-client.service`). They run as the container's unprivileged `dev` user with `Restart=on-failure`, bind both Server listeners to loopback (the admin page has no login of its own, so reach it through an SSH tunnel) and use only these paths:
+## Rebuilding DEV
 
-- `/reach/reach-private/runtime/server/config.json` and `/reach/reach-private/runtime/server/proposal.json`: the Server configuration and pending proposal;
-- `/reach/reach-private/runtime/client/bootstrap.env`: the Client bootstrap;
-- `/reach/reach-mcp/logs`: `reach.log` and `audit.log` with their rotated files.
+Private Incus/cloud-init provisioning remains under `reach-private/provisioning/`.
 
-Before starting the DEV Client, build/obtain the matching Client release artifact and install it with `deploy/client/install-linux.sh` into the machine-level install path. Then copy the repository unit files to `/etc/systemd/system/`, reload systemd and enable/start the services as required. The unit carries only the protected-state/bootstrap path and build id; the Client private key stays inside that protected local state. Production Docker, tunnel and CD are documented separately in `production-deployment.md`; this DEV page does not define production state.
-
-Production Server deployment is containerized and is a separate concern, see [install.md](install.md).
-
-## Disposable Linux target
-
-`deploy/dev/disposable-linux-target.sh` creates a throwaway Linux target to develop and prove the machine-level Client install without touching a real machine. It is test and development tooling only: nothing in the product, the release or the public architecture depends on it. Docker was the preferred option, but the reference DEV container has no Docker or Podman, so the target is built from Linux user, mount and PID namespaces with util-linux `unshare` (no root, no image to maintain).
-
-```
-name=$(deploy/dev/disposable-linux-target.sh create)          # a fresh private directory, no Client identity
-deploy/dev/disposable-linux-target.sh put "$name" <abs-file>   # copy an artifact or script in, visible as /mnt/<file>
-deploy/dev/disposable-linux-target.sh run "$name" [--detach] -- <command...>
-deploy/dev/disposable-linux-target.sh status ["$name"]
-deploy/dev/disposable-linux-target.sh destroy "$name"          # stop what runs inside, remove the directory and every trace
-```
-
-Inside a target the canonical paths work unchanged: the installer runs with its own defaults, `/opt` and `/etc/systemd/system` resolve to the target's private directories, the host's Node.js prefix is mounted read-only at `/usr/local`, and `/home`, `/root`, `/scope` and `/reach` are empty. Host environment variables are not passed. A Client that generates its identity does so in the bootstrap file under the target, and `destroy` removes it; no real identity is ever copied in or out. `REACH_TARGET_ROOT` (default `$TMPDIR` or `/tmp`) chooses where targets live and `REACH_TARGET_NODE_PREFIX` overrides the Node.js prefix. `tests/disposable-target.test.mjs` proves create, isolation, install of the real release artifact, enrollment against a real Server, clean recreation and destroy; it is skipped with a stated reason on a host without unprivileged namespaces.
-
-Limits that the Linux onboarding Task must account for: there is no init system inside a target, so enabling and restarting a service (`systemctl`, restart on failure, start at boot) cannot be proven there and needs a separate proof, while the unit file the installer writes can be inspected; the network is the host's, so the Server is reached as the host reaches it and sees the host's address as the peer; and the rest of the host filesystem stays readable, which is why no host secret may be passed into a target.
-
-## Rebuilding the environment
-
-The container definition (Incus profile plus cloud-init) is private provisioning material kept in `reach-private/provisioning/incus/`. To rebuild:
-
-1. Create the container from that definition and start it; cloud-init does the rest, including the Node toolchain.
-2. Wait for `cloud-init status` to report `done`.
-3. Verify: `env -i PATH=/usr/local/bin:/usr/bin:/bin node -v` prints the pinned version, and `/reach` shows `reach-mcp` and `reach-private`.
-4. Install dependencies and validate from the source tree:
+After the container is rebuilt:
 
 ```sh
 cd /reach/reach-mcp
@@ -80,12 +54,12 @@ npm install
 npm run validate
 ```
 
-Recreating a container changes its SSH host key; remove the old entry from `known_hosts` before reconnecting.
+Verify that `/reach` exposes both `reach-mcp` and `reach-private`.
 
-## CI and result tags
+## Disposable targets
 
-Every branch push runs six blocking validation jobs (Public Release Check, Lint, Type Check, Automated Tests, Package Check and Release Check). Release Check builds and verifies the canonical Server/Linux-Client/Windows-Client release. A final `tag` stage then records the aggregate result as a Git tag on the tested commit, `vYYYY.MM.NNNNNN` for green and `vYYYY.MM.NNNNNN-fail` for red. The tagging belongs to REACH itself: the `tag` stage computes the tag from the pipeline and pushes it with plain `git`, so the repository validates, tags and builds without any external project, and it can be moved to another GitLab unchanged. A tag pipeline never reruns validation or tagging.
+Disposable Linux/Windows targets are test infrastructure only. They must start clean, contain no pre-existing REACH identity, and be reversible. Canonical installation behavior is defined by the installers and [install.md](install.md), not by test-target mechanics.
 
-The tag stage needs one GitLab-side setting and no stored credential: the project setting that allows `CI_JOB_TOKEN` to push to this same repository.
+## CI
 
-This section describes CI only. The implemented production deployment/CD contract is documented separately in `production-deployment.md`.
+Branch pushes run the repository validation pipeline and release checks. Production deployment behavior is documented only in [production-deployment.md](production-deployment.md).

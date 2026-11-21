@@ -109,7 +109,7 @@ REACH Server
     +-- central configuration authority
     +-- routing / health / audit / logs
     |
-    +====== authenticated persistent WSS ======+
+    +====== authenticated persistent WS ======+
     |                                         |
     v                                         v
 REACH Client                              REACH Client
@@ -120,7 +120,7 @@ Host / VM / Container A                  Host / VM / Container B
 
 Target machines do not expose an inbound REACH port.
 
-Each Client initiates one authenticated outbound WSS connection to the Server.
+Each Client initiates one authenticated outbound WS connection to the Server.
 
 Clients may be on different hosts, networks, clouds or countries. They only need outbound reachability to the Server.
 
@@ -157,7 +157,7 @@ flowchart LR
     GPT -->|"MCP requests"| OAI
     OAI -->|"Streamable HTTP / MCP"| REACH
     U -->|"Admin / Setup / HITL approval"| REACH
-    HOSTS -->|"Clients initiate authenticated outbound WSS"| REACH
+    HOSTS -->|"Clients initiate authenticated outbound WS"| REACH
     GIT -.->|"Build / release artifacts"| REACH
 
     classDef human fill:#ffe082,stroke:#f57f17,color:#212121,stroke-width:2px;
@@ -215,8 +215,8 @@ flowchart TB
     HITL --> CFG
     CFG --> ROUTER
     CFG --> PRIV
-    ROUTER <==>|"Authenticated persistent WSS"| CA
-    ROUTER <==>|"Authenticated persistent WSS"| CB
+    ROUTER <==>|"Authenticated persistent WS"| CA
+    ROUTER <==>|"Authenticated persistent WS"| CB
     CA --> DA --> FSA --> RA
     DA --> QA --> FSA
     CB --> DB --> FSB --> RB
@@ -252,7 +252,7 @@ flowchart LR
         SCONF["Config Manager"]
         SHITL["Proposal / HITL Manager"]
         SOBS["Health / Logs / Audit"]
-        SWSS["WSS Session Manager"]
+        SWS["WS Session Manager"]
     end
 
     subgraph SHARED["packages/shared"]
@@ -265,7 +265,7 @@ flowchart LR
     end
 
     subgraph CLIENT["packages/client"]
-        CWSS["WSS Connector"]
+        CWS["WS Connector"]
         CAUTH["Ed25519 Identity + Challenge Auth"]
         CDISPATCH["Operation Dispatcher"]
         CQUEUE["Per-project Mutation Queue"]
@@ -277,21 +277,21 @@ flowchart LR
     SMCP --> SHITL
     SADMIN --> SCONF
     SADMIN --> SHITL --> SCONF
-    SROUTE --> SREG --> SWSS
+    SROUTE --> SREG --> SWS
     SCONF --> SROUTE
     SROUTE --> SOBS
 
-    SWSS <==> CWSS
-    CWSS --> CAUTH
-    CWSS --> CDISPATCH
+    SWS <==> CWS
+    CWS --> CAUTH
+    CWS --> CDISPATCH
     CDISPATCH --> CQUEUE
     CDISPATCH --> CFS
     CQUEUE --> CFS
     CROOT --> CFS
 
     SMCP -.-> SCHEMA
-    SWSS -.-> SCHEMA
-    CWSS -.-> SCHEMA
+    SWS -.-> SCHEMA
+    CWS -.-> SCHEMA
     CDISPATCH -.-> SCHEMA
     CFS -.-> SAFETY
     CFS -.-> REDACT
@@ -303,9 +303,9 @@ flowchart LR
     classDef shared fill:#b39ddb,stroke:#4527a0,color:#21104b,stroke-width:2px;
     classDef client fill:#c5e1a5,stroke:#558b2f,color:#1d3510,stroke-width:2px;
 
-    class SMCP,SADMIN,SROUTE,SREG,SCONF,SHITL,SOBS,SWSS server;
+    class SMCP,SADMIN,SROUTE,SREG,SCONF,SHITL,SOBS,SWS server;
     class SCHEMA,TYPES,ERR,SAFETY,REDACT,BOUNDS shared;
-    class CWSS,CAUTH,CDISPATCH,CQUEUE,CROOT,CFS client;
+    class CWS,CAUTH,CDISPATCH,CQUEUE,CROOT,CFS client;
 ```
 
 ### C4 — Code / module responsibility view
@@ -320,7 +320,7 @@ flowchart TB
             CONFIG_S["config/*"]
             ADMIN_S["admin/*"]
             OBS_S["observability/*"]
-            TRANS_S["transport/wss/*"]
+            TRANS_S["transport/ws/*"]
         end
 
         subgraph CLIENT["packages/client"]
@@ -393,13 +393,16 @@ sequenceDiagram
     C->>C: Generate client_id + Ed25519 keypair locally
     C->>C: Keep private key local only
     C->>S: Enrollment(public key + non-secret metadata)
-    S->>S: Auto-admit from trusted service network/default policy
-    S-->>C: Enrollment accepted + effective project/policy defaults
+    S->>S: Verify proof of private-key possession
+    S->>S: Register Client as Pending with public key only
+    S-->>C: Pending; no operational access
+    O->>S: Enable Client through Admin UI/API
+    S->>S: Mark Client Enabled
     C->>C: Persist private key + local bootstrap/anchors with restrictive permissions
     C->>S: Open persistent WebSocket
     S-->>C: Random challenge
     C-->>S: Ed25519 signature(challenge)
-    S->>S: Verify signature with stored public key
+    S->>S: Verify signature with stored public key and Enabled state
     S-->>C: Connection accepted
     S->>S: Mark Client ONLINE
     A-->>O: Connected
@@ -421,7 +424,7 @@ sequenceDiagram
     G->>M: operation(client, project, relative path)
     M->>R: Typed request + request_id
     R->>R: Resolve logical Client/project
-    R->>C: Request over existing WSS
+    R->>C: Request over existing WS
     C->>F: Validate operation
 
     alt Read-only operation
@@ -483,7 +486,7 @@ sequenceDiagram
     participant S as 🔥 REACH Server
     participant UI as 🟡 Web UI
 
-    C->>S: WSS connect + authenticate
+    C->>S: WS connect + authenticate
     S-->>C: Accepted
     loop While healthy
         C->>S: heartbeat / keepalive
@@ -500,7 +503,7 @@ sequenceDiagram
     rect rgb(232, 245, 233)
         Note over C: Client becomes available again
         C->>C: Bounded reconnect backoff
-        C->>S: New WSS connection with same identity
+        C->>S: New WS connection with same identity
         S->>S: Confirm old session is not healthy
         S-->>C: Accepted
         S-->>UI: ONLINE
@@ -682,19 +685,20 @@ Each Client has:
 
 ### Zero-touch enrollment
 
-Normal enrollment is automatic when an authorized agent can access the target machine and the machine can reach the Server service plane:
+Normal enrollment is zero-touch up to registration when an authorized agent can access the target machine and the machine can reach the Server service plane:
 
 1. the agent downloads the correct platform Client artifact from the Server and verifies the release manifest/hash;
 2. the Client generates its `client_id` and Ed25519 keypair locally;
-3. the Client keeps the private key in protected local state and sends only its public key plus non-secret enrollment metadata to the Server;
-4. the Server auto-admits the first connection according to the configured trusted-network/default-onboarding policy;
-5. the Server stores the Client identity/public key and returns effective logical project/policy defaults;
-6. the Client stores the Server endpoint, local private key and physical root anchors in protected local state;
-7. the Client opens a persistent outbound WebSocket;
-8. the Server sends a fresh random challenge and the Client signs it with Ed25519;
-9. the Server verifies the signature with the stored public key and accepts the connection.
+3. the Client keeps the private key in protected local state and sends only its public key plus non-secret enrollment metadata and proof of private-key possession to the Server;
+4. the Server stores the Client identity/public key as **Pending**; Pending Clients have no operational access;
+5. a human explicitly selects **Enable** in the Admin UI/API;
+6. the Server marks the Client **Enabled** and returns effective logical project/policy defaults;
+7. the Client stores the Server endpoint, local private key and physical root anchors in protected local state;
+8. the Client opens a persistent outbound WebSocket;
+9. the Server sends a fresh random challenge and the Client signs it with Ed25519;
+10. the Server verifies the signature and Enabled state before accepting the connection.
 
-The normal operator interaction is one instruction: access machine X and install the Client. No Web UI data entry, manual credential copy/paste, admin-port tunnel or hand-written bootstrap is part of first enrollment.
+The normal operator interaction is one instruction to install the Client plus the explicit human Enable gate. No credential copy/paste, admin-port tunnel or hand-written bootstrap is part of first enrollment. Disabled Clients are disconnected and refused until re-enabled.
 
 There is no hardcoded/default project root. The installer may propose the install agent's current working directory, but that root exists only after an unambiguous choice or explicit confirmation is persisted as the Client's local root anchor and mapped logically by the Server. Any normal question is about that root choice only, never identity or credentials. Controlled write access starts at `temp/**` unless private deployment configuration says otherwise.
 
@@ -736,7 +740,7 @@ The Client initiates transport because the Server may not be able to open an inb
 
 The Server does not need to know which ChatGPT conversation originated a request.
 
-Multiple conversations may issue concurrent requests through the same MCP endpoint and same Client WSS connection.
+Multiple conversations may issue concurrent requests through the same MCP endpoint and same Client WS connection.
 
 Every operation has a unique request/correlation identifier. Responses must correlate to the correct request and never mix.
 
@@ -1100,7 +1104,7 @@ Do not hide limitations and do not overstate maturity.
 ### Minimum gate for changing status to generally usable
 
 1. **Security baseline**
-   - authenticated WSS;
+   - authenticated WS;
    - unique Client Ed25519 identities with Client-held private keys;
    - root confinement;
    - symlink refusal;
@@ -1224,7 +1228,7 @@ The next work is execution:
 
 1. retain the CI independence already established;
 2. port proven safe filesystem primitives;
-3. implement Client identity/enrollment and persistent WSS;
+3. implement Client identity/enrollment and persistent WS;
 4. implement Server routing and configuration;
 5. implement setup mode/Web UI/HITL;
 6. implement logging/audit;
