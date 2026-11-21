@@ -15,8 +15,9 @@ DEFAULT_UNIT_DIR=/etc/systemd/system
 
 usage() {
   cat >&2 <<EOF
-usage: install.sh --server-origin http://<host>[:<port>] [--root <abs-dir>] [--state-dir <abs-dir>] [--install-dir <abs-dir>] [--unit-dir <abs-dir>] [--test-no-system]
-  --root         the one physical root the Client may serve; default <state-dir>/root (never /)
+usage: install.sh --server-origin http://<host>[:<port>] [--root <abs-dir>] [--state-dir <abs-dir>] [--install-dir <abs-dir>] [--unit-dir <abs-dir>] [--allow-whole-disk] [--test-no-system]
+  --root         the one physical root the Client may serve; default <state-dir>/root (any directory, including /)
+  --allow-whole-disk  required to share / (the whole disk) as the root; without it the installer stops and shows the warning
   --test-no-system  tests only: no account, ownership or systemd change; the unit is written and not started
 EOF
   exit 2
@@ -27,10 +28,11 @@ die() {
   exit 2
 }
 
-origin="" root="" root_given="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
+origin="" root="" root_given="" whole_disk="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --test-no-system) system=0; shift; continue ;;
+    --allow-whole-disk) whole_disk=1; shift; continue ;;
     --server-origin | --root | --state-dir | --install-dir | --unit-dir) [ $# -ge 2 ] || usage ;;
     *) usage ;;
   esac
@@ -83,8 +85,13 @@ if [ -d "$state_dir" ] && [ -n "$(ls -A "$state_dir")" ] && [ ! -f "$state_dir/i
   die "$state_dir exists, is not empty and is not a REACH Client state directory: refusing to use it"
 fi
 [ -n "$root" ] || root="$state_dir/root"
-abs_path --root "$root"
-root="${root%/}"
+if [ "$root" = / ]; then
+  echo "install.sh: WARNING: --root / shares the WHOLE DISK of this machine with the REACH Server (as C:\\ would on Windows)." >&2
+  [ -n "$whole_disk" ] || die "to confirm it, run again with --allow-whole-disk"
+else
+  abs_path --root "$root"
+  root="${root%/}"
+fi
 
 [ "$(uname -s)" = Linux ] || die "this installer supports Linux only"
 case "$(uname -m)" in

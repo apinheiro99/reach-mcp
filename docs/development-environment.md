@@ -22,9 +22,9 @@ The source tree is an npm workspace under `packages/server`, `packages/client`, 
 
 ## DEV runtime
 
-The Server runs from the source workspace. The Client uses the installed release artifact. systemd owns process restart; REACH does not supervise itself.
+The former dedicated REACH DEV Server runtime is retired and is no longer part of the active operating topology. PROD is the canonical runtime for current integration, migration and dogfooding. Development still occurs from the source workspace and CI/tests/disposable targets remain valid engineering surfaces, but no always-on REACH DEV Server is required. If an isolated DEV runtime is ever needed again, it must be created deliberately rather than treated as an implicit dependency.
 
-The Server uses the same V1 architecture as production:
+When an isolated development Server is intentionally started, it uses the same V1 architecture as production:
 
 - service plane on 8787;
 - admin plane on 8788;

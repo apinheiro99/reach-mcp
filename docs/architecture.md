@@ -49,7 +49,7 @@ KISS and YAGNI are binding: protect against realistic failures; do not build spe
 - **Outbound only.** Clients dial the Server; target machines expose no inbound REACH port.
 - **Zero-touch onboarding.** Normal installation starts from one operator instruction to an authorized agent: access the target machine and install the Client. Artifact retrieval, identity creation, enrollment, bootstrap creation, service installation and first connection are automatic.
 - **One owner per responsibility.** Client identity key generation belongs to the Client; public-key admission and routing belong to the Server; private environment defaults belong to deployment/private configuration; filesystem safety belongs to the Client safety engine. No duplicated owner or parallel credential system.
-- **Explicit roots after onboarding.** The onboarding path may propose the agent's current project directory as the initial project root, but the Client must know the exact local anchor it is authorizing and the Server must persist the resulting logical project mapping. There is no source-code hardcoded project root.
+- **Explicit roots after onboarding.** The onboarding path may propose the agent's current project directory as the initial project root, but the Client must know the exact local anchor it is authorizing and the Server must persist the resulting logical project mapping. The operator may explicitly authorize any valid absolute root, including a filesystem root such as `/` or a Windows drive root such as `C:\\`. REACH must not invent path-depth or topology restrictions as safety proxies. When the selected anchor exposes an entire filesystem/drive, the product must warn clearly that the whole filesystem/drive is being shared and require explicit operator confirmation before activation. There is no source-code hardcoded project root.
 - **Read-only by default outside the controlled writable surface.** Initial controlled write access is limited to `temp/**` with delete-as-trash unless later changed through Server configuration/UI.
 - **Bounded behavior.** Reads, search and listing operate under configurable limits.
 
@@ -585,7 +585,7 @@ The Server may define logical projects, modes, allowlists, deny rules and limits
 
 This is not a second policy system. It is a host-level blast-radius boundary stored in the Client's protected local state together with the Server endpoint, client identity and private key. Private environment defaults and recovery metadata belong to deployment/private configuration, not public source.
 
-When Server configuration changes, the effective project/root policy is sent to the Client. The Client validates the received policy against its local root anchors before accepting it; any policy that escapes those anchors is rejected.
+When Server configuration changes, the effective project/root policy is sent to the Client. The Client validates the received policy against its local root anchors before accepting it; any policy that escapes those anchors is rejected. The anchor itself is an operator decision and may intentionally be as broad as the filesystem/drive root after explicit confirmation. Confinement means “never escape the selected anchor”; it does not mean REACH may substitute its own opinion about how narrow that anchor must be.
 
 ---
 

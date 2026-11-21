@@ -471,14 +471,15 @@ test("Linux uninstall keeps a custom root and what it did not create; a rerun ke
   }
 });
 
-test("install.sh paths: depth is not a rule: a single-segment existing root is accepted and untouched, / is refused everywhere, and a foreign non-empty state directory is refused by ownership", async () => {
+test("install.sh paths: depth is not a rule: a single-segment existing root is accepted and untouched, / as --root needs --allow-whole-disk and is refused for installer-owned paths, and a foreign non-empty state directory is refused by ownership", async () => {
   const { server, origin } = await serveRelease();
   try {
     const refused = machine("root-slash");
     const slash = await installerAsync([...flags(refused, origin), "--root", "/"]);
     assert.equal(slash.status, 2);
-    assert.match(slash.stderr, /--root must not be \//);
-    assert.ok(!existsSync(refused.state), "nothing was created for a refused root");
+    assert.match(slash.stderr, /WHOLE DISK/);
+    assert.match(slash.stderr, /--allow-whole-disk/);
+    assert.ok(!existsSync(refused.state), "nothing was created without the confirmation");
     for (const flag of ["--state-dir", "--install-dir", "--unit-dir"]) {
       const base = { "--state-dir": refused.state, "--install-dir": refused.install, "--unit-dir": refused.units };
       const r = await installerAsync(["--server-origin", origin, ...Object.entries({ ...base, [flag]: "/" }).flat(), "--test-no-system"]);
@@ -492,6 +493,12 @@ test("install.sh paths: depth is not a rule: a single-segment existing root is a
     assert.equal(usr.status, 2);
     assert.match(usr.stderr, /is not a REACH Client state directory/);
     assert.equal(readFileSync(path.join(foreign, "not-reach.txt"), "utf8"), "x", "the foreign directory is untouched");
+    const whole = machine("root-whole");
+    const confirmed = await installerAsync([...flags(whole, origin), "--root", "/", "--allow-whole-disk"]);
+    assert.equal(confirmed.status, 0, confirmed.stderr);
+    assert.match(confirmed.stderr, /WHOLE DISK/);
+    assert.equal(JSON.parse(readFileSync(path.join(whole.state, "install-receipt.json"), "utf8")).root, "/");
+    assert.equal(uninstallSh(whole).status, 0, "the receipt root / is accepted and / is never removed");
     const ok = machine("root-single");
     const modeBefore = statSync("/tmp").mode & 0o7777;
     const done = await installerAsync([...flags(ok, origin), "--root", "/tmp"]);
