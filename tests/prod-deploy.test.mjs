@@ -43,8 +43,9 @@ function release(buildId, commit) {
 }
 
 /** A docker that only records, and a fake "Server" whose reported identity follows what compose last started. */
-function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = new Set() } = {}) {
+function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = new Set(), malformed = new Set() } = {}) {
   const log = [];
+  const urls = [];
   let running = null;
   const dockerBin = path.join(base, `docker-${counter++}.sh`);
   writeFileSync(dockerBin, "#!/bin/sh\nexit 0\n");
@@ -57,18 +58,20 @@ function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = 
       running = env.REACH_IMAGE;
     },
     http: async (url) => {
+      urls.push(url);
       if (running === null || unhealthy.has(running)) throw new Error("connection refused");
-      if (url.endsWith("/admin/api/state")) {
+      if (url.endsWith("/release/manifest")) {
+        if (malformed.has(running)) return { status: 200, body: "<html>not a manifest" };
         const [, id] = running.split(":");
-        const identity = wrongIdentity.has(running) ? { server_build: "other", repository_commit: "0".repeat(40) } : { server_build: id, repository_commit: commitOf.get(id) };
-        return { status: 200, body: JSON.stringify({ setup_mode: false, health: identity }) };
+        const release = wrongIdentity.has(running) ? { build_id: "other", repository_commit: "0".repeat(40) } : { build_id: id, repository_commit: commitOf.get(id) };
+        return { status: 200, body: JSON.stringify({ release }) };
       }
       return { status: 401, body: "" };
     },
     sleep: async () => {},
     now: () => "2026-11-16T00:00:00.000Z",
   };
-  return { deps, log, docker: dockerBin };
+  return { deps, log, urls, docker: dockerBin };
 }
 const commitOf = new Map();
 const make = (id) => {
@@ -344,4 +347,24 @@ test("a data plane that answers 503 (no active configuration) fails the smoke ch
   const { exit, evidence } = await deploy(opts(w, make("b8").dir, stateDir()), w.deps);
   assert.equal(exit, 1);
   assert.deepEqual(evidence.checks.find((c) => c.name === "smoke-data-plane"), { name: "smoke-data-plane", ok: false, data_plane_status: 503 });
+});
+
+test("readiness and running identity come from the service plane's release manifest and never from the Admin plane", async () => {
+  const w = world();
+  const { exit } = await deploy(opts(w, make("b1").dir, stateDir()), w.deps);
+  assert.equal(exit, 0);
+  assert.ok(w.urls.length > 0 && w.urls.every((u) => !/\/admin\b|:8788/.test(u)), `no Admin URL is requested: ${w.urls.join(" ")}`);
+  assert.ok(w.urls.includes("http://127.0.0.1:8787/release/manifest"));
+});
+
+test("a manifest that is malformed, or names another build, never promotes the candidate and the previous deployment is restored", async () => {
+  for (const [label, w] of [["malformed", world({ malformed: new Set(["reach-server:b2"]) })], ["wrong identity", world({ wrongIdentity: new Set(["reach-server:b2"]) })]]) {
+    const state = stateDir();
+    await deploy(opts(w, make("b1").dir, state), w.deps);
+    const { exit, evidence } = await deploy(opts(w, make("b2").dir, state), w.deps);
+    assert.equal(exit, 1, label);
+    assert.equal(evidence.result, "candidate-failed", label);
+    assert.equal(evidence.rollback, "restored", label);
+    assert.equal(status({ state }).current.build_id, "b1", label);
+  }
 });

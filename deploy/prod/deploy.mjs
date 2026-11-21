@@ -114,20 +114,22 @@ function apply(deps, opts, d) {
 /** Health, running identity and smoke for one deployment. Returns { ok, checks[] } with no secret material. */
 async function verify(deps, opts, d) {
   const checks = [];
-  const admin = `http://127.0.0.1:${opts.adminPort}/admin/api/state`;
+  // Readiness and running identity come from the service plane's public release manifest (baked into the running image), never from the Admin plane,
+  // whose direct-peer allowlist is deployment policy and must not depend on how a probe reaches the container.
+  const manifest = `http://127.0.0.1:${opts.port}/release/manifest`;
   let health = null;
   for (let i = 0; i < opts.retries && health === null; i++) {
     try {
-      const res = await deps.http(admin);
-      if (res.status === 200) health = JSON.parse(res.body).health ?? null;
+      const res = await deps.http(manifest);
+      if (res.status === 200) health = JSON.parse(res.body).release ?? null;
     } catch {
       /* not up yet */
     }
     if (health === null) await deps.sleep(opts.intervalMs);
   }
   checks.push({ name: "health", ok: health !== null });
-  const identity = health !== null && health.server_build === d.build_id && health.repository_commit === d.repository_commit;
-  checks.push({ name: "running-identity", ok: identity, ...(health === null ? {} : { running_build: health.server_build, running_commit: health.repository_commit }) });
+  const identity = health !== null && health.build_id === d.build_id && health.repository_commit === d.repository_commit;
+  checks.push({ name: "running-identity", ok: identity, ...(health === null ? {} : { running_build: health.build_id, running_commit: health.repository_commit }) });
   // The data-plane /health is bearer-protected: 401 proves an active configuration is enforcing it; 503 means no active configuration (setup mode).
   const smoke = await deps.http(`http://127.0.0.1:${opts.port}/health`).then((res) => res.status, () => 0);
   checks.push({ name: "smoke-data-plane", ok: smoke > 0 && smoke < 500, data_plane_status: smoke });

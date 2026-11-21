@@ -108,10 +108,11 @@ test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is rea
   assert.doesNotMatch(full, /sk-|tunnel_[0-9a-f]{8}|api[_-]?key:|Bearer /i, "no credential or tunnel identity in the public file");
 });
 
-test("the healthcheck probes the admin state endpoint without a credential and the image declares it", () => {
+test("the healthcheck probes the public release manifest of the service listener without a credential, never the Admin plane, and the image declares it", () => {
   const hc = code("healthcheck.mjs");
-  assert.match(hc, /\/admin\/api\/state/);
-  assert.doesNotMatch(hc, /Authorization|bearer|\/health\b|\/mcp/i);
+  assert.match(hc, /\/release\/manifest/);
+  assert.match(hc, /REACH_PORT/);
+  assert.doesNotMatch(hc, /Authorization|bearer|\/health\b|\/mcp|\/admin|ADMIN/i);
   assert.match(text("Dockerfile"), /^HEALTHCHECK .*healthcheck\.mjs/m);
 });
 
