@@ -185,7 +185,9 @@ fi
 # An older install without a receipt keeps its bootstrap and its root untouched: no new path is created for it.
 if [ ! -f "$bootstrap" ] || [ -f "$receipt" ]; then
   mkdir -p "$state_dir" "$root"
-  chmod 700 "$state_dir" "$root"
+  chmod 700 "$state_dir"
+  # Only a root this install created is restricted; an existing root (for example a shared project tree) keeps its owner and mode.
+  if [ "$own_root" = 1 ]; then chmod 700 "$root"; fi
 fi
 ws="ws://$authority/client"
 if [ -f "$bootstrap" ]; then

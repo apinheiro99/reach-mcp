@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -427,6 +427,7 @@ test("Linux install writes a secret-free receipt, and uninstall removes exactly 
     const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
     assert.deepEqual(receipt, { schema_version: 1, platform: "linux", install_dir: m.install, state_dir: m.state, bootstrap: path.join(m.state, "bootstrap.env"), root: `${m.state}/root`, unit_dir: m.units, unit_name: "reach-mcp-client.service", service_user: null, owned: { state_dir: true, root: true, service_user: false } });
     assert.doesNotMatch(readFileSync(receiptFile, "utf8"), /KEY|CLIENT_ID|secret|token/i, "no identity or secret in the receipt");
+    assert.equal(statSync(`${m.state}/root`).mode & 0o777, 0o700, "a root this install created is restricted to its owner");
     m.uninstall = path.join(base, "un-copy-uninstall-linux.sh"); // the shipped script deletes its own directory, so the repeat runs a copy
     writeFileSync(m.uninstall, readFileSync(path.join(m.install, "deploy", "uninstall-linux.sh")));
     const gone = uninstallSh(m);
@@ -447,10 +448,14 @@ test("Linux uninstall keeps a custom root and what it did not create; a rerun ke
     const custom = path.join(base, "un-custom-root");
     mkdirSync(custom, { recursive: true });
     writeFileSync(path.join(custom, "sentinel.txt"), "project data");
+    chmodSync(custom, 0o2775); // a shared tree such as a live project root
+    const customMode = statSync(custom).mode & 0o7777;
     const flagsWithRoot = (root) => [...flags(m, origin), "--root", root];
     assert.equal((await installerAsync(flagsWithRoot(custom))).status, 0);
     const receipt = JSON.parse(readFileSync(path.join(m.state, "install-receipt.json"), "utf8"));
     assert.deepEqual(receipt.owned, { state_dir: true, root: false, service_user: false }, "an existing root is never claimed");
+    assert.equal(statSync(custom).mode & 0o7777, customMode, "an existing root keeps its mode: the installer never restricts a directory it did not create");
+    assert.equal(statSync(m.state).mode & 0o777, 0o700, "the state directory is still restricted");
     const other = path.join(base, "un-other-root");
     const conflict = await installerAsync(flagsWithRoot(other));
     assert.equal(conflict.status, 2);
