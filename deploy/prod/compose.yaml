@@ -20,6 +20,9 @@ services:
       - ${REACH_CONFIG_FILE:?absolute path of the config file}:/run/reach/config.json
       - ${REACH_PROPOSAL_FILE:?absolute path of the proposal file}:/run/reach/proposal.json
       - ${REACH_LOG_DIR:?absolute path of the log directory}:/var/log/reach
+    # The in-container Admin listener is non-loopback, so the Server needs its allowlist (empty = not passed, and the Server then refuses to start).
+    environment:
+      REACH_ADMIN_ALLOW_FROM: ${REACH_ADMIN_ALLOW_FROM:-}
     ports:
       - "${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787"
       - "${REACH_ADMIN_BIND:-127.0.0.1}:${REACH_ADMIN_PORT:-8788}:8788"

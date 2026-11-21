@@ -8,7 +8,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { setTimeout } from "node:timers";
+import { clearTimeout, setTimeout } from "node:timers";
 import { build } from "../../scripts/release.mjs";
 import { collectEntries } from "../../scripts/release/archive.mjs";
 import { serverArgs } from "../../deploy/prod/entrypoint.mjs";
@@ -33,6 +33,43 @@ const extract = (kind) => {
   return dir;
 };
 const files = (dir) => collectEntries(dir).map((e) => e.path);
+
+const START_MS = 5000;
+const STOP_MS = 5000;
+/** Start a Server child and resolve once it prints "listening"; reject at once, with the captured output, if it exits first or the wait runs out. */
+const startServer = (args, options) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    const handle = { child, output: "" };
+    const timer = setTimeout(() => settle(new Error(`no "listening" within ${START_MS} ms:\n${handle.output}`)), START_MS);
+    const settle = (error) => {
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      child.stdout.off("data", onData);
+      child.stderr.off("data", onData);
+      if (error) stopChild(child).finally(() => reject(error));
+      else resolve(handle);
+    };
+    const onData = (c) => {
+      handle.output += c;
+      if (handle.output.includes("listening")) settle();
+    };
+    const onExit = (code, signal) => settle(new Error(`exited before listening (code=${code} signal=${signal}):\n${handle.output}`));
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.once("exit", onExit);
+  });
+/** Stop a child without ever waiting unbounded: nothing to do if it already exited, SIGTERM, then SIGKILL after STOP_MS. */
+const stopChild = (child) =>
+  new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    const kill = setTimeout(() => child.kill("SIGKILL"), STOP_MS);
+    child.once("exit", () => {
+      clearTimeout(kill);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
 
 before(() => {
   base = mkdtempSync(path.join(tmpdir(), "reach-release-it-"));
@@ -104,12 +141,8 @@ test("a real Server from the extracted runtime serves the produced manifest and 
   const dir = path.join(extract("server"), "reach-server");
   const state = path.join(base, "state");
   const args = ["reach-server.mjs", "--config", `${state}/private/config.json`, "--proposal", `${state}/private/proposal.json`, "--logs", `${state}/logs`, "--port", "0", "--admin-port", "0", "--build", BUILD_ID, "--artifacts", path.join(out, "artifacts")];
-  const child = spawn(process.execPath, args, { cwd: dir, stdio: ["ignore", "pipe", "pipe"] });
-  let output = "";
-  child.stdout.on("data", (c) => (output += c));
-  child.stderr.on("data", (c) => (output += c));
+  const { child, output } = await startServer(args, { cwd: dir });
   try {
-    for (let i = 0; i < 100 && !output.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
     const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
     const service = `http://127.0.0.1:${port[1]}`;
@@ -125,8 +158,7 @@ test("a real Server from the extracted runtime serves the produced manifest and 
     }
     assert.equal((await fetch(`${service}/release/artifacts/${names.server}`, auth)).status, 404, "the Server runtime is not a served artifact");
   } finally {
-    child.kill("SIGTERM");
-    await new Promise((r) => child.once("exit", r));
+    await stopChild(child);
   }
 });
 
@@ -134,14 +166,11 @@ test("the production entrypoint starts the real extracted Server from the manife
   const state = path.join(base, "prod-state");
   mkdirSync(state, { recursive: true });
   const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${state}/config.json`, proposal: `${state}/proposal.json`, logs: `${state}/logs` };
-  const args = serverArgs({ REACH_HOST: "127.0.0.1", REACH_PORT: "0" }, layout);
+  const args = serverArgs({ REACH_HOST: "127.0.0.1", REACH_PORT: "0", REACH_ADMIN_PORT: "0", REACH_ADMIN_ALLOW_FROM: "127.0.0.1" }, layout);
   assert.deepEqual([args[args.indexOf("--build") + 1], args[args.indexOf("--repository-commit") + 1]], [BUILD_ID, COMMIT]);
-  const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"], env: { PATH: process.env.PATH } });
-  let output = "";
-  child.stdout.on("data", (c) => (output += c));
-  child.stderr.on("data", (c) => (output += c));
+  assert.equal(args[args.indexOf("--admin-allow-from") + 1], "127.0.0.1");
+  const { child, output } = await startServer(args, { env: { PATH: process.env.PATH } });
   try {
-    for (let i = 0; i < 100 && !output.includes("listening"); i++) await new Promise((r) => setTimeout(r, 50));
     const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
     const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_ADMIN_PORT: port[2] } });
@@ -155,8 +184,7 @@ test("the production entrypoint starts the real extracted Server from the manife
       assert.deepEqual(bytes, readFileSync(path.join(out, "artifacts", a.name)), `${a.name}: the baked bytes are the canonical bytes`);
     }
   } finally {
-    child.kill("SIGTERM");
-    await new Promise((r) => child.once("exit", r));
+    await stopChild(child);
   }
 });
 
@@ -194,4 +222,22 @@ test("can it fail: a corrupted, truncated, missing or undeclared artifact makes 
   const cli = spawnSync(process.execPath, ["scripts/release.mjs", "verify", "--out", flipped], { encoding: "utf8", cwd: path.join(import.meta.dirname, "..", "..") });
   assert.equal(cli.status, 2);
   assert.match(cli.stderr, /verification failed/);
+});
+
+test("can it hang: a Server that exits before listening fails at once with its output, and stopping an already exited child returns", async () => {
+  const started = Date.now();
+  await assert.rejects(startServer(["-e", 'console.error("boom"); process.exit(3)']), /exited before listening \(code=3 signal=null\):\nboom/);
+  assert.ok(Date.now() - started < 2000, "early exit does not wait for the startup timeout");
+  const exited = spawn(process.execPath, ["-e", ""]);
+  await new Promise((r) => exited.once("exit", r));
+  await stopChild(exited);
+});
+
+test("the production entrypoint contract: the Admin listener is non-loopback by default and the Server refuses it without an allowlist", async () => {
+  const state = path.join(base, "no-allowlist");
+  mkdirSync(state, { recursive: true });
+  const layout = { server: path.join(extract("server"), "reach-server", "reach-server.mjs"), artifacts: path.join(out, "artifacts"), config: `${state}/config.json`, proposal: `${state}/proposal.json`, logs: `${state}/logs` };
+  const args = serverArgs({ REACH_HOST: "127.0.0.1", REACH_PORT: "0", REACH_ADMIN_PORT: "0" }, layout);
+  assert.ok(!args.includes("--admin-allow-from"), "no allowlist is invented");
+  await assert.rejects(startServer(args, { env: { PATH: process.env.PATH } }), /--admin-host outside loopback needs --admin-allow-from/);
 });
