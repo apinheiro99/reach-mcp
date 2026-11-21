@@ -42,7 +42,7 @@ async function renderClients(view) {
   const row = (c) => {
     const base = "/admin/api/clients/" + encodeURIComponent(c.client_id);
     const [label, tone, icon] = STATUS_PILL[c.status];
-    const name = UI.identity({ icon: "box", title: c.display_name || c.client_id, subtitle: c.client_id });
+    const name = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: c.display_name || c.client_id, subtitle: c.client_id });
     const dot = UI.el("span", { className: "cl-dot" });
     dot.dataset.online = String(c.online);
     const conn = UI.el("div", { className: "cl-conn" }, UI.el("div", { className: "cl-conn-state" }, dot, c.online ? "Online" : "Offline"), UI.el("div", { className: "cl-seen", textContent: c.last_seen ? ago(c.last_seen) : "—" }));
