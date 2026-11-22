@@ -21,8 +21,9 @@ $Top = 'reach-client'
 function Assert-AbsolutePath([string]$Name, [string]$Value) {
   if ($Value -notmatch '^[A-Za-z]:\\') { throw "$Name must be an absolute path with a drive letter" }
   if ($Value -match '["<>|*?\x00-\x1f]') { throw "$Name contains a character that is not allowed" }
+  # Depth is not a safety property (C:\scope and C:\REACH are valid); what is refused is an empty name below the drive and relative segments.
+  # Replacing someone else's directory is stopped by ownership below, not by counting segments.
   $segments = $Value.Substring(3).TrimEnd('\').Split('\')
-  if ($segments.Count -lt 2) { throw "$Name must be at least two segments deep" }
   if ($segments | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' }) { throw "$Name must not contain empty, . or .. segments" }
 }
 

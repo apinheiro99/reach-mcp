@@ -104,6 +104,23 @@ node_bin="$(command -v node)" || die "Node >= 24 was not found on PATH (sudo may
 [ "$("$node_bin" -p 'process.versions.node.split(".")[0]')" -ge 24 ] 2>/dev/null || die "Node >= 24 is required, found $("$node_bin" -v)"
 [ "$system" = 0 ] || [ "$(id -u)" = 0 ] || die "run as root (sudo sh)"
 
+# The unit runs this exact Node as the service user, so that user must be able to execute it (and traverse every parent directory). Prove it
+# directly, before anything on the machine changes: a Node inside a private home would otherwise install fine and then die with systemd 203/EXEC.
+# An account that does not exist yet is created later with no group memberships, so it can only act as "others": uid 65534 with no groups
+# stands in for it, and nothing is created for the check. Switching users needs root; in --test-no-system as a normal user there is no way to do it, so the check is skipped there.
+if [ "$system" = 1 ] || [ "$(id -u)" = 0 ]; then
+  # runuser and setpriv are util-linux tools that live in /usr/sbin or /usr/bin, which a sudo PATH may not include.
+  sys_path="$PATH:/usr/sbin:/sbin:/usr/bin:/bin"
+  if id "$SERVICE_USER" >/dev/null 2>&1; then
+    runuser_bin="$(PATH="$sys_path" command -v runuser)" || die "runuser was not found: cannot prove that $SERVICE_USER can run $node_bin"
+    (cd / && "$runuser_bin" -u "$SERVICE_USER" -- "$node_bin" -v >/dev/null 2>&1) && node_ok=1 || node_ok=0
+  else
+    setpriv_bin="$(PATH="$sys_path" command -v setpriv)" || die "setpriv was not found: cannot prove that the new $SERVICE_USER account can run $node_bin"
+    (cd / && "$setpriv_bin" --reuid=65534 --regid=65534 --clear-groups "$node_bin" -v >/dev/null 2>&1) && node_ok=1 || node_ok=0
+  fi
+  [ "$node_ok" = 1 ] || die "the service user $SERVICE_USER cannot run $node_bin (a parent directory is probably not traversable, for example a Node inside a private home): install a system Node such as /usr/local/bin/node, put it first on PATH and run again. Nothing was changed."
+fi
+
 # Ownership is decided before the first change: what this installer creates is recorded as owned, anything that already existed is never claimed.
 # A rerun keeps the original flags and the root of the first install; a different --root has to wait for an uninstall.
 receipt="$state_dir/install-receipt.json"
