@@ -8,13 +8,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
-import { buildImage, stageContext } from "../deploy/prod/build-image.mjs";
-import { LAYOUT, serverArgs } from "../deploy/prod/entrypoint.mjs";
-import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.mjs";
+import { buildImage, stageContext } from "../deploy/prod/build-image.ts";
+import { LAYOUT, serverArgs } from "../deploy/prod/entrypoint.ts";
+import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.ts";
 
 const PROD = path.join(import.meta.dirname, "..", "deploy", "prod");
-const text = (name) => readFileSync(path.join(PROD, name), "utf8");
-const code = (name) => text(name).replace(/^\s*(#|\/\/).*$/gm, "");
+const text = (name: string): string => readFileSync(path.join(PROD, name), "utf8");
+const code = (name: string): string => text(name).replace(/^\s*(#|\/\/).*$/gm, "");
 const BUILD_ID = "prod-test-7";
 const COMMIT = "c".repeat(40);
 const base = mkdtempSync(path.join(tmpdir(), "reach-prod-"));
@@ -53,7 +53,7 @@ test("the Dockerfile only wraps release bytes: no install/build/test, no source 
   assert.match(df, /COPY artifacts\/ \/opt\/reach\/artifacts\//);
   assert.match(df, /org\.opencontainers\.image\.version="\$\{REACH_BUILD_ID\}"/);
   assert.match(df, /org\.opencontainers\.image\.revision="\$\{REACH_REPOSITORY_COMMIT\}"/);
-  assert.match(df, /^ENTRYPOINT \["node", "\/opt\/reach\/entrypoint\.mjs"\]$/m);
+  assert.match(df, /^ENTRYPOINT \["node", "\/opt\/reach\/entrypoint\.ts"\]$/m);
   assert.doesNotMatch(df, /(?<![/\w-])reach-private|\/reach\/reach-|192\.168\.|\.lab\b/);
 });
 
@@ -63,34 +63,34 @@ test("the entrypoint takes build id and commit from the baked manifest and runs 
   const dir = release("entry");
   const layout = { ...LAYOUT, artifacts: path.join(dir, "artifacts") };
   const args = serverArgs({}, layout);
-  const flag = (name) => args[args.indexOf(`--${name}`) + 1];
+  const flag = (name: string) => args[args.indexOf(`--${name}`) + 1];
   assert.equal(args[0], "/opt/reach/server/reach-server.mjs");
   assert.deepEqual([flag("build"), flag("repository-commit")], [BUILD_ID, COMMIT]);
   assert.deepEqual([flag("config"), flag("proposal"), flag("logs"), flag("artifacts")], ["/reach-private/config.json", "/reach-private/proposal.json", "/reach-private/logs", layout.artifacts]);
   assert.deepEqual([flag("port"), flag("host"), flag("admin-port"), flag("admin-host")], ["8787", "0.0.0.0", "8788", "0.0.0.0"]);
   assert.ok(!args.includes("--data-port"), "two listeners only: service and admin");
-  assert.ok(!args.includes("--admin-allow-from") && !args.some((a) => PRIVATE_LAN.test(a)), "no allowlist and no LAN value is invented by default; the Server then refuses the non-loopback Admin host");
+  assert.ok(!args.includes("--admin-allow-from") && !args.some((a: string) => PRIVATE_LAN.test(a)), "no allowlist and no LAN value is invented by default; the Server then refuses the non-loopback Admin host");
   const allowed = serverArgs({ REACH_ADMIN_ALLOW_FROM: "203.0.113.0/24,127.0.0.1" }, layout);
   assert.deepEqual([allowed[allowed.indexOf("--admin-allow-from") + 1], allowed.filter((a) => a === "--admin-host").length, allowed.filter((a) => a === "--admin-allow-from").length], ["203.0.113.0/24,127.0.0.1", 1, 1], "the deployment allowlist is passed through once");
   assert.ok(!serverArgs({ REACH_ADMIN_ALLOW_FROM: "" }, layout).includes("--admin-allow-from"), "an empty value is not passed");
   const custom = serverArgs({ REACH_PORT: "9001" }, layout);
   assert.equal(custom[custom.indexOf("--port") + 1], "9001");
   assert.equal(serverArgs({ REACH_ADMIN_PORT: "9002" }, layout)[serverArgs({ REACH_ADMIN_PORT: "9002" }, layout).indexOf("--admin-port") + 1], "9002");
-  assert.ok(!/BUILD|COMMIT/.test(text("entrypoint.mjs").replace(/build_id|repository_commit|--build|--repository-commit/g, "")), "no build identity is read from the environment");
+  assert.ok(!/BUILD|COMMIT/.test(text("entrypoint.ts").replace(/build_id|repository_commit|--build|--repository-commit/g, "")), "no build identity is read from the environment");
 });
 
 test("Compose runs a built image and mounts exactly ONE private directory at /reach-private, with exactly two published ports and a restart policy", () => {
-  const yaml = text("compose.yaml").replace(/^\s*#.*$/gm, "").split(/^\s{2}reach-tunnel:$/m)[0];
+  const yaml = text("compose.yaml").replace(/^\s*#.*$/gm, "").split(/^\s{2}reach-tunnel:$/m)[0]!;
   assert.doesNotMatch(yaml, /^\s*build:/m, "Compose never builds from source");
   assert.match(yaml, /image: \$\{REACH_IMAGE:\?/);
   assert.match(yaml, /restart: unless-stopped/);
   assert.match(yaml, /container_name: \$\{REACH_CONTAINER_NAME:-reach-server\}/, "the container has the clean name reach-server by default");
-  const volumes = [...yaml.matchAll(/^\s+- (\$\{REACH_[A-Z_]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].replace(/\$\{(REACH_[A-Z_]+):\?[^}]*\}/, "$1"));
+  const volumes = [...yaml.matchAll(/^\s+- (\$\{REACH_[A-Z_]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1]!.replace(/\$\{(REACH_[A-Z_]+):\?[^}]*\}/, "$1"));
   assert.deepEqual(volumes, ["REACH_PRIVATE_PATH:/reach-private"], "one Server persistence mount, no legacy config, proposal or log mounts");
   assert.equal((yaml.match(/^\s+- \$\{REACH_[A-Z_]+:\?/gm) ?? []).length, 1, "no other mount");
   assert.doesNotMatch(yaml, /REACH_(CONFIG_FILE|PROPOSAL_FILE|LOG_DIR)|\/run\/reach|\/var\/log\/reach/, "no legacy Server storage path");
   assert.doesNotMatch(yaml, /docker\.sock|privileged|network_mode: host|volumes:\s*\n\s*\w+:|\s- \/:|\s- \/\w+:\/\w+/);
-  const ports = [...yaml.matchAll(/^\s+- "([^"]+:8[0-9]{3})"$/gm)].map((m) => m[1]);
+  const ports = [...yaml.matchAll(/^\s+- "([^"]+:8[0-9]{3})"$/gm)].map((m) => m[1]!);
   assert.deepEqual(ports, ["${REACH_BIND:-0.0.0.0}:${REACH_PORT:-8787}:8787", "${REACH_ADMIN_BIND:?host address to publish the Admin plane on}:${REACH_ADMIN_PORT:-8788}:8788"], "service reachable by default; the Admin publication is whatever the deployment sets in REACH_ADMIN_BIND, with no default");
   assert.match(yaml, /environment:\n\s+REACH_ADMIN_ALLOW_FROM: \$\{REACH_ADMIN_ALLOW_FROM:\?/, "the Server receives its Admin allowlist from the deployment and has no default one");
   assert.doesNotMatch(text("compose.yaml"), PRIVATE_LAN, "no private network literal in Compose");
@@ -99,24 +99,24 @@ test("Compose runs a built image and mounts exactly ONE private directory at /re
 
 test("the Compose stack has exactly the Server and the Tunnel; the Tunnel is read-only mounted, unpublished and independent of the Server", () => {
   const full = text("compose.yaml").replace(/^\s*#.*$/gm, "");
-  assert.deepEqual([...full.matchAll(/^\s{2}([a-z-]+):$/gm)].map((m) => m[1]).filter((name) => name !== "services"), ["reach-server", "reach-tunnel"]);
-  const tunnel = full.split(/^\s{2}reach-tunnel:$/m)[1];
+  assert.deepEqual([...full.matchAll(/^\s{2}([a-z-]+):$/gm)].map((m) => m[1]!).filter((name) => name !== "services"), ["reach-server", "reach-tunnel"]);
+  const tunnel = full.split(/^\s{2}reach-tunnel:$/m)[1]!;
   assert.match(tunnel, /container_name: \$\{REACH_TUNNEL_CONTAINER_NAME:-reach-tunnel\}/);
   assert.match(tunnel, /restart: unless-stopped/);
   assert.match(tunnel, /user: "1000:1000"/);
   assert.match(tunnel, /until node -e .*reach-server:8787\/health.*exec \/usr\/local\/bin\/tunnel-client run --config \/run\/reach-tunnel\/tunnel-client\.yaml/, "the Tunnel waits for the Server before it starts");
-  assert.deepEqual([...tunnel.matchAll(/^\s+- (\$\{REACH_TUNNEL_[A-Z]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1].split("}:").pop()), ["/usr/local/bin/tunnel-client:ro", "/run/reach-tunnel:ro"]);
+  assert.deepEqual([...tunnel.matchAll(/^\s+- (\$\{REACH_TUNNEL_[A-Z]+:\?[^}]*\}:[^\s]+)$/gm)].map((m) => m[1]!.split("}:").pop()), ["/usr/local/bin/tunnel-client:ro", "/run/reach-tunnel:ro"]);
   assert.match(tunnel, /^\s+- \/etc\/ssl\/certs\/ca-certificates\.crt:\/etc\/ssl\/certs\/ca-certificates\.crt:ro$/m, "the Tunnel trusts the host CA bundle read-only");
   assert.doesNotMatch(tunnel, /^\s+ports:|depends_on|8788|8789|REACH_ADMIN|network_mode|privileged|docker\.sock/m, "the Tunnel publishes nothing, never names the admin listener and does not gate the Server");
   assert.doesNotMatch(full, /sk-|tunnel_[0-9a-f]{8}|api[_-]?key:|Bearer /i, "no credential or tunnel identity in the public file");
 });
 
 test("the healthcheck probes the public release manifest of the service listener without a credential, never the Admin plane, and the image declares it", () => {
-  const hc = code("healthcheck.mjs");
+  const hc = code("healthcheck.ts");
   assert.match(hc, /\/release\/manifest/);
   assert.match(hc, /REACH_PORT/);
   assert.doesNotMatch(hc, /Authorization|bearer|\/health\b|\/mcp|\/admin|ADMIN/i);
-  assert.match(text("Dockerfile"), /^HEALTHCHECK .*healthcheck\.mjs/m);
+  assert.match(text("Dockerfile"), /^HEALTHCHECK .*healthcheck\.ts/m);
 });
 
 test("a verified release is staged to exactly the Dockerfile inputs, and docker gets the manifest's identity", () => {
@@ -126,11 +126,11 @@ test("a verified release is staged to exactly the Dockerfile inputs, and docker 
   assert.deepEqual(identity, { build_id: BUILD_ID, repository_commit: COMMIT });
   const call = readFileSync(log, "utf8");
   assert.match(call, new RegExp(`build --build-arg REACH_BUILD_ID=${BUILD_ID} --build-arg REACH_REPOSITORY_COMMIT=${COMMIT} -t reach-server:test `));
-  for (const wanted of ["Dockerfile", "entrypoint.mjs", "healthcheck.mjs", "runtime.tgz", "manifest.json", "reach-client-linux-x64.tgz", "reach-client-win32-x64.zip"]) assert.ok(call.includes(wanted), wanted);
+  for (const wanted of ["Dockerfile", "entrypoint.ts", "healthcheck.ts", "runtime.tgz", "manifest.json", "reach-client-linux-x64.tgz", "reach-client-win32-x64.zip"]) assert.ok(call.includes(wanted), wanted);
   assert.ok(!existsSync(readFileSync(`${log}.ctx`, "utf8").trim()), "the temporary context is removed");
   const context = mkdtempSync(path.join(base, "ctx-"));
   stageContext(dir, context);
-  assert.deepEqual(readdirSync(context).sort(), ["Dockerfile", "artifacts", "entrypoint.mjs", "healthcheck.mjs", "server"]);
+  assert.deepEqual(readdirSync(context).sort(), ["Dockerfile", "artifacts", "entrypoint.ts", "healthcheck.ts", "server"]);
 });
 
 test("the Server archive is the one the manifest declares, staged under a neutral name; deploy/prod hardcodes no release filename", () => {
@@ -139,10 +139,10 @@ test("the Server archive is the one the manifest declares, staged under a neutra
   stageContext(dir, context);
   assert.deepEqual(readFileSync(path.join(context, "server", "runtime.tgz")), readFileSync(path.join(dir, "server", "reach-server-linux-x64.tgz")));
   assert.deepEqual(readdirSync(path.join(context, "server")), ["runtime.tgz"]);
-  for (const name of ["Dockerfile", "build-image.mjs", "entrypoint.mjs", "healthcheck.mjs", "compose.yaml"]) assert.doesNotMatch(text(name), /reach-(server|client)-(linux|win32)/, name);
+  for (const name of ["Dockerfile", "build-image.ts", "entrypoint.ts", "healthcheck.ts", "compose.yaml"]) assert.doesNotMatch(text(name), /reach-(server|client)-(linux|win32)/, name);
   const renamed = release("renamed");
   const m = JSON.parse(readFileSync(path.join(renamed, "artifacts", "manifest.json"), "utf8"));
-  const rec = m.artifacts.find((a) => a.role === "server");
+  const rec = m.artifacts.find((a: { role: string }) => a.role === "server");
   renameSync(path.join(renamed, "server", rec.name), path.join(renamed, "server", "other-name.tgz"));
   rec.name = "other-name.tgz";
   writeFileSync(path.join(renamed, "artifacts", "manifest.json"), JSON.stringify(m));
@@ -164,7 +164,7 @@ test("a corrupted, missing or undeclared release stops before Docker is called",
 });
 
 test("the CLI requires a release and a tag, and refuses a bad release with a non-zero exit", () => {
-  const cli = path.join(PROD, "build-image.mjs");
+  const cli = path.join(PROD, "build-image.ts");
   assert.equal(spawnSync(process.execPath, [cli], { encoding: "utf8" }).status, 2);
   const bad = spawnSync(process.execPath, [cli, "--release", path.join(base, "nowhere"), "--tag", "t"], { encoding: "utf8" });
   assert.equal(bad.status, 1);
@@ -172,7 +172,7 @@ test("the CLI requires a release and a tag, and refuses a bad release with a non
 });
 
 test("the production assets carry no self-update, downloader or private topology", () => {
-  for (const name of ["Dockerfile", "entrypoint.mjs", "healthcheck.mjs", "compose.yaml", "build-image.mjs"]) {
+  for (const name of ["Dockerfile", "entrypoint.ts", "healthcheck.ts", "compose.yaml", "build-image.ts"]) {
     assert.doesNotMatch(text(name).replace(/^\s*(#|\/\/).*$/gm, ""), /curl|wget|auto-?update|watchtower|docker\.sock|(?<![/\w-])reach-private|\/reach\/reach-private|192\.168\.|\.lab\b/i, name);
   }
 });
@@ -182,7 +182,7 @@ test("the root .env contract: .env.example is tracked and names the private path
   const example = readFileSync(path.join(root, ".env.example"), "utf8");
   for (const name of ["REACH_PRIVATE_PATH", "REACH_IMAGE", "REACH_ADMIN_BIND", "REACH_ADMIN_ALLOW_FROM", "REACH_TUNNEL_BINARY", "REACH_TUNNEL_DIR"]) assert.match(example, new RegExp(`^${name}=$`, "m"), `${name} is declared empty`);
   assert.doesNotMatch(example, PRIVATE_LAN, "no private network value");
-  const ignored = (file) => spawnSync("git", ["check-ignore", "-q", file], { cwd: root }).status === 0;
+  const ignored = (file: string) => spawnSync("git", ["check-ignore", "-q", file], { cwd: root }).status === 0;
   assert.equal(ignored(".env"), true, "the local .env is ignored");
   assert.equal(ignored(".env.example"), false, ".env.example is not ignored");
 });

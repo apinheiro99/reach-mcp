@@ -6,9 +6,11 @@ import path from "node:path";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 
 /** Every regular file under `root` as { path (posix, relative), data, mode }, sorted by path. Anything else is refused. */
-export function collectEntries(root) {
-  const entries = [];
-  const walk = (dir) => {
+export type ArchiveEntry = { path: string; data: Buffer; mode: number };
+
+export function collectEntries(root: string): ArchiveEntry[] {
+  const entries: ArchiveEntry[] = [];
+  const walk = (dir: string) => {
     for (const name of readdirSync(dir).sort()) {
       const abs = path.join(dir, name);
       const st = lstatSync(abs);
@@ -21,14 +23,14 @@ export function collectEntries(root) {
   return entries;
 }
 
-const octal = (value, width) => value.toString(8).padStart(width - 1, "0") + "\0";
+const octal = (value: number, width: number) => value.toString(8).padStart(width - 1, "0") + "\0";
 
-function tarHeader(entry) {
+function tarHeader(entry: ArchiveEntry) {
   const header = Buffer.alloc(512);
   let name = entry.path;
   let prefix = "";
   if (Buffer.byteLength(name) > 100) {
-    const cut = [...name.matchAll(/\//g)].map((m) => m.index).find((i) => i <= 155 && Buffer.byteLength(name) - i - 1 <= 100);
+    const cut = [...name.matchAll(/\//g)].map((m) => m.index).find((i): i is number => i !== undefined && i <= 155 && Buffer.byteLength(name) - i - 1 <= 100);
     if (cut === undefined) throw new Error(`archive: path too long for ustar: ${entry.path}`);
     prefix = name.slice(0, cut);
     name = name.slice(cut + 1);
@@ -48,8 +50,8 @@ function tarHeader(entry) {
 }
 
 /** .tgz bytes (gzip level 9, no filename or time in the gzip header). */
-export function tgz(entries) {
-  const parts = [];
+export function tgz(entries: ArchiveEntry[]) {
+  const parts: Buffer[] = [];
   for (const entry of entries) {
     parts.push(tarHeader(entry), entry.data, Buffer.alloc((512 - (entry.data.length % 512)) % 512));
   }
@@ -58,9 +60,9 @@ export function tgz(entries) {
 }
 
 /** .zip bytes: deflate entries, UTF-8 names, fixed 1980-01-01 time, unix mode in the external attributes. */
-export function zip(entries) {
-  const locals = [];
-  const central = [];
+export function zip(entries: ArchiveEntry[]) {
+  const locals: Buffer[] = [];
+  const central: Buffer[] = [];
   let offset = 0;
   for (const entry of entries) {
     const name = Buffer.from(entry.path);

@@ -5,13 +5,13 @@ import { readFileSync } from "node:fs";
 const ci = readFileSync(new URL("../.gitlab-ci.yml", import.meta.url), "utf8");
 
 // Top-level block of a job/template: from its header line to the next top-level key.
-function block(name) {
+function block(name: string): string {
   const lines = ci.split("\n");
   const start = lines.findIndex((l) => l === `${name}:` || l === `"${name}":`);
   assert.ok(start >= 0, `missing block ${name}`);
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
-    if (/^[^\s#]/.test(lines[i])) { end = i; break; }
+    if (/^[^\s#]/.test(lines[i]!)) { end = i; break; }
   }
   return lines.slice(start, end).join("\n");
 }
@@ -26,7 +26,7 @@ test("validation jobs are blocking and never run for tag pipelines", () => {
     const b = block(job);
     assert.match(b, /- \.branch-push-only/, `${job} must reuse the branch-push rules`);
     assert.match(b, /- \.validation-summary/, `${job} must publish the always-on summary artifact`);
-    assert.match(b, /node scripts\/validation-summary\.mjs "/, `${job} must run through the summary wrapper`);
+    assert.match(b, /node scripts\/validation-summary\.ts "/, `${job} must run through the summary wrapper`);
     assert.doesNotMatch(b, /allow_failure/, `${job} must stay blocking`);
     assert.match(b, /stage: validate/);
   }
@@ -93,7 +93,7 @@ test("production delivery: the release job needs every validation job; the defau
   assert.doesNotMatch(ci, /task-37|task-\d+/, "no per-Task branch exception");
   const shared = block(".deploy-release");
   assert.match(shared, /- job: "Build Release"\n\s+artifacts: true/, "deploy consumes the release of the same pipeline");
-  assert.match(shared, /node deploy\/prod\/deploy\.mjs deploy --release release /, "deploy calls the controller locally with the Build Release artifacts");
+  assert.match(shared, /node deploy\/prod\/deploy\.ts deploy --release release /, "deploy calls the controller locally with the Build Release artifacts");
   const production = block("Deploy Production");
   assert.match(production, /extends: \.deploy-release/);
   assert.match(production, /\$CI_COMMIT_TAG'\n\s+when: never/);
@@ -119,8 +119,8 @@ test("production delivery: jobs run on the docker-prod runner, call the controll
   assert.match(shared, /artifacts:\n\s+when: always[\s\S]*- deploy-evidence\//);
   assert.match(shared, /tags:\n\s+- docker-prod/, "deploy and rollback run only on the docker-prod runner");
   assert.match(block(".deploy-release"), /extends: \.deploy-job/, "deploy jobs share the production lock, runner and evidence");
-  assert.match(block("Rollback Production"), /node deploy\/prod\/deploy\.mjs rollback /, "rollback calls the controller locally");
-  for (const [name, job] of [["deploy", block(".deploy-release")], ["rollback", block("Rollback Production")]]) {
+  assert.match(block("Rollback Production"), /node deploy\/prod\/deploy\.ts rollback /, "rollback calls the controller locally");
+  for (const [name, job] of [["deploy", block(".deploy-release")], ["rollback", block("Rollback Production")]] as [string, string][]) {
     assert.match(job, /--admin-bind "\$REACH_ADMIN_BIND" --admin-allow-from "\$REACH_ADMIN_ALLOW_FROM"/, `${name} passes the Admin exposure variables from GitLab`);
     assert.match(job, /--private-path "\$REACH_PRIVATE_PATH"/, `${name} passes the one private root from GitLab`);
     assert.doesNotMatch(job, /--(config|proposal|logs) /, `${name} no longer builds separate Server storage paths`);

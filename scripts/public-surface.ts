@@ -7,7 +7,7 @@ import process from "node:process";
 const FORBIDDEN_PATHS = [/(^|\/)\.env(?!\.example$)(\.[^/]*)?$/, /\.(pem|key|p12|pfx|crt|cer)$/i];
 
 // The checker and its test necessarily contain the patterns they detect.
-const PATTERN_FILES = new Set(["scripts/public-surface.mjs", "tests/public-surface.test.mjs"]);
+const PATTERN_FILES = new Set(["scripts/public-surface.ts", "tests/public-surface.test.ts"]);
 
 const CONTENT_RULES = [
   { category: "private-key-block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
@@ -21,8 +21,10 @@ const CONTENT_RULES = [
   { category: "private-hostname", re: /\b[a-z0-9-]+\.(lab|internal|local)\b|\btruenas\b/i },
 ];
 
-export function scanText(text) {
-  const hits = [];
+export type Hit = { line: number; category: string };
+
+export function scanText(text: string): Hit[] {
+  const hits: Hit[] = [];
   text.split("\n").forEach((line, i) => {
     for (const { category, re } of CONTENT_RULES) {
       if (re.test(line)) hits.push({ line: i + 1, category });
@@ -31,8 +33,8 @@ export function scanText(text) {
   return hits;
 }
 
-export function scanFiles(files, read = (f) => readFileSync(f, "utf8")) {
-  const findings = [];
+export function scanFiles(files: string[], read = (f: string) => readFileSync(f, "utf8")) {
+  const findings: (Hit & { file: string })[] = [];
   for (const file of files) {
     if (FORBIDDEN_PATHS.some((re) => re.test(file))) findings.push({ file, line: 0, category: "forbidden-path" });
     if (PATTERN_FILES.has(file)) continue;

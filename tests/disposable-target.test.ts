@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { type Untrusted } from "../scripts/release/manifest.ts";
 import { parseServerArgs, startServer } from "../packages/server/src/runtime.ts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
@@ -18,9 +19,9 @@ const base = mkdtempSync(path.join(tmpdir(), "reach-targets-"));
 after(() => rmSync(base, { recursive: true, force: true }));
 const { fetch } = globalThis;
 const env = { ...process.env, REACH_TARGET_ROOT: base, REACH_HOST_ONLY_MARKER: "present-on-host" };
-const harness = (...args) => execFileSync("bash", [SCRIPT, ...args], { encoding: "utf8", env }).trim();
-const inside = (name, ...cmd) => harness("run", name, "--", ...cmd);
-const tryHarness = (...args) => spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8", env });
+const harness = (...args: string[]) => execFileSync("bash", [SCRIPT, ...args], { encoding: "utf8", env }).trim();
+const inside = (name: string, ...cmd: string[]) => harness("run", name, "--", ...cmd);
+const tryHarness = (...args: string[]) => spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8", env });
 
 const namespaces = spawnSync("unshare", ["--map-root-user", "--mount", "--pid", "--fork", "true"]).status === 0;
 const skip = namespaces ? false : "unprivileged user/mount/PID namespaces are not available on this host";
@@ -38,7 +39,7 @@ test("names are validated: nothing but the fixed prefix and six characters ever 
 
 test("lifecycle: fresh and isolated, canonical artifact installs with default paths, a Client enrolls against a real Server, recreation is clean, destroy leaves nothing", { skip, timeout: 280_000 }, async () => {
   const release = path.join(base, "release");
-  execFileSync(process.execPath, [path.join(REPO, "scripts", "release.mjs"), "build", "--build-id", "dev-1", "--repository-commit", "0".repeat(40), "--out", release], { encoding: "utf8" });
+  execFileSync(process.execPath, [path.join(REPO, "scripts", "release.ts"), "build", "--build-id", "dev-1", "--repository-commit", "0".repeat(40), "--out", release], { encoding: "utf8" });
   const archive = path.join(release, "artifacts", "reach-client-linux-x64.tgz");
   const hostOpt = existsSync("/opt/reach-mcp-client");
   const hostUnits = existsSync("/etc/systemd/system/reach-mcp-client.service");
@@ -80,16 +81,16 @@ test("lifecycle: fresh and isolated, canonical artifact installs with default pa
     const admin = `http://127.0.0.1:${server.adminPort}`;
     const bearer = "disposable-bearer-" + "Hq48Tz21";
     assert.equal((await fetch(`${admin}/admin/api/config`, { method: "PUT", body: JSON.stringify({ mcp_bearer: bearer, clients: [] }) })).status, 200);
-    const connected = async () => (await (await fetch(`http://127.0.0.1:${server.port}/health`, { headers: { Authorization: `Bearer ${bearer}` } })).json()).clients.connected;
-    const waitFor = async (n) => {
+    const connected = async (): Promise<number> => ((await (await fetch(`http://127.0.0.1:${server.port}/health`, { headers: { Authorization: `Bearer ${bearer}` } })).json()) as Untrusted).clients.connected;
+    const waitFor = async (n: number) => {
       for (let i = 0; i < 160 && (await connected()) !== n; i++) await sleep(50);
       return connected();
     };
     const pid = harness("run", name, "--detach", "--", "node", "/opt/reach-mcp-client/reach-client.mjs", "--bootstrap", "/mnt/bootstrap.env", "--build", "dev-1", "--allow-insecure-ws");
     assert.match(pid, /^\d+$/);
-    const listed = async () => (await (await fetch(`${admin}/admin/api/clients`)).json()).clients;
+    const listed = async (): Promise<Untrusted[]> => ((await (await fetch(`${admin}/admin/api/clients`)).json()) as Untrusted).clients;
     for (let i = 0; i < 160 && (await listed()).length === 0; i++) await sleep(50);
-    const [registered] = await listed();
+    const [registered] = (await listed()) as [Untrusted];
     assert.equal(registered?.status, "pending", "the Client inside the target registered itself and waits for a human");
     assert.equal(await connected(), 0, "Pending has no session");
     assert.equal((await fetch(`${admin}/admin/api/clients/${encodeURIComponent(registered.client_id)}/enable`, { method: "POST" })).status, 200);
@@ -97,7 +98,7 @@ test("lifecycle: fresh and isolated, canonical artifact installs with default pa
     assert.equal(harness("status", name), `${name} running=1`);
     const generated = readFileSync(path.join(dir, "stage", "bootstrap.env"), "utf8");
     assert.match(generated, /REACH_CLIENT_IDENTITY_KEY=\S+/, "the identity was generated inside the target only");
-    const identityText = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(generated)[1];
+    const identityText = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(generated)![1]!;
     assert.ok(!readFileSync(path.join(base, "cfg", "config.json"), "utf8").includes(identityText), "the Server never saw the private key");
 
     // Teardown kills what runs inside and removes every trace, the identity included.

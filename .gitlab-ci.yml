@@ -5,7 +5,7 @@
 # GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
 # Production delivery: the release is built only from a passing default-branch or Task-branch pipeline. The default branch deploys automatically after it; a Task branch deploys by itself
 # as Deploy Candidate, for the exact pipeline SHA (live acceptance before merge); rollback stays manual; the logic lives in
-# deploy/prod/deploy.mjs, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
+# deploy/prod/deploy.ts, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
 image: node:24-bookworm
 
 stages:
@@ -40,7 +40,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.mjs "Public Release Check" npm run check:public-surface
+    - node scripts/validation-summary.ts "Public Release Check" npm run check:public-surface
 
 "Lint":
   extends:
@@ -48,7 +48,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.mjs "Lint" npm run lint
+    - node scripts/validation-summary.ts "Lint" npm run lint
 
 "Type Check":
   extends:
@@ -56,7 +56,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.mjs "Type Check" npm run typecheck
+    - node scripts/validation-summary.ts "Type Check" npm run typecheck
 
 "Automated Tests":
   extends:
@@ -64,7 +64,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.mjs "Automated Tests" npm test
+    - node scripts/validation-summary.ts "Automated Tests" npm test
 
 "Package Check":
   extends:
@@ -72,7 +72,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.mjs "Package Check" npm run check:package
+    - node scripts/validation-summary.ts "Package Check" npm run check:package
 
 "Release Check":
   extends:
@@ -80,7 +80,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.mjs "Release Check" npm run check:release
+    - node scripts/validation-summary.ts "Release Check" npm run check:release
 
 .ci-tag:
   stage: tag
@@ -137,8 +137,8 @@ ci-tag-red:
   script:
     # The release identity is the version the green tag job gives this very pipeline (same grammar as .ci-tag), so the footer shows the Git tag.
     - VERSION="v$(date -u -d "$CI_PIPELINE_CREATED_AT" +%Y.%m).$(printf "%06d" "$CI_PIPELINE_IID")"
-    - node scripts/release.mjs build --build-id "$VERSION" --repository-commit "$CI_COMMIT_SHA" --out release
-    - node scripts/release.mjs verify --out release
+    - node scripts/release.ts build --build-id "$VERSION" --repository-commit "$CI_COMMIT_SHA" --out release
+    - node scripts/release.ts verify --out release
   artifacts:
     expire_in: 14 days
     paths:
@@ -167,7 +167,7 @@ ci-tag-red:
     - npm ci
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p deploy-evidence
-    - node deploy/prod/deploy.mjs deploy --release release --state "$REACH_ROOT/state" --private-path "$REACH_PRIVATE_PATH" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --admin-bind "$REACH_ADMIN_BIND" --admin-allow-from "$REACH_ADMIN_ALLOW_FROM" --evidence deploy-evidence/evidence.json
+    - node deploy/prod/deploy.ts deploy --release release --state "$REACH_ROOT/state" --private-path "$REACH_PRIVATE_PATH" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --admin-bind "$REACH_ADMIN_BIND" --admin-allow-from "$REACH_ADMIN_ALLOW_FROM" --evidence deploy-evidence/evidence.json
 
 "Deploy Production":
   extends: .deploy-release
@@ -191,7 +191,7 @@ ci-tag-red:
     - npm ci
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p deploy-evidence
-    - node deploy/prod/deploy.mjs rollback --state "$REACH_ROOT/state" --private-path "$REACH_PRIVATE_PATH" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --admin-bind "$REACH_ADMIN_BIND" --admin-allow-from "$REACH_ADMIN_ALLOW_FROM" --evidence deploy-evidence/evidence.json
+    - node deploy/prod/deploy.ts rollback --state "$REACH_ROOT/state" --private-path "$REACH_PRIVATE_PATH" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --admin-bind "$REACH_ADMIN_BIND" --admin-allow-from "$REACH_ADMIN_ALLOW_FROM" --evidence deploy-evidence/evidence.json
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
