@@ -58,9 +58,9 @@ if (Get-ChildItem -LiteralPath $Stage -Recurse -Force | Where-Object { $_.LinkTy
 $Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 $WasRunning = ($null -ne $Existing) -and ($Existing.State -eq 'Running')
 if ($null -ne $Existing) { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
-Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $p = $_.Path; $p -and $p.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue
 $Deadline = (Get-Date).AddSeconds(15)
-while ((Get-Date) -lt $Deadline -and (Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) })) { Start-Sleep -Milliseconds 300 }
+while ((Get-Date) -lt $Deadline -and (Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $p = $_.Path; $p -and $p.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) })) { Start-Sleep -Milliseconds 300 }
 
 # Replace: a failure before the swap leaves the previous install untouched; the old tree is removed only after the new one is in place.
 if (Test-Path -LiteralPath $InstallDir) {

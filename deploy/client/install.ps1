@@ -115,8 +115,10 @@ try {
   # Machine changes start here, after everything above was validated.
   $Endpoint = "ws://$Authority/client"
   # An older install without a receipt keeps its bootstrap and its root untouched: no new path is created for it.
-  if (-not (Test-Path -LiteralPath $Bootstrap -PathType Leaf) -or (Test-Path -LiteralPath $Receipt -PathType Leaf)) { New-Item -ItemType Directory -Path $StateDir, $Root -Force | Out-Null }
-  else { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
+  # A drive root (C:\ after confirmation) exists already and cannot be created: only the state directory is.
+  $Create = @($StateDir)
+  if ((-not (Test-Path -LiteralPath $Bootstrap -PathType Leaf) -or (Test-Path -LiteralPath $Receipt -PathType Leaf)) -and $Root -ne [IO.Path]::GetPathRoot($Root)) { $Create += $Root }
+  New-Item -ItemType Directory -Path $Create -Force | Out-Null
   & icacls.exe $StateDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
   if ($LASTEXITCODE -ne 0) { Fail 'could not restrict the ACL of the state directory' }
   $Utf8 = New-Object Text.UTF8Encoding($false)
