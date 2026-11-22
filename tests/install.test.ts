@@ -157,7 +157,7 @@ test("Windows public installer (structural only, no PowerShell runs here): expli
   assert.match(ps, /schema_version -ne 2/);
   assert.match(ps, /\$_\.role -eq 'client' -and \$_\.os -eq 'win32' -and \$_\.arch -eq 'x64'/, "selected by role/os/arch, never by filename");
   assert.match(ps, /Get-FileHash .* SHA256/);
-  assert.ok(ps.indexOf("Get-FileHash") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "integrity is verified before any machine change");
+  assert.ok(ps.indexOf("Get-FileHash") < ps.indexOf("New-Item -ItemType Directory -Path $Create"), "integrity is verified before any machine change");
   assert.match(ps, /S-1-5-18.*S-1-5-32-544/, "only SYSTEM and Administrators on the state directory");
   assert.match(ps, /-ExecutionPolicy Bypass -File \$LowLevel/, "a default Windows client refuses to run a .ps1 file directly");
   assert.match(ps, /-AllowInsecureWs -Start/);
@@ -190,6 +190,12 @@ test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-dr
   assert.match(un, /Unregister-ScheduledTask/);
   assert.match(un, /IndexOf\("`"\$InstallDir\\reach-client\.mjs`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "a task that does not run the exact recorded launcher path is refused, case-insensitively");
   assert.match(un, /StartsWith\(\$InstallDir \+ '\\'/, "only Node processes under the recorded install directory are stopped");
+  const low = readFileSync(path.join(dir, "install-windows.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
+  assert.doesNotMatch(low, /\$_\.Path -and \$_\.Path\.StartsWith/, "the process Path is never read twice: PowerShell 5.1 can return null on the second read");
+  assert.equal(low.match(/\$p = \$_\.Path; \$p -and \$p\.StartsWith\(/g)?.length, 2, "both the stop filter and the wait loop read Path once and test the captured value");
+  const pub = readFileSync(path.join(dir, "install.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
+  assert.match(pub, /-and \$Root -ne \[IO\.Path\]::GetPathRoot\(\$Root\)\) \{ \$Create \+= \$Root \}/, "a drive root is never passed to New-Item: it exists and C:\\ is not a creatable path");
+  assert.doesNotMatch(pub, /New-Item[^\n]*\$StateDir, \$Root/, "state directory and root are not created together");
   assert.match(un, /if \(\[bool\]\$R\.owned\.root -and \$Root\.Length -gt 3\) \{ Remove-IfEmpty \$Root \}/, "the root goes only when REACH created it and it is empty, and a drive root never goes");
   assert.doesNotMatch(un, /Remove-Item[^\n]*\$Root[^\n]*-Recurse/, "no recursive deletion of a root");
   const ps = readFileSync(path.join(dir, "install.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
@@ -198,10 +204,10 @@ test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-dr
   assert.match(ps, /install-receipt\.json/);
   assert.match(ps, /uninstall first to change REACH_INSTALL_DIR/, "a changed install directory fails before any change");
   assert.match(ps, /IndexOf\("`"\$\(\$InstallDir\.TrimEnd\('\\'\)\)\\reach-client\.mjs`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "the public installer proves a task by the exact launcher path");
-  assert.ok(ps.indexOf("uninstall first to change REACH_INSTALL_DIR") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the coordinate check precedes every machine change");
+  assert.ok(ps.indexOf("uninstall first to change REACH_INSTALL_DIR") < ps.indexOf("New-Item -ItemType Directory -Path $Create"), "the coordinate check precedes every machine change");
   assert.match(readFileSync(PS1, "utf8"), /IndexOf\("`"\$Launcher`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "the low-level installer proves a task by the exact launcher path");
   assert.match(readFileSync(PS1, "utf8"), /is not a REACH Client task: refusing to replace it/, "a foreign Scheduled Task is refused by the low-level installer too");
-  assert.ok(ps.indexOf("is not a REACH Client task") > 0 && ps.indexOf("is not a REACH Client task") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the public installer refuses a foreign task before creating any state or bootstrap");
+  assert.ok(ps.indexOf("is not a REACH Client task") > 0 && ps.indexOf("is not a REACH Client task") < ps.indexOf("New-Item -ItemType Directory -Path $Create"), "the public installer refuses a foreign task before creating any state or bootstrap");
 });
 
 const CLIENT_DIR = path.join(import.meta.dirname, "..", "deploy", "client");
@@ -218,7 +224,7 @@ test("Windows roots: no path-depth rule anywhere, a shallow root is valid, and a
   assert.match(ps, /\$AllowWholeDrive = \$env:REACH_ALLOW_WHOLE_DRIVE -eq '1'/, "one explicit confirmation switch, the Windows counterpart of --allow-whole-disk");
   assert.match(ps, /WARNING: REACH_ROOT \$Root shares the WHOLE DRIVE/, "the warning names the whole drive");
   assert.match(ps, /to confirm it, set \$env:REACH_ALLOW_WHOLE_DRIVE=/, "the refusal says how to confirm");
-  assert.ok(ps.indexOf("REACH_ALLOW_WHOLE_DRIVE -eq") > 0 && ps.indexOf("WHOLE DRIVE") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the confirmation precedes every machine change");
+  assert.ok(ps.indexOf("REACH_ALLOW_WHOLE_DRIVE -eq") > 0 && ps.indexOf("WHOLE DRIVE") < ps.indexOf("New-Item -ItemType Directory -Path $Create"), "the confirmation precedes every machine change");
   const root = /Format-Root \$Root/.test(ps);
   assert.ok(root && /\$RootJson = \$Root\.Replace/.test(ps) && /root = \$Root; task_name/.test(ps), "a drive root is kept as C:\\ in the bootstrap and the receipt, never the drive-relative C:");
   const low = strip("install-windows.ps1");
