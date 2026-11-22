@@ -250,7 +250,7 @@ test("Linux preflight (structural): the service user's Node check runs before an
   assert.ok(check > 0);
   for (const change of ['useradd', 'mkdir -p "$state_dir"', "fetch /release/manifest", "install-linux.sh"]) assert.ok(check < sh.indexOf(change), `the check precedes ${change}`);
   assert.match(sh, /"\$runuser_bin" -u "\$SERVICE_USER" -- "\$node_bin" -v/, "an existing account runs the exact Node itself");
-  assert.match(sh, /"\$setpriv_bin" --reuid=65534 --regid=65534 --clear-groups "\$node_bin" -v/, "an account that does not exist yet is stood in for by an unprivileged identity, nothing is created");
+  assert.match(sh, /"\$setpriv_bin" --reuid=65534 --regid=65534 --clear-groups sh -c '"\$1" -v' sh "\$node_bin"/, "an account that does not exist yet is stood in for by an unprivileged identity, nothing is created");
 });
 
 test("Linux preflight: a Node inside a directory the service user cannot traverse is refused before anything is created", { skip: !asRoot && "switching users needs root" }, () => {
