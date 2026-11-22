@@ -190,7 +190,7 @@ test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-dr
   assert.match(un, /Unregister-ScheduledTask/);
   assert.match(un, /IndexOf\("`"\$InstallDir\\reach-client\.mjs`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "a task that does not run the exact recorded launcher path is refused, case-insensitively");
   assert.match(un, /StartsWith\(\$InstallDir \+ '\\'/, "only Node processes under the recorded install directory are stopped");
-  assert.match(un, /if \(\[bool\]\$R\.owned\.root\) \{ Remove-IfEmpty \$Root \}/, "the root goes only when REACH created it and it is empty");
+  assert.match(un, /if \(\[bool\]\$R\.owned\.root -and \$Root\.Length -gt 3\) \{ Remove-IfEmpty \$Root \}/, "the root goes only when REACH created it and it is empty, and a drive root never goes");
   assert.doesNotMatch(un, /Remove-Item[^\n]*\$Root[^\n]*-Recurse/, "no recursive deletion of a root");
   const ps = readFileSync(path.join(dir, "install.ps1"), "utf8").replace(/^\s*#.*$/gm, "");
   assert.match(ps, /\$OwnRoot = -not \(Test-Path -LiteralPath \$Root\)/, "ownership is decided before the first change");
@@ -202,4 +202,70 @@ test("Windows lifecycle (structural only, no PowerShell runs here): a receipt-dr
   assert.match(readFileSync(PS1, "utf8"), /IndexOf\("`"\$Launcher`"", \[StringComparison\]::OrdinalIgnoreCase\) -lt 0/, "the low-level installer proves a task by the exact launcher path");
   assert.match(readFileSync(PS1, "utf8"), /is not a REACH Client task: refusing to replace it/, "a foreign Scheduled Task is refused by the low-level installer too");
   assert.ok(ps.indexOf("is not a REACH Client task") > 0 && ps.indexOf("is not a REACH Client task") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the public installer refuses a foreign task before creating any state or bootstrap");
+});
+
+const CLIENT_DIR = path.join(import.meta.dirname, "..", "deploy", "client");
+const strip = (file: string) => readFileSync(path.join(CLIENT_DIR, file), "utf8").replace(/^\s*#.*$/gm, "");
+/** The single-quoted regex literals of a PowerShell file that describe a plain drive path, as JavaScript regular expressions. */
+const drivePatterns = (file: string) => [...strip(file).matchAll(/'(\^\[A-Za-z\]:[^']*\$)'/g)].map((m) => m[1]!);
+
+test("Windows roots: no path-depth rule anywhere, a shallow root is valid, and a whole drive is refused until the operator confirms it", () => {
+  for (const file of ["install.ps1", "install-windows.ps1", "uninstall-windows.ps1"]) {
+    const text = strip(file);
+    assert.doesNotMatch(text, /two segments|Count -ge 2|Count -lt 2|must not be a drive root/, `${file} has no depth heuristic`);
+  }
+  const ps = strip("install.ps1");
+  assert.match(ps, /\$AllowWholeDrive = \$env:REACH_ALLOW_WHOLE_DRIVE -eq '1'/, "one explicit confirmation switch, the Windows counterpart of --allow-whole-disk");
+  assert.match(ps, /WARNING: REACH_ROOT \$Root shares the WHOLE DRIVE/, "the warning names the whole drive");
+  assert.match(ps, /to confirm it, set \$env:REACH_ALLOW_WHOLE_DRIVE=/, "the refusal says how to confirm");
+  assert.ok(ps.indexOf("REACH_ALLOW_WHOLE_DRIVE -eq") > 0 && ps.indexOf("WHOLE DRIVE") < ps.indexOf("New-Item -ItemType Directory -Path $StateDir"), "the confirmation precedes every machine change");
+  const root = /Format-Root \$Root/.test(ps);
+  assert.ok(root && /\$RootJson = \$Root\.Replace/.test(ps) && /root = \$Root; task_name/.test(ps), "a drive root is kept as C:\\ in the bootstrap and the receipt, never the drive-relative C:");
+  const low = strip("install-windows.ps1");
+  assert.match(low, /\$segments \| Where-Object \{ \$_ -eq '' -or \$_ -eq '\.' -or \$_ -eq '\.\.' \}/, "installer-owned coordinates keep plain syntax: no empty, . or .. segment");
+});
+
+test("Windows path grammar is symmetric: the installer writes only what the uninstaller accepts, and both treat the same strings alike", () => {
+  const install = drivePatterns("install.ps1");
+  const uninstall = drivePatterns("uninstall-windows.ps1");
+  assert.deepEqual([...new Set(install)].sort(), [...new Set(uninstall)].sort(), "the same two grammars (below a drive, or a whole drive) in both scripts");
+  const [below, whole] = [install.find((p) => p.endsWith("+$"))!, install.find((p) => p.endsWith("*$"))!];
+  const ok = (pattern: string, value: string) => new RegExp(pattern).test(value) && !/(^|\\)\.\.?(\\|$)|\\\\/.test(value);
+  assert.ok(ok(whole, "C:\\scope") && ok(below, "C:\\scope"), "a shallow root is valid");
+  assert.ok(ok(whole, "C:\\") && !ok(below, "C:\\"), "a drive root is valid only as the project root, never as a state or install directory");
+  assert.ok(!ok(whole, "C:\\..\\x") && !ok(whole, "\\\\host\\share") && !ok(whole, "C:relative"), "relative segments, UNC and drive-relative forms stay refused");
+});
+
+const asRoot = process.getuid?.() === 0;
+const SYSTEM_NODE = "/usr/local/bin/node";
+function preflight(nodeDir: string) {
+  const state = path.join(base, `pf-state-${path.basename(nodeDir)}`);
+  const result = spawnSync("sh", [path.join(CLIENT_DIR, "install.sh"), "--server-origin", "http://127.0.0.1:1", "--state-dir", state, "--install-dir", path.join(base, "pf-install"), "--unit-dir", path.join(base, "pf-units"), "--test-no-system"], { encoding: "utf8", env: { PATH: `${nodeDir}:/usr/bin:/bin` } });
+  return { result, state };
+}
+
+test("Linux preflight (structural): the service user's Node check runs before any account, directory, download or unit change", () => {
+  const sh = strip("install.sh");
+  const check = sh.indexOf("cannot run $node_bin");
+  assert.ok(check > 0);
+  for (const change of ['useradd', 'mkdir -p "$state_dir"', "fetch /release/manifest", "install-linux.sh"]) assert.ok(check < sh.indexOf(change), `the check precedes ${change}`);
+  assert.match(sh, /"\$runuser_bin" -u "\$SERVICE_USER" -- "\$node_bin" -v/, "an existing account runs the exact Node itself");
+  assert.match(sh, /"\$setpriv_bin" --reuid=65534 --regid=65534 --clear-groups "\$node_bin" -v/, "an account that does not exist yet is stood in for by an unprivileged identity, nothing is created");
+});
+
+test("Linux preflight: a Node inside a directory the service user cannot traverse is refused before anything is created", { skip: !asRoot && "switching users needs root" }, () => {
+  const private700 = mkdtempSync(path.join(base, "private-node-"));
+  execFileSync("chmod", ["700", private700]);
+  symlinkSync(process.execPath, path.join(private700, "node"));
+  const { result, state } = preflight(private700);
+  assert.equal(result.status, 2, result.stderr);
+  assert.match(result.stderr, /the service user reach-mcp cannot run .*\/node .*Nothing was changed\./s);
+  assert.ok(!existsSync(state) && !existsSync(path.join(base, "pf-install")) && !existsSync(path.join(base, "pf-units")), "no state, install or unit directory was created");
+});
+
+test("Linux preflight: a system Node the service user can run passes the check and the installer goes on to the download", { skip: (!asRoot && "switching users needs root") || (!existsSync(SYSTEM_NODE) && "no /usr/local/bin/node on this host") }, () => {
+  const { result } = preflight("/usr/local/bin");
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /could not download http:\/\/127\.0\.0\.1:1\/release\/manifest/, "it got past the Node check to the first network step");
+  assert.doesNotMatch(result.stderr, /cannot run/);
 });
