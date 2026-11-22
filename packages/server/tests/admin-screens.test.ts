@@ -161,8 +161,23 @@ test("access rules: blank and duplicate paths are dropped, write rules are redun
 test("Projects drawer: right-side panel with project configuration, access rules, explanation, Cancel and Save, and the row action is not a new-project plus", () => {
   const src = ui("projects.ts");
   const components = ui("components.ts");
-  assert.ok(/UI\.drawer\(/.test(src) && /drawer\(\{ title, subtitle, children, footer, onClose \}\)/.test(components), "one drawer primitive in components.ts");
-  for (const text of ["Project configuration", "Access rules", "How it works", "Add rule", "Cancel", "Save changes", "Edit access and permissions"]) assert.ok(src.includes(text), text);
+  assert.ok(/UI\.drawer\(/.test(src) && /drawer\(\{ icon, title, subtitle, children, footer, onClose \}\)/.test(components), "one drawer primitive in components.ts");
+  for (const text of ["Project configuration", "Access rules", "How it works", "Add rule", "Cancel", "Save changes", "Edit access and permissions", "Access & Permissions", "Configuration (JSON)", "Details"]) assert.ok(src.includes(text), text);
   assert.ok(!/iconButton\("plus", "Add a project", \(\) => newProject\(c\)\), UI\.iconButton\("trash"/.test(src), "a project row has no plus that implies a new project");
   assert.ok(/for \(const k of \["writable_globs", "deny_globs"\]\) delete p\[k\]/.test(src), "saving replaces the canonical fields instead of merging stale ones");
+});
+
+test("Admin serialization: no UI-local root syntax decides membership, so POSIX, drive and UNC roots all reach the Server and a malformed one is refused atomically", async () => {
+  const src = ui("projects.ts");
+  assert.ok(!/startsWith\("\/"\)/.test(src), "no POSIX-only predicate in the Projects view");
+  assert.ok(/const filledProject = /.test(src) && /projects\.filter\(filledProject\)/.test(src), "only empty drafts are held back");
+  const rt = await start();
+  const put = (body: unknown) => fetch(`${rt.url}/admin/api/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const project = (project_id: string, physical_root: string) => ({ project_id, physical_root, mode: "read_only" });
+  const roots = [["posix", "/srv/web"], ["whole", "/"], ["drive", "C:\\"], ["path", "C:\\work\\api"], ["unc", "\\\\host\\share"]] as const;
+  assert.equal((await put({ mcp_bearer: BEARER, clients: [{ client_id: "box", enabled: false, projects: roots.map(([id, root]) => project(id, root)) }] })).status, 200);
+  assert.deepEqual(rt.config.snapshot().clients[0]?.projects.map((p) => p.physical_root), roots.map(([, root]) => root), "every valid root form is kept");
+  assert.equal((await put({ clients: [{ client_id: "box", enabled: false, projects: [project("posix", "/srv/web"), project("bad", "relative/path")] }] })).status, 422, "a malformed root is refused");
+  assert.equal(rt.config.snapshot().clients[0]?.projects.length, roots.length, "and the last good configuration keeps every project");
+  await rt.close();
 });

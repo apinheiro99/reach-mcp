@@ -97,8 +97,21 @@ export const COMPONENT_CSS = `
 .drawer-scrim{position:fixed;inset:0;background:var(--c-scrim);z-index:40}
 .drawer{position:fixed;top:0;right:0;bottom:0;width:min(46rem,100vw);background:var(--c-surface);border-left:1px solid var(--c-border-strong);display:flex;flex-direction:column;z-index:41}
 .drawer-head{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4);border-bottom:1px solid var(--c-border)}
-.drawer-head>div{flex:1;min-width:0}
+.drawer-head>div:not(.identity-badge){flex:1;min-width:0}
 .drawer-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-4)}
+.drawer-head .identity-badge{width:3.2rem;height:3.2rem}
+.tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:var(--sp-2);padding:var(--sp-1);border:1px solid var(--c-border);border-radius:var(--radius-card)}
+.tab{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);font:inherit;font-weight:600;cursor:pointer;color:var(--c-muted);background:transparent;border:1px solid transparent;border-radius:var(--radius-control);padding:.6rem var(--sp-3)}
+.tab .icon{width:1.1rem;height:1.1rem}
+.tab[aria-selected="true"]{color:var(--c-accent);background:var(--c-accent-soft);border-color:var(--c-accent)}
+.btn[data-variant="accent"]{color:var(--c-accent);border-color:var(--c-accent);background:transparent}
+.input[data-tone="ok"]{color:var(--c-ok);border-color:var(--c-ok);background:var(--c-ok-soft)}
+.input[data-tone="bad"]{color:var(--c-bad);border-color:var(--c-bad);background:var(--c-bad-soft)}
+.info-list{margin:0;padding-left:var(--sp-5);color:var(--c-muted);font-size:var(--fs-sm);display:flex;flex-direction:column;gap:var(--sp-1)}
+.rule-path{position:relative;display:flex;align-items:center;min-width:10rem}
+.rule-path .icon{position:absolute;left:var(--sp-3);width:1.1rem;height:1.1rem;color:var(--c-accent);pointer-events:none}
+.rule-path .input{padding-left:2.4rem}
+.json-view{margin:0;padding:var(--sp-3);border:1px solid var(--c-border);border-radius:var(--radius-control);background:var(--c-elevated);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--fs-sm);overflow:auto;white-space:pre-wrap}
 .drawer-foot{display:flex;justify-content:flex-end;gap:var(--sp-3);padding:var(--sp-4);border-top:1px solid var(--c-border)}
 :where(a,button,input,select,summary):focus-visible{outline:none;box-shadow:var(--focus-ring)}
 `;
@@ -225,14 +238,24 @@ const UI = {
     return UI.el("table", { className: "table" }, UI.el("thead", {}, UI.el("tr", {}, ...headers.map((h) => UI.el("th", { textContent: h })))), UI.el("tbody", {}, ...body));
   },
   // A right-side panel over a scrim: header (title, subtitle, close), scrolling body, footer actions. The caller owns what closing means.
-  drawer({ title, subtitle, children, footer, onClose }) {
+  drawer({ icon, title, subtitle, children, footer, onClose }) {
     const scrim = UI.el("div", { className: "drawer-scrim" });
     const panel = UI.el("aside", { className: "drawer" },
-      UI.el("header", { className: "drawer-head" }, UI.el("div", {}, UI.el("h2", { className: "card-title", textContent: title }), subtitle ? UI.el("p", { className: "card-sub", textContent: subtitle }) : ""), UI.iconButton("close", "Close", onClose)),
+      UI.el("header", { className: "drawer-head" }, UI.el("div", { className: "identity-badge" }, UI.icon(icon || "folder")), UI.el("div", {}, UI.el("h2", { className: "card-title", textContent: title }), subtitle ? UI.el("p", { className: "card-sub", textContent: subtitle }) : ""), UI.iconButton("close", "Close", onClose)),
       UI.el("div", { className: "drawer-body" }, ...children), UI.el("footer", { className: "drawer-foot" }, ...footer));
     panel.setAttribute("role", "dialog"); panel.setAttribute("aria-label", title);
     scrim.addEventListener("click", onClose);
     return UI.el("div", {}, scrim, panel);
+  },
+  // A strip of mutually exclusive views: items are [id, label, icon]; the caller swaps the content on select.
+  tabs(items, active, onSelect) {
+    const n = UI.el("div", { className: "tabs", role: "tablist" }, ...items.map(([id, label, icon]) => {
+      const b = UI.el("button", { className: "tab", type: "button", role: "tab" }, UI.icon(icon), label);
+      b.setAttribute("aria-selected", String(id === active));
+      b.addEventListener("click", () => onSelect(id));
+      return b;
+    }));
+    return n;
   },
   unavailable(text) { return UI.el("div", { className: "unavailable" }, UI.icon("info"), text || "Not exposed yet"); },
   autosave() {

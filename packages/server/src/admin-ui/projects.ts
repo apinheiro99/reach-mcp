@@ -31,7 +31,8 @@ export const PROJECTS_JS = ACCESS_RULES_JS + `
 const MODES = [["read_only", "Read Only"], ["read_write", "Read / Write"]];
 const RULE_PERMS = [["write", "Read / Write"], ["deny", "Deny"]];
 const statusOfClient = (c) => (c.enabled ? "enabled" : c.pending ? "pending" : "disabled");
-const validProject = (p) => p.project_id.trim() !== "" && p.physical_root.startsWith("/");
+// A draft row with no id or no root yet is not sent; any other value, whatever its platform syntax, goes to the Server's canonical schema.
+const filledProject = (p) => p.project_id.trim() !== "" && p.physical_root.trim() !== "";
 
 async function renderProjects(view) {
   const ui = { data: null, search: "", client: "all", dirty: false, rev: 0, timer: null };
@@ -57,12 +58,12 @@ async function renderProjects(view) {
   async function save() {
     const rev = ui.rev;
     const clients = ui.data.clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), enabled: c.enabled,
-      projects: c.projects.filter(validProject).map(({ _draft, ...p }) => p) }));
+      projects: c.projects.filter(filledProject).map(({ _draft, ...p }) => p) }));
     say("saving", "Saving…");
     const r = await api("PUT", "/admin/api/config", { clients });
     if (!r.ok) { say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; ")); return; }
     if (rev === ui.rev) ui.dirty = false;
-    for (const c of ui.data.clients) for (const p of c.projects) if (validProject(p)) delete p._draft;
+    for (const c of ui.data.clients) for (const p of c.projects) if (filledProject(p)) delete p._draft;
     say("saved", "Autosaved · " + clock());
     drawStats();
   }
@@ -82,36 +83,53 @@ async function renderProjects(view) {
 
   // The access drawer edits a copy; Save writes the canonical policy back and autosaves, Cancel drops the copy.
   function openAccess(c, p) {
-    const draft = { name: p.project_id, root: p.physical_root, ...rulesOf(p) };
+    const draft = { name: p.project_id, root: p.physical_root, tab: "access", ...rulesOf(p) };
     const close = () => host.replaceChildren();
     const body = UI.el("div", { className: "stack" });
-    const redraw = () => {
-      const nameInput = UI.input({ value: draft.name, placeholder: "project-id", onInput: (v) => { draft.name = v; } });
-      const rootInput = UI.input({ kind: "path", value: draft.root, placeholder: "/absolute/path/on/the/client", onInput: (v) => { draft.root = v; } });
+    const current = () => policyOf(p, draft.name, draft.root, draft.defaultMode, draft.rules);
+    const tone = (perm) => (perm === "deny" ? "bad" : "ok");
+    const pathBox = (value, onInput) => UI.el("div", { className: "pj-root" }, UI.icon("folder"), UI.input({ kind: "path", value, placeholder: "/absolute/path/on/the/client", onInput }));
+    function accessTab() {
       const defaults = UI.select(MODES, draft.defaultMode, (v) => { draft.defaultMode = v; redraw(); });
-      const ruleRows = draft.rules.map((r, i) => [String(i + 1),
-        UI.input({ kind: "path", value: r.path, placeholder: "temp/** or docs/readme.md", onInput: (v) => { r.path = v; } }),
-        UI.select(draft.defaultMode === "read_write" ? RULE_PERMS.filter(([v]) => v === "deny") : RULE_PERMS, r.perm, (v) => { r.perm = v; }),
-        UI.iconButton("trash", "Remove this rule", () => { draft.rules.splice(i, 1); redraw(); })]);
-      body.replaceChildren(
-        UI.card({ title: "Project configuration", children: [UI.el("div", { className: "form-grid" }, UI.field("Project name", nameInput), UI.field("Root (base path on the client)", rootInput)), UI.field("Default access", defaults),
-          UI.el("p", { className: "hint", textContent: "Applies to the whole project. Read / Write here makes the whole root writable; Read Only lets Read / Write rules open only the paths they name." })] }),
-        UI.card({ title: "Access rules", subtitle: "Exact files or globs relative to the root. A Deny rule always wins over a Read / Write rule.", children: [
-          ruleRows.length ? UI.table(["#", "Path (relative to root)", "Permission", "Actions"], ruleRows) : UI.unavailable("No rules: the default access applies to the whole project"),
-          UI.el("div", { className: "actions" }, UI.button("Add rule", { icon: "plus", onClick: () => { draft.rules.push({ path: "", perm: draft.defaultMode === "read_write" ? "deny" : "write" }); redraw(); } }))] }),
-        UI.card({ variant: "inset", title: "How it works", children: [UI.el("p", { className: "hint", textContent: "Globs: ** crosses folders, * stays in one folder (temp/**, docs/**, .gitlab-ci.yml, .githooks/**). Deleting never unlinks: the Client moves the file to .lixeira inside the root." })] }));
-    };
+      const ruleRows = draft.rules.map((r, i) => {
+        const perm = UI.select(draft.defaultMode === "read_write" ? RULE_PERMS.filter(([v]) => v === "deny") : RULE_PERMS, r.perm, (v) => { r.perm = v; perm.dataset.tone = tone(v); });
+        perm.dataset.tone = tone(r.perm);
+        const path = UI.el("div", { className: "rule-path" }, UI.icon("folder"), UI.input({ kind: "path", value: r.path, placeholder: "temp/** or docs/readme.md", onInput: (v) => { r.path = v; } }));
+        return [String(i + 1), path, perm, UI.iconButton("trash", "Remove this rule", () => { draft.rules.splice(i, 1); redraw(); })];
+      });
+      return [
+        UI.card({ title: "Project configuration", children: [UI.el("div", { className: "form-grid" }, UI.field("Project name", UI.input({ value: draft.name, placeholder: "project-id", onInput: (v) => { draft.name = v; } })), UI.field("Root (base path on the client)", pathBox(draft.root, (v) => { draft.root = v; }))), UI.field("Default access mode", defaults),
+          UI.el("p", { className: "hint", textContent: "Applies to the whole project. Read / Write makes the whole root writable; Read Only lets the Read / Write rules below open only the paths they name." })] }),
+        UI.card({ title: "Access rules", subtitle: "Exact files or globs relative to the root. A Deny rule always wins over a Read / Write rule; the order of rules does not matter.", children: [
+          UI.el("div", { className: "actions" }, UI.button("Add rule", { variant: "accent", icon: "plus", onClick: () => { draft.rules.push({ path: "", perm: draft.defaultMode === "read_write" ? "deny" : "write" }); redraw(); } })),
+          ruleRows.length ? UI.table(["#", "Path (relative to root)", "Permission", "Actions"], ruleRows) : UI.unavailable("No rules: the default access applies to the whole project")] }),
+        UI.card({ variant: "inset", icon: "info", title: "How it works", children: [UI.el("ul", { className: "info-list" },
+          UI.el("li", { textContent: "The default access applies to the whole project root and reading stays open everywhere except Deny paths." }),
+          UI.el("li", { textContent: "Under Read Only, a Read / Write rule (temp/**, docs/**, .gitlab-ci.yml, .githooks/**) opens only that path for writing." }),
+          UI.el("li", { textContent: "Globs: ** crosses folders, * stays in one folder. Deny rules are additive to the built-in protections." }),
+          UI.el("li", { textContent: "Write actions (create, edit, delete) work inside the root; delete moves the file to .lixeira and never unlinks." }))] })];
+    }
+    const configTab = () => [UI.card({ title: "Canonical policy", subtitle: "The exact object the Client enforces (read-only view; Save changes writes it).", children: [UI.el("pre", { className: "json-view", textContent: JSON.stringify(current(), null, 2) })] })];
+    const detailsTab = () => [UI.card({ title: "Details", children: [
+      UI.row({ icon: "user", title: "Client", detail: c.display_name || c.client_id, aside: c.client_id }),
+      UI.row({ icon: "box", title: "Project", detail: draft.name || "(new)" }),
+      UI.row({ icon: "folder", title: "Root", detail: draft.root || "(not set)" }),
+      UI.row({ icon: "shield", title: "Default access", detail: draft.defaultMode === "read_write" ? "Read / Write" : "Read Only" }),
+      UI.row({ icon: "check-circle", title: "Rules", detail: draft.rules.filter((r) => r.perm === "write").length + " Read / Write, " + draft.rules.filter((r) => r.perm === "deny").length + " Deny" })] })];
+    const TABS = [["access", "Access & Permissions", "shield"], ["config", "Configuration (JSON)", "code"], ["details", "Details", "info"]];
+    function redraw() {
+      body.replaceChildren(UI.tabs(TABS, draft.tab, (id) => { draft.tab = id; redraw(); }), ...(draft.tab === "config" ? configTab() : draft.tab === "details" ? detailsTab() : accessTab()));
+    }
     const save = () => {
-      const next = policyOf(p, draft.name, draft.root, draft.defaultMode, draft.rules);
+      const next = current();
       for (const k of ["writable_globs", "deny_globs"]) delete p[k];
       Object.assign(p, next);
       close(); drawTable(); change();
     };
     redraw();
-    host.replaceChildren(UI.drawer({ title: "Project: " + (p.project_id || "new"), subtitle: "Client: " + (c.display_name || c.client_id), onClose: close, children: [body],
+    host.replaceChildren(UI.drawer({ icon: "folder", title: "Project: " + (p.project_id || "new"), subtitle: "Client: " + (c.display_name || c.client_id), onClose: close, children: [body],
       footer: [UI.button("Cancel", { onClick: close }), UI.button("Save changes", { variant: "primary", onClick: save })] }));
   }
-  const removeProject = (c, p) => { c.projects.splice(c.projects.indexOf(p), 1); drawTable(); change(); };
 
   const row = ({ c, p }) => {
     const status = statusOfClient(c);
@@ -130,7 +148,7 @@ async function renderProjects(view) {
   };
 
   function drawStats() {
-    const all = ui.data.clients.flatMap((c) => c.projects.filter(validProject).map((p) => ({ c, p })));
+    const all = ui.data.clients.flatMap((c) => c.projects.filter(filledProject).map((p) => ({ c, p })));
     const of = (status) => all.filter(({ c }) => statusOfClient(c) === status).length;
     stats.replaceChildren(UI.stats([
       UI.stat({ icon: "box", value: all.length, label: "Projects" }),
