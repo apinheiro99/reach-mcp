@@ -170,7 +170,7 @@ test("Projects drawer: right-side panel with project configuration, access rules
 test("Admin serialization: no UI-local root syntax decides membership, so POSIX, drive and UNC roots all reach the Server and a malformed one is refused atomically", async () => {
   const src = ui("projects.ts");
   assert.ok(!/startsWith\("\/"\)/.test(src), "no POSIX-only predicate in the Projects view");
-  assert.ok(/const filledProject = /.test(src) && /projects\.filter\(filledProject\)/.test(src), "only empty drafts are held back");
+  assert.ok(/const sendable = \(p\) => !p\._draft \|\| filledProject\(p\)/.test(src) && /projects\.filter\(sendable\)/.test(src), "only a brand-new empty draft is held back; a persisted project is always sent");
   const rt = await start();
   const put = (body: unknown) => fetch(`${rt.url}/admin/api/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const project = (project_id: string, physical_root: string) => ({ project_id, physical_root, mode: "read_only" });
@@ -179,5 +179,9 @@ test("Admin serialization: no UI-local root syntax decides membership, so POSIX,
   assert.deepEqual(rt.config.snapshot().clients[0]?.projects.map((p) => p.physical_root), roots.map(([, root]) => root), "every valid root form is kept");
   assert.equal((await put({ clients: [{ client_id: "box", enabled: false, projects: [project("posix", "/srv/web"), project("bad", "relative/path")] }] })).status, 422, "a malformed root is refused");
   assert.equal(rt.config.snapshot().clients[0]?.projects.length, roots.length, "and the last good configuration keeps every project");
+  const all = roots.map(([id, root]) => project(id, root));
+  assert.equal((await put({ clients: [{ client_id: "box", enabled: false, projects: [{ ...all[0], physical_root: "" }, ...all.slice(1)] }] })).status, 422, "an existing project with a cleared root is refused, not dropped");
+  assert.equal((await put({ clients: [{ client_id: "box", enabled: false, projects: [{ ...all[0], project_id: "" }, ...all.slice(1)] }] })).status, 422, "an existing project with a cleared id is refused, not dropped");
+  assert.deepEqual(rt.config.snapshot().clients[0]?.projects.map((p) => p.project_id), roots.map(([id]) => id), "the persisted projects are untouched");
   await rt.close();
 });

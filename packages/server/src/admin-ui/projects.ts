@@ -31,8 +31,10 @@ export const PROJECTS_JS = ACCESS_RULES_JS + `
 const MODES = [["read_only", "Read Only"], ["read_write", "Read / Write"]];
 const RULE_PERMS = [["write", "Read / Write"], ["deny", "Deny"]];
 const statusOfClient = (c) => (c.enabled ? "enabled" : c.pending ? "pending" : "disabled");
-// A draft row with no id or no root yet is not sent; any other value, whatever its platform syntax, goes to the Server's canonical schema.
+// Only a brand-new draft that is still empty is held back. A persisted project is always sent, even with a cleared id or root, so the
+// Server's canonical schema refuses it atomically instead of the replacement silently deleting it.
 const filledProject = (p) => p.project_id.trim() !== "" && p.physical_root.trim() !== "";
+const sendable = (p) => !p._draft || filledProject(p);
 
 async function renderProjects(view) {
   const ui = { data: null, search: "", client: "all", dirty: false, rev: 0, timer: null };
@@ -58,7 +60,7 @@ async function renderProjects(view) {
   async function save() {
     const rev = ui.rev;
     const clients = ui.data.clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), enabled: c.enabled,
-      projects: c.projects.filter(filledProject).map(({ _draft, ...p }) => p) }));
+      projects: c.projects.filter(sendable).map(({ _draft, ...p }) => p) }));
     say("saving", "Saving…");
     const r = await api("PUT", "/admin/api/config", { clients });
     if (!r.ok) { say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; ")); return; }
@@ -148,7 +150,7 @@ async function renderProjects(view) {
   };
 
   function drawStats() {
-    const all = ui.data.clients.flatMap((c) => c.projects.filter(filledProject).map((p) => ({ c, p })));
+    const all = ui.data.clients.flatMap((c) => c.projects.filter(sendable).map((p) => ({ c, p })));
     const of = (status) => all.filter(({ c }) => statusOfClient(c) === status).length;
     stats.replaceChildren(UI.stats([
       UI.stat({ icon: "box", value: all.length, label: "Projects" }),
