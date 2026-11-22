@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const WRAPPER = path.join(import.meta.dirname, "..", "scripts", "validation-summary.mjs");
-const run = (gate, code, cwd) =>
+const WRAPPER = path.join(import.meta.dirname, "..", "scripts", "validation-summary.ts");
+const run = (gate: string, code: number, cwd: string) =>
   spawnSync(process.execPath, [WRAPPER, gate, process.execPath, "-e", `console.log("raw-child-" + "output"); process.exit(${code})`], { cwd, encoding: "utf8" });
 
 test("a passing command writes a PASS summary and exits 0", () => {

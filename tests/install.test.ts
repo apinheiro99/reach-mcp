@@ -15,7 +15,7 @@ const LEAK_MARKER = "client-credential-" + "Xk93Pq41";
 const base = mkdtempSync(path.join(tmpdir(), "reach-install-"));
 
 /** A stand-in for reach-client-linux-x64.tgz: the same top directory and launcher name, a launcher that proves it ran. */
-function archive(name = "client.tgz", extra = undefined) {
+function archive(name = "client.tgz", extra?: (top: string) => void): string {
   const src = mkdtempSync(path.join(base, "src-"));
   const top = path.join(src, "reach-client");
   mkdirSync(path.join(top, "lib"), { recursive: true });
@@ -31,8 +31,8 @@ const dirs = () => {
   const root = mkdtempSync(path.join(base, "t-"));
   return { root, install: path.join(root, "opt", "reach client"), units: path.join(root, "units"), bootstrap: path.join(root, "private", "bootstrap.env") };
 };
-const run = (args) => spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8" });
-const common = (d, file) => ["--archive", file, "--bootstrap", d.bootstrap, "--build", "dev-1", "--install-dir", d.install, "--unit-dir", d.units, "--node", process.execPath];
+const run = (args: string[]) => spawnSync("bash", [SCRIPT, ...args], { encoding: "utf8" });
+const common = (d: { bootstrap: string; install: string; units: string }, file: string) => ["--archive", file, "--bootstrap", d.bootstrap, "--build", "dev-1", "--install-dir", d.install, "--unit-dir", d.units, "--node", process.execPath];
 
 test("Linux: installs the extracted runtime to an explicit directory (spaces allowed) and writes a unit that runs the installed launcher, never the source tree", () => {
   const d = dirs();
@@ -65,7 +65,7 @@ test("Linux: unsafe or incomplete input exits 2 before touching the disk", () =>
   const d = dirs();
   const file = archive();
   const base = common(d, file);
-  const swap = (flag, value) => base.map((v, i) => (base[i - 1] === flag ? value : v));
+  const swap = (flag: string, value: string) => base.map((v, i) => (base[i - 1] === flag ? value : v));
   const cases = [
     swap("--install-dir", ""),
     swap("--install-dir", "relative/dir"),

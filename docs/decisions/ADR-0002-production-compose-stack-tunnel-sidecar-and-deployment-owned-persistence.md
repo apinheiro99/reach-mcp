@@ -44,7 +44,7 @@ Credential rotation is an operational action: replace the credential in the pers
 
 ### Deployment ownership
 
-`deploy/prod/deploy.mjs` remains the single production transaction owner. CI/CD supplies the release and external inputs; it does not bypass the controller with ad-hoc Compose rollout logic.
+`deploy/prod/deploy.ts` remains the single production transaction owner. CI/CD supplies the release and external inputs; it does not bypass the controller with ad-hoc Compose rollout logic.
 
 Deploy is automatic after successful validation and release build. Rollback remains explicit/manual.
 

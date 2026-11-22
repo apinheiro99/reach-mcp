@@ -3,38 +3,40 @@
 //   server/reach-server-linux-x64.tgz                                                                       (the Server runtime input)
 // Each archive is a self-contained Node >=24 runtime: the REACH packages as ordinary directories under lib/, the production
 // dependency tree installed by npm, and a thin launcher. No workspace link, no Git metadata, no dev dependency, no test.
-//   node scripts/release.mjs build --build-id <id> [--repository-commit <sha>] --out <dir>
-//   node scripts/release.mjs verify --out <dir>
+//   node scripts/release.ts build --build-id <id> [--repository-commit <sha>] --out <dir>
+//   node scripts/release.ts verify --out <dir>
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { stripTypeScriptTypes } from "node:module";
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { collectEntries, tgz, zip } from "./release/archive.mjs";
-import { artifactDir, buildManifest, INSTALLERS, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease } from "./release/manifest.mjs";
+import { collectEntries, tgz, zip, type ArchiveEntry } from "./release/archive.ts";
+import { artifactDir, buildManifest, INSTALLERS, MANIFEST_NAME, parseBuildId, parseCommit, REQUIRED_ARTIFACTS, SERVED_DIR, SERVER_DIR, verifyRelease, type Role, type Untrusted } from "./release/manifest.ts";
 
 const REPO = path.resolve(import.meta.dirname, "..");
 /** The Windows Client carries its own Node runtime so a fresh machine needs no Node. Pinned version and the SHA-256 Node publishes for this exact file
  *  (SHASUMS256.txt of that release); the builder refuses any other bytes. It is part of the Windows archive, so the manifest hash already covers it. */
 const WINDOWS_NODE = { version: "26.13.1", url: "https://nodejs.org/dist/v26.13.1/win-x64/node.exe", sha256: "f5109dc868ec38703ad8f305e0aceece717cb60d4889873f434017af4e96cccb" };
 /** package name -> source directory. The closure of each role is derived from its package.json dependencies. */
-const PACKAGES = {
+const PACKAGES: Record<string, string> = {
   "@reach-mcp/shared": "packages/shared",
   "@reach-mcp/git-compat": "packages/legacy/git-compat",
   "@reach-mcp/client": "packages/client",
   "@reach-mcp/server": "packages/server",
 };
 /** The canonical role/platform set comes from the manifest owner; only the archive format and file name are decided here. */
-const TARGETS = REQUIRED_ARTIFACTS.map((t) => (t.os === "win32" ? { ...t, archive: zip, name: `reach-${t.role}-${t.platform}.zip` } : { ...t, archive: tgz, name: `reach-${t.role}-${t.platform}.tgz` }));
+type Target = (typeof REQUIRED_ARTIFACTS)[number] & { archive: (entries: ArchiveEntry[]) => Buffer; name: string };
+const TARGETS: Target[] = REQUIRED_ARTIFACTS.map((t) => (t.os === "win32" ? { ...t, archive: zip, name: `reach-${t.role}-${t.platform}.zip` } : { ...t, archive: tgz, name: `reach-${t.role}-${t.platform}.tgz` }));
 
-const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
-const manifestOf = (name) => readJson(path.join(REPO, PACKAGES[name], "package.json"));
+const readJson = (file: string): Untrusted => JSON.parse(readFileSync(file, "utf8"));
+const manifestOf = (name: string) => readJson(path.join(REPO, PACKAGES[name] ?? "", "package.json"));
 
 /** The REACH packages a role needs: itself plus its local dependencies, transitively. */
-function closure(role) {
-  const seen = new Set();
-  const visit = (name) => {
+function closure(role: Role) {
+  const seen = new Set<string>();
+  const visit = (name: string) => {
     if (seen.has(name)) return;
     seen.add(name);
     for (const dep of Object.keys(manifestOf(name).dependencies ?? {})) if (dep in PACKAGES) visit(dep);
@@ -58,23 +60,24 @@ function windowsNode() {
   return cached;
 }
 
-function stage(target, buildDir) {
+function stage(target: Target, buildDir: string) {
   const root = path.join(buildDir, `${target.role}-${target.platform}`, `reach-${target.role}`);
   mkdirSync(path.join(root, "lib"), { recursive: true });
   const locals = closure(target.role);
-  const dependencies = {};
+  const dependencies: Record<string, string> = {};
   for (const name of locals) {
     const dest = path.join(root, "lib", name.replace("@reach-mcp/", ""));
-    cpSync(path.join(REPO, PACKAGES[name], "src"), path.join(dest, "src"), { recursive: true, filter: (src) => path.basename(src) !== "testing" });
-    copyFileSync(path.join(REPO, PACKAGES[name], "package.json"), path.join(dest, "package.json"));
-    for (const [dep, range] of Object.entries(manifestOf(name).dependencies ?? {})) if (!(dep in PACKAGES)) dependencies[dep] = range;
+    cpSync(path.join(REPO, PACKAGES[name] ?? "", "src"), path.join(dest, "src"), { recursive: true, filter: (src) => path.basename(src) !== "testing" });
+    copyFileSync(path.join(REPO, PACKAGES[name] ?? "", "package.json"), path.join(dest, "package.json"));
+    for (const [dep, range] of Object.entries(manifestOf(name).dependencies ?? {}) as [string, string][]) if (!(dep in PACKAGES)) dependencies[dep] = range;
   }
   writeFileSync(path.join(root, "package.json"), `${JSON.stringify({ name: `reach-${target.role}-runtime`, version: "0.0.0", private: true, type: "module", engines: { node: ">=24" }, dependencies }, null, 2)}\n`);
   copyFileSync(path.join(REPO, "package-lock.json"), path.join(root, "package-lock.json")); // pins the versions npm resolves
   execFileSync("npm", ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", `--os=${target.os}`, "--cpu=x64"], { cwd: root, stdio: ["ignore", "ignore", "inherit"] });
   rmSync(path.join(root, "node_modules", ".bin"), { recursive: true, force: true });
   rmSync(path.join(root, "node_modules", ".package-lock.json"), { force: true });
-  copyFileSync(path.join(import.meta.dirname, "release", "launcher.mjs"), path.join(root, `reach-${target.role}.mjs`));
+  // The launcher is TypeScript source; the artifact keeps its external JavaScript name (reach-client.mjs / reach-server.mjs), generated by stripping types.
+  writeFileSync(path.join(root, `reach-${target.role}.mjs`), stripTypeScriptTypes(readFileSync(path.join(import.meta.dirname, "release", "launcher.ts"), "utf8")));
   copyFileSync(path.join(REPO, "LICENSE"), path.join(root, "LICENSE"));
   if (target.role === "client" && target.os === "linux") {
     // The public install.sh runs this low-level installer out of the verified archive: it stays the one owner of the swap and the unit.
@@ -92,7 +95,7 @@ function stage(target, buildDir) {
   return root;
 }
 
-export function build({ buildId, repositoryCommit, out }) {
+export function build({ buildId, repositoryCommit, out }: { buildId: string; repositoryCommit: string; out: string }) {
   if (existsSync(out) && readdirSync(out).length > 0) throw new Error(`release: --out ${out} must be absent or empty`);
   const work = mkdtempSync(path.join(tmpdir(), "reach-release-"));
   try {
@@ -113,7 +116,7 @@ export function build({ buildId, repositoryCommit, out }) {
   if (problems.length > 0) throw new Error(`release: the produced layout failed verification: ${problems.join("; ")}`);
 }
 
-function option(args, name) {
+function option(args: string[], name: string) {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 }
@@ -134,10 +137,10 @@ if (import.meta.main) {
       if (problems.length > 0) throw new Error(`release: verification failed:\n  ${problems.join("\n  ")}`);
       process.stdout.write("release: verified, every artifact matches the manifest\n");
     } else {
-      throw new Error("usage: node scripts/release.mjs build --build-id <id> [--repository-commit <sha>] --out <dir> | verify --out <dir>");
+      throw new Error("usage: node scripts/release.ts build --build-id <id> [--repository-commit <sha>] --out <dir> | verify --out <dir>");
     }
   } catch (error) {
-    process.stderr.write(`${error.message}\n`);
+    process.stderr.write(`${(error as Error).message}\n`);
     process.exit(2);
   }
 }

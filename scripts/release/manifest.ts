@@ -5,6 +5,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { BuildId } from "@reach-mcp/shared/wire";
 
+/** Parsed JSON whose shape is only known after validation (a manifest read from disk, a package.json). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type Untrusted = any;
+export type Role = "server" | "client";
+export type ArtifactRecord = { role: Role; platform: string; name: string; bytes: Buffer };
+export type InstallerRecord = { name: string; bytes: Buffer };
+
 export const MANIFEST_SCHEMA_VERSION = 2;
 export const MANIFEST_NAME = "manifest.json";
 /** Release layout: the Client archives and the manifest are what the Server serves; the Server runtime sits beside it. */
@@ -14,7 +21,7 @@ export const SERVER_DIR = "server";
 export const PUBLIC_DOWNLOAD_PREFIX = "/release/artifacts/";
 /** The canonical schema-v2 release composition: exactly one artifact per role and platform. The one owner of target metadata:
  *  os/arch are what an installer selects by (never parsed from platform); only Client archives are publicly downloadable. */
-export const REQUIRED_ARTIFACTS = [
+export const REQUIRED_ARTIFACTS: { role: Role; platform: string; os: string; arch: string }[] = [
   { role: "server", platform: "linux-x64", os: "linux", arch: "x64" },
   { role: "client", platform: "linux-x64", os: "linux", arch: "x64" },
   { role: "client", platform: "win32-x64", os: "win32", arch: "x64" },
@@ -24,28 +31,28 @@ export const INSTALLERS = [
   { name: "install.sh", os: "linux", download_path: "/install.sh" },
   { name: "install.ps1", os: "win32", download_path: "/install.ps1" },
 ];
-const isPublic = (role) => role === "client";
-const targetOf = (role, platform) => REQUIRED_ARTIFACTS.find((t) => t.role === role && t.platform === platform);
+const isPublic = (role: unknown) => role === "client";
+const targetOf = (role: unknown, platform: unknown) => REQUIRED_ARTIFACTS.find((t) => t.role === role && t.platform === platform);
 const ROLES = new Set(REQUIRED_ARTIFACTS.map((r) => r.role));
 const SHA256 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 
-export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-export const artifactDir = (role) => (role === "server" ? SERVER_DIR : SERVED_DIR);
+export const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+export const artifactDir = (role: Role) => (role === "server" ? SERVER_DIR : SERVED_DIR);
 
-export function parseBuildId(value) {
+export function parseBuildId(value: unknown): string {
   const parsed = BuildId.safeParse(value);
   if (!parsed.success) throw new Error("release: --build-id must be a non-empty printable identifier of at most 128 characters");
   return parsed.data;
 }
 
-export function parseCommit(value) {
+export function parseCommit(value: unknown): string {
   if (typeof value !== "string" || !COMMIT.test(value)) throw new Error("release: the repository commit must be a full 40-hex SHA");
   return value;
 }
 
 /** records: [{ role, platform, name, bytes }]; installers: [{ name, bytes }] for every INSTALLERS entry; hash and size come from the final bytes. */
-export function buildManifest({ buildId, repositoryCommit, records, installers }) {
+export function buildManifest({ buildId, repositoryCommit, records, installers }: { buildId: string; repositoryCommit: string; records: ArtifactRecord[]; installers: InstallerRecord[] }) {
   return {
     schema_version: MANIFEST_SCHEMA_VERSION,
     release: { build_id: buildId, repository_commit: repositoryCommit },
@@ -70,12 +77,12 @@ export function buildManifest({ buildId, repositoryCommit, records, installers }
 }
 
 /** Every structural and coherence problem of a parsed manifest, as strings (empty = valid). */
-export function validateManifest(m) {
-  const problems = [];
-  const isObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+export function validateManifest(m: Untrusted): string[] {
+  const problems: string[] = [];
+  const isObject = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
   if (!isObject(m)) return ["manifest is not an object"];
   if (m.schema_version !== MANIFEST_SCHEMA_VERSION) problems.push(`schema_version must be ${MANIFEST_SCHEMA_VERSION}`);
-  const build = (value, label) => {
+  const build = (value: unknown, label: string) => {
     if (!BuildId.safeParse(value).success) {
       problems.push(`${label} is not a valid build id`);
       return null;
@@ -94,10 +101,10 @@ export function validateManifest(m) {
     problems.push("artifacts must be a non-empty array");
     return problems;
   }
-  const names = new Set();
-  const pairs = new Map();
-  const selectors = new Set();
-  m.artifacts.forEach((a, i) => {
+  const names = new Set<string>();
+  const pairs = new Map<string, number>();
+  const selectors = new Set<string>();
+  m.artifacts.forEach((a: Untrusted, i: number) => {
     const at = `artifacts[${i}]`;
     if (!ROLES.has(a?.role)) problems.push(`${at}.role must be server or client`);
     if (typeof a?.platform !== "string" || a.platform === "") problems.push(`${at}.platform must be a non-empty string`);
@@ -139,20 +146,20 @@ export function validateManifest(m) {
 }
 
 /** Verify a release directory: manifest valid, every declared file present with exact size and hash, nothing undeclared. */
-export function verifyRelease(dir) {
-  let manifest;
+export function verifyRelease(dir: string): string[] {
+  let manifest: Untrusted;
   try {
     manifest = JSON.parse(readFileSync(path.join(dir, SERVED_DIR, MANIFEST_NAME), "utf8"));
   } catch (error) {
-    return [`cannot read ${SERVED_DIR}/${MANIFEST_NAME}: ${error.message}`];
+    return [`cannot read ${SERVED_DIR}/${MANIFEST_NAME}: ${(error as Error).message}`];
   }
   const problems = validateManifest(manifest);
   if (problems.length > 0) return problems;
-  const declared = { [SERVED_DIR]: new Set([MANIFEST_NAME]), [SERVER_DIR]: new Set() };
+  const declared: Record<string, Set<string>> = { [SERVED_DIR]: new Set([MANIFEST_NAME]), [SERVER_DIR]: new Set() };
   for (const a of [...manifest.artifacts, ...manifest.installers]) {
     const dirName = a.role === undefined ? SERVED_DIR : artifactDir(a.role);
-    declared[dirName].add(a.name);
-    let bytes;
+    declared[dirName]?.add(a.name);
+    let bytes: Buffer;
     try {
       bytes = readFileSync(path.join(dir, dirName, a.name));
     } catch {
@@ -163,7 +170,7 @@ export function verifyRelease(dir) {
     if (sha256(bytes) !== a.sha256) problems.push(`${a.name}: sha256 differs from the manifest`);
   }
   for (const sub of [SERVED_DIR, SERVER_DIR]) {
-    for (const file of readdirSync(path.join(dir, sub))) if (!declared[sub].has(file)) problems.push(`${sub}/${file}: present but not declared`);
+    for (const file of readdirSync(path.join(dir, sub))) if (!declared[sub]?.has(file)) problems.push(`${sub}/${file}: present but not declared`);
   }
   return problems;
 }

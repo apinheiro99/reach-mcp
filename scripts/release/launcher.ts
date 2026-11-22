@@ -8,15 +8,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const ENTRIES = { "reach-client.mjs": "client", "reach-server.mjs": "server" };
-const entry = ENTRIES[path.basename(fileURLToPath(import.meta.url))];
+const entry = (ENTRIES as Record<string, string | undefined>)[path.basename(fileURLToPath(import.meta.url))];
 if (entry === undefined) throw new Error("reach launcher: run it as reach-client.mjs or reach-server.mjs");
 
-const libDir = (name) => path.join(root, "lib", name.replace(/^@reach-mcp\//, ""));
+const libDir = (name: string) => path.join(root, "lib", name.replace(/^@reach-mcp\//, ""));
 registerHooks({
   resolve(specifier, context, nextResolve) {
     const match = /^(@reach-mcp\/[^/]+)(\/.*)?$/.exec(specifier);
     if (match === null) return nextResolve(specifier, context);
-    const dir = libDir(match[1]);
+    const dir = libDir(match[1] as string);
     const exportsMap = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")).exports;
     const key = match[2] === undefined ? "." : `.${match[2]}`;
     const target = exportsMap === undefined ? (key === "." ? null : key) : exportsMap[key];

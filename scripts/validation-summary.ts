@@ -8,12 +8,12 @@ import process from "node:process";
 
 const [name, ...command] = process.argv.slice(2);
 if (!name || command.length === 0) {
-  console.error("usage: validation-summary.mjs <gate-name> <command> [args...]");
+  console.error("usage: validation-summary.ts <gate-name> <command> [args...]");
   process.exit(2);
 }
 
 const started = new Date();
-const result = spawnSync(command[0], command.slice(1), {
+const result = spawnSync(command[0] ?? "", command.slice(1), {
   stdio: "inherit",
   shell: false,
   env: process.env,
