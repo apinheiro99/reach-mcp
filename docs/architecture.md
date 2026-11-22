@@ -666,7 +666,7 @@ All ordinary policy values are centrally configurable through Server/Web UI. Non
 
 The project access model is one canonical policy object, not an ACL hierarchy and not one project per permission level. `physical_root` defines the readable base scope; `writable_globs` narrows the mutation surface when controlled write is enabled; `deny_globs` are additive restrictions that win over writable allowlists; limits travel with the same effective policy. Server persistence, wire policy sync, Client enforcement and Admin UI all consume that same contract. The Dev MCP's proven `PROJECT_ROOT` + restricted write paths + additive deny rules + trash-delete behavior is the behavioral reference, adapted to REACH's distributed Server-owned policy model rather than copied as a parallel implementation.
 
-The approved Admin interaction is a right-side Project Access drawer over the Projects page, visually matching `docs/screens/REACH 08_MCP Project Access Dashboard.png`. It edits the full project access policy with explicit Save/Cancel; the row-level UI must not imply that adding another logical project is the way to express a narrower writable path.
+The approved Admin interaction is a right-side Project Access drawer over the Projects page, visually matching `docs/screens/REACH 08_MCP Project Access Dashboard.png`. It edits the full project access policy as one draft with explicit Save changes/Cancel (the scoped exception to autosave, see Configuration editing); its tabs are Access & Permissions (the rules), Configuration (JSON) (the canonical policy object, read-only) and Details (identity and rule counts); the row-level UI must not imply that adding another logical project is the way to express a narrower writable path.
 
 ### Symlink discovery behavior
 
@@ -828,9 +828,9 @@ Normal configuration uses **autosave**.
 
 Changing an ordinary field, select/combo, toggle or checkbox persists automatically after a short debounce/validation interval.
 
-There is **no generic Save button**.
+There is **no generic Save button** for inline fields.
 
-Normal human-originated Web UI configuration remains autosave, including capability and allowlist changes.
+Ordinary inline Projects fields (project id, root, default policy) remain autosave. The one scoped exception is the Project Access drawer: it is a transactional draft over one project's whole access policy, so it has explicit Save changes / Cancel. Cancel discards the draft; Save changes writes the complete policy back to the project and the same ~500 ms autosave then persists it through the one config endpoint, atomically.
 
 Explicit action buttons are reserved only for actions that are inherently actions rather than field edits, such as:
 
@@ -838,7 +838,7 @@ Explicit action buttons are reserved only for actions that are inherently action
 - rotate/revoke a credential;
 - destructive operations that are not ordinary configuration edits.
 
-There is no generic Save/Confirm button for ordinary configuration changes.
+There is no generic Save/Confirm button for ordinary inline configuration changes; the Project Access drawer's Save/Cancel is the single, scoped exception described above.
 
 ---
 

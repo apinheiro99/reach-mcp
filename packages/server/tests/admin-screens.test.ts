@@ -9,6 +9,7 @@ import path from "node:path";
 import { endpointCatalog } from "../src/endpoint-catalog.ts";
 import { ClientConnectionRegistry, createAdminHandler, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { newIdentity } from "./identity-fixture.ts";
+import { ACCESS_RULES_JS } from "../src/admin-ui/projects.ts";
 
 const UI_DIR = path.join(import.meta.dirname, "..", "src", "admin-ui");
 const ui = (name: string) => readFileSync(path.join(UI_DIR, name), "utf8");
@@ -92,7 +93,7 @@ test("Projects view: six counters, one search, one Client filter, the six refere
   assert.ok(src.includes('"Client", "Project", "Root Path", "Policy", "Access", "Actions"'));
   assert.ok(/className: "pj-root"/.test(src) && /UI\.icon\("folder"\)/.test(src) && /kind: "path"/.test(src), "the stronger boxed root-path treatment");
   assert.ok(/setTimeout\(save, 500\)/.test(src) && /api\("PUT", "\/admin\/api\/config"/.test(src), "~500 ms autosave through the config owner");
-  assert.ok(!/Save["']|"Save/.test(src.replace(/Autosaved|Saving…|Not saved/g, "")), "no Save button");
+  assert.ok(!/Save["']|"Save/.test(src.replace(/Autosaved|Saving…|Not saved|Save changes/g, "")), "no Save button");
   assert.ok(!/rotate-key/.test(src), "no project-scoped rotation: Rotate Key stays on the Clients screen");
   assert.ok(!/public_key|has_public_key/.test(src), "the view never touches key material");
   assert.equal(src.match(/every\(load\)/g)?.length, 1);
@@ -132,4 +133,55 @@ test("all six screens are real: no placeholder remains, one poller owner, and th
   assert.ok(!/setInterval/.test(page), "the page composition declares no timer; the footer version rides the shell's one poller");
   assert.ok(/refreshVersion\(\); }, 5000\)/.test(ui("shell.ts")), "the footer version refreshes on the shell poller");
   assert.match(ui("overview.ts").split("\n").slice(0, 3).join(" "), /\/admin\/api\/state and \/admin\/api\/clients/);
+});
+
+const accessRules = new Function(`${ACCESS_RULES_JS}; return { rulesOf, policyOf };`)() as {
+  rulesOf: (p: object) => { defaultMode: string; rules: { path: string; perm: string }[] };
+  policyOf: (p: object, name: string, root: string, defaultMode: string, rules: { path: string; perm: string }[]) => object;
+};
+const policyBase = { project_id: "scope", physical_root: "/scope" };
+
+test("access rules: read-only, full write and restricted write each map to one canonical policy and back without loss", () => {
+  const { rulesOf, policyOf } = accessRules;
+  assert.deepEqual(policyOf(policyBase, "scope", "/scope", "read_only", []), { ...policyBase, mode: "read_only" }, "read-only has no allowlist");
+  assert.deepEqual(policyOf(policyBase, "scope", "/scope", "read_write", []), { ...policyBase, mode: "read_write" }, "full write has no writable_globs");
+  const restricted = policyOf(policyBase, "scope", "/scope", "read_only", [{ path: "temp/**", perm: "write" }, { path: ".gitlab-ci.yml", perm: "write" }, { path: "*.key", perm: "deny" }]);
+  assert.deepEqual(restricted, { ...policyBase, mode: "read_write", writable_globs: ["temp/**", ".gitlab-ci.yml"], deny_globs: ["*.key"] });
+  assert.deepEqual(rulesOf(restricted), { defaultMode: "read_only", rules: [{ path: "temp/**", perm: "write" }, { path: ".gitlab-ci.yml", perm: "write" }, { path: "*.key", perm: "deny" }] });
+  assert.equal(rulesOf({ ...policyBase, mode: "read_write" }).defaultMode, "read_write");
+});
+
+test("access rules: blank and duplicate paths are dropped, write rules are redundant under full write, and limits survive an edit", () => {
+  const { policyOf } = accessRules;
+  const withLimits = { ...policyBase, mode: "read_only", limits: { maxReadLines: 10 } };
+  const out = policyOf(withLimits, " scope ", " /scope ", "read_write", [{ path: " ", perm: "deny" }, { path: "a/**", perm: "write" }, { path: "x", perm: "deny" }, { path: "x", perm: "deny" }]);
+  assert.deepEqual(out, { ...policyBase, mode: "read_write", limits: { maxReadLines: 10 }, deny_globs: ["x"] });
+});
+
+test("Projects drawer: right-side panel with project configuration, access rules, explanation, Cancel and Save, and the row action is not a new-project plus", () => {
+  const src = ui("projects.ts");
+  const components = ui("components.ts");
+  assert.ok(/UI\.drawer\(/.test(src) && /drawer\(\{ icon, title, subtitle, children, footer, onClose \}\)/.test(components), "one drawer primitive in components.ts");
+  for (const text of ["Project configuration", "Access rules", "How it works", "Add rule", "Cancel", "Save changes", "Edit access and permissions", "Access & Permissions", "Configuration (JSON)", "Details"]) assert.ok(src.includes(text), text);
+  assert.ok(!/iconButton\("plus", "Add a project", \(\) => newProject\(c\)\), UI\.iconButton\("trash"/.test(src), "a project row has no plus that implies a new project");
+  assert.ok(/for \(const k of \["writable_globs", "deny_globs"\]\) delete p\[k\]/.test(src), "saving replaces the canonical fields instead of merging stale ones");
+});
+
+test("Admin serialization: no UI-local root syntax decides membership, so POSIX, drive and UNC roots all reach the Server and a malformed one is refused atomically", async () => {
+  const src = ui("projects.ts");
+  assert.ok(!/startsWith\("\/"\)/.test(src), "no POSIX-only predicate in the Projects view");
+  assert.ok(/const sendable = \(p\) => !p\._draft \|\| filledProject\(p\)/.test(src) && /projects\.filter\(sendable\)/.test(src), "only a brand-new empty draft is held back; a persisted project is always sent");
+  const rt = await start();
+  const put = (body: unknown) => fetch(`${rt.url}/admin/api/config`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const project = (project_id: string, physical_root: string) => ({ project_id, physical_root, mode: "read_only" });
+  const roots = [["posix", "/srv/web"], ["whole", "/"], ["drive", "C:\\"], ["path", "C:\\work\\api"], ["unc", "\\\\host\\share"]] as const;
+  assert.equal((await put({ mcp_bearer: BEARER, clients: [{ client_id: "box", enabled: false, projects: roots.map(([id, root]) => project(id, root)) }] })).status, 200);
+  assert.deepEqual(rt.config.snapshot().clients[0]?.projects.map((p) => p.physical_root), roots.map(([, root]) => root), "every valid root form is kept");
+  assert.equal((await put({ clients: [{ client_id: "box", enabled: false, projects: [project("posix", "/srv/web"), project("bad", "relative/path")] }] })).status, 422, "a malformed root is refused");
+  assert.equal(rt.config.snapshot().clients[0]?.projects.length, roots.length, "and the last good configuration keeps every project");
+  const all = roots.map(([id, root]) => project(id, root));
+  assert.equal((await put({ clients: [{ client_id: "box", enabled: false, projects: [{ ...all[0], physical_root: "" }, ...all.slice(1)] }] })).status, 422, "an existing project with a cleared root is refused, not dropped");
+  assert.equal((await put({ clients: [{ client_id: "box", enabled: false, projects: [{ ...all[0], project_id: "" }, ...all.slice(1)] }] })).status, 422, "an existing project with a cleared id is refused, not dropped");
+  assert.deepEqual(rt.config.snapshot().clients[0]?.projects.map((p) => p.project_id), roots.map(([id]) => id), "the persisted projects are untouched");
+  await rt.close();
 });

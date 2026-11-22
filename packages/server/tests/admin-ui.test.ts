@@ -126,7 +126,7 @@ test("Overview shows only API facts: what the Server does not expose is an expli
 
 test("page: vanilla and self-contained, autosave states, no Save button, no framework, remote script or old logo mark", () => {
   for (const state of ["saving", "saved", "error"]) assert.ok(page.includes(`say("${state}"`), `autosave state ${state}`);
-  assert.ok(!/>\s*Save\s*</i.test(page) && !/UI\.button\("Save/.test(page), "no generic Save button");
+  assert.ok(!/>\s*Save\s*</i.test(page) && !/UI\.button\("Save(?! changes)/.test(page), "no generic Save button");
   assert.ok(!/<script[^>]*\ssrc=|<link[^>]*rel="stylesheet"|https?:\/\/(?!www\.w3\.org)/.test(page), "no remote or external resource");
   assert.ok(!/react|vue|svelte|angular|jquery|tailwind|vite/i.test(page));
   assert.ok(!/linked-?loop|link-?loop/i.test(page), "the rejected linked-loop mark is not referenced");
