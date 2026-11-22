@@ -1,8 +1,8 @@
-// Controlled production delivery for the canonical release: one transaction around build-image.mjs and compose.yaml. It runs ON the
+// Controlled production delivery for the canonical release: one transaction around build-image.ts and compose.yaml. It runs ON the
 // deployment host; the host, credentials and paths are operator inputs (flags / environment), never defaults of this repository.
-//   node deploy/prod/deploy.mjs deploy   --release <dir> --state <dir> --private-path <dir> --admin-bind <addr> --admin-allow-from <addr-or-cidr,...> [options]
-//   node deploy/prod/deploy.mjs rollback --state <dir> --private-path <dir> --admin-bind <addr> --admin-allow-from <list> ... (uses the recorded previous deployment)
-//   node deploy/prod/deploy.mjs status   --state <dir>
+//   node deploy/prod/deploy.ts deploy   --release <dir> --state <dir> --private-path <dir> --admin-bind <addr> --admin-allow-from <addr-or-cidr,...> [options]
+//   node deploy/prod/deploy.ts rollback --state <dir> --private-path <dir> --admin-bind <addr> --admin-allow-from <list> ... (uses the recorded previous deployment)
+//   node deploy/prod/deploy.ts status   --state <dir>
 // The Server's whole persistent state (configuration, proposal, logs) lives under ONE host directory, --private-path, mounted at /reach-private.
 // State (<state>/state.json) keeps two known-good deployments, `current` and `previous`, each: build_id, repository_commit, image,
 // private_path (a path only, never contents), deployed_at. A candidate becomes `current` only after the Server answers healthy,
@@ -13,8 +13,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleepMs } from "node:timers/promises";
-import { MANIFEST_NAME, SERVED_DIR, verifyRelease } from "../../scripts/release/manifest.mjs";
-import { buildImage } from "./build-image.mjs";
+import { MANIFEST_NAME, SERVED_DIR, verifyRelease, type Untrusted } from "../../scripts/release/manifest.ts";
+import { buildImage } from "./build-image.ts";
 
 const COMPOSE_FILE = path.join(import.meta.dirname, "compose.yaml");
 const STATE_FILE = "state.json";
@@ -23,31 +23,62 @@ const STATE_SCHEMA = 2;
 /** The node user of the production image: it writes the private root. */
 export const CONTAINER_UID = 1000;
 
-const text = (v) => typeof v === "string" && v !== "";
+export type Deps = {
+  run: (cmd: string, args: string[], env: Record<string, string>) => unknown;
+  http: (url: string) => Promise<{ status: number; body: string }>;
+  sleep: (ms: number) => Promise<unknown>;
+  now: () => string;
+  uid: () => number;
+  chown: (file: string, uid: number) => void;
+};
+export type Options = {
+  command?: string;
+  state: string;
+  docker: string;
+  project: string;
+  imageRepo: string;
+  port: number;
+  adminPort: number;
+  retries: number;
+  intervalMs: number;
+  evidence?: string;
+  release?: string;
+  tunnelBinary?: string;
+  tunnelDir?: string;
+  adminBind?: string;
+  adminAllowFrom?: string;
+  privatePath?: string;
+  containerUid?: number;
+};
+type DeploymentRecord = { build_id: string; repository_commit: string; image: string; private_path: string | null; deployed_at: string | null };
+type State = { schema_version: number; current: DeploymentRecord | null; previous: DeploymentRecord | null; legacy?: { config?: string; proposal?: string } | null };
+
+const text = (v: unknown): v is string => typeof v === "string" && v !== "";
 
 /** Problems of one persisted deployment record (empty = valid). */
-const recordProblems = (name, r) =>
+const recordProblems = (name: string, r: Untrusted): string[] =>
   r === null
     ? []
     : typeof r !== "object" || Array.isArray(r)
       ? [`${name} must be a record or null`]
       : [
-          ...["build_id", "image", "deployed_at"].filter((k) => !text(r[k])).map((k) => `${name}.${k} must be a non-empty string`),
+          ...["build_id", "image", "deployed_at"].filter((k: string) => !text(r[k])).map((k: string) => `${name}.${k} must be a non-empty string`),
           ...(r.private_path === null || text(r.private_path) ? [] : [`${name}.private_path must be a non-empty string or null`]),
           ...(/^[0-9a-f]{40}$/.test(r.repository_commit) ? [] : [`${name}.repository_commit must be a 40-hex commit`]),
         ];
 
 /** Fail closed: only a missing state file means "first deployment"; anything unreadable, malformed or unsupported stops the command. */
-const readState = (dir) => {
+const readState = (dir: string): State => {
   const file = path.join(dir, STATE_FILE);
-  let raw;
+  let raw: string;
   try {
     raw = readFileSync(file, "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return { schema_version: STATE_SCHEMA, current: null, previous: null };
-    throw new Error(`deployment state ${file} cannot be read (${error.code ?? error.message}): refusing to continue`, { cause: error });
+    const { code, message } = error as NodeJS.ErrnoException;
+    if (code === "ENOENT") return { schema_version: STATE_SCHEMA, current: null, previous: null };
+    throw new Error(`deployment state ${file} cannot be read (${code ?? message}): refusing to continue`, { cause: error });
   }
-  let state;
+  let state: Untrusted;
   try {
     state = JSON.parse(raw);
   } catch (error) {
@@ -55,7 +86,7 @@ const readState = (dir) => {
   }
   // Schema 1 recorded separate config and proposal paths; schema 2 records the one private root (unknown for a migrated record).
   if (state !== null && typeof state === "object" && state.schema_version === 1) {
-    const migrate = (r) => {
+    const migrate = (r: Untrusted) => {
       if (r === null || typeof r !== "object" || Array.isArray(r)) return r;
       const next = { ...r, private_path: null };
       delete next.config;
@@ -74,14 +105,14 @@ const readState = (dir) => {
   return state;
 };
 
-function writeStateAtomic(dir, state) {
+function writeStateAtomic(dir: string, state: unknown) {
   const tmp = path.join(dir, `${STATE_FILE}.tmp`);
   writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`);
   renameSync(tmp, path.join(dir, STATE_FILE));
 }
 
 /** One deployment at a time: the lock file is created exclusively and removed when the command ends. */
-async function withLock(dir, fn) {
+async function withLock<T>(dir: string, fn: () => Promise<T>) {
   const lock = path.join(dir, LOCK_FILE);
   try {
     closeSync(openSync(lock, "wx"));
@@ -95,7 +126,7 @@ async function withLock(dir, fn) {
   }
 }
 
-const defaultDeps = () => ({
+const defaultDeps = (): Deps => ({
   run: (cmd, args, env) => execFileSync(cmd, args, { env: { ...process.env, ...env }, stdio: "inherit" }),
   http: async (url) => {
     const res = await globalThis.fetch(url, { signal: globalThis.AbortSignal.timeout(4000) });
@@ -103,20 +134,20 @@ const defaultDeps = () => ({
   },
   sleep: (ms) => sleepMs(ms),
   now: () => new Date().toISOString(),
-  uid: () => process.getuid(),
+  uid: () => process.getuid!(),
   chown: (file, uid) => chownSync(file, uid, uid),
 });
 
 /** Docker turns a missing bind-mount source into a root-owned directory and the Server then silently starts in setup mode: refuse that before anything runs. */
-function assertInputFiles(opts) {
-  const wrongKind = (file, kind) => {
+function assertInputFiles(opts: Options) {
+  const wrongKind = (file: string, kind: "isFile" | "isDirectory") => {
     try {
       return !statSync(file)[kind]();
     } catch {
       return true;
     }
   };
-  const bad = [["tunnel-binary", opts.tunnelBinary, "isFile"], ["tunnel-dir", opts.tunnelDir, "isDirectory"]].filter(([, file, kind]) => wrongKind(file, kind));
+  const bad = ([["tunnel-binary", opts.tunnelBinary, "isFile"], ["tunnel-dir", opts.tunnelDir, "isDirectory"]] as const).filter(([, file, kind]) => wrongKind(file as string, kind));
   if (bad.length > 0) throw new Error(`deployment input is missing or of the wrong kind (${bad.map(([name]) => name).join(", ")}): provision it before deploying`);
 }
 
@@ -125,8 +156,8 @@ function assertInputFiles(opts) {
  * user only when that is safe (the deployer already is that user, or is root and chowns just the new directory). Anything else stops before Docker:
  * no chmod widening, no recursive chown of an existing directory, no container-local storage.
  */
-function ensurePrivateRoot(deps, opts) {
-  const root = opts.privatePath;
+function ensurePrivateRoot(deps: Deps, opts: Options) {
+  const root = opts.privatePath as string;
   const expected = opts.containerUid ?? CONTAINER_UID;
   if (!existsSync(root)) {
     const uid = deps.uid();
@@ -135,24 +166,26 @@ function ensurePrivateRoot(deps, opts) {
       mkdirSync(root, { recursive: true, mode: 0o700 });
       if (uid !== expected) deps.chown(root, expected);
     } catch (error) {
-      throw new Error(`the private root ${root} could not be created (${error.code ?? error.message}): nothing was started`, { cause: error });
+      const { code, message } = error as NodeJS.ErrnoException;
+      throw new Error(`the private root ${root} could not be created (${code ?? message}): nothing was started`, { cause: error });
     }
   }
   try {
     if (!statSync(root).isDirectory()) throw new Error("not a directory");
     accessSync(root, constants.R_OK | constants.W_OK | constants.X_OK);
   } catch (error) {
-    throw new Error(`the private root ${root} is not a usable directory (${error.code ?? error.message}): nothing was started`, { cause: error });
+    const { code, message } = error as NodeJS.ErrnoException;
+    throw new Error(`the private root ${root} is not a usable directory (${code ?? message}): nothing was started`, { cause: error });
   }
   const owner = statSync(root).uid;
   if (owner !== expected) throw new Error(`the private root ${root} is owned by uid ${owner} but the Server container writes as uid ${expected}: fix the owner, nothing was started`);
 }
 
-const sameBytes = (a, b) => existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
-const isEmptyDir = (dir) => !existsSync(dir) || readdirSync(dir).length === 0;
+const sameBytes = (a: string, b: string) => existsSync(a) && existsSync(b) && readFileSync(a).equals(readFileSync(b));
+const isEmptyDir = (dir: string) => !existsSync(dir) || readdirSync(dir).length === 0;
 
 /** Copy a file or a directory tree; every new entry is handed to the container user when the deployer is root. */
-function copyTree(deps, opts, from, to) {
+function copyTree(deps: Deps, opts: Options, from: string, to: string) {
   const owned = () => {
     if (deps.uid() === 0) deps.chown(to, opts.containerUid ?? CONTAINER_UID);
   };
@@ -171,8 +204,8 @@ function copyTree(deps, opts, from, to) {
  * Only that canonical layout is recognised, anything else stops before Docker. The source is copied, never moved or deleted, a populated
  * destination is never overwritten, and an identical destination left by an earlier unfinished attempt is accepted again.
  */
-function migrateLegacyData(deps, opts, legacy) {
-  const { config, proposal } = legacy ?? {};
+function migrateLegacyData(deps: Deps, opts: Options, legacy: NonNullable<State["legacy"]>) {
+  const { config, proposal } = legacy;
   if (!text(config) || !text(proposal)) throw new Error("the previous deployment does not record its config and proposal paths: migrate its Server files into the private root by hand, nothing was started");
   const dir = path.dirname(config);
   if (dir !== path.dirname(proposal)) throw new Error(`the previous config (${config}) and proposal (${proposal}) are not siblings: the legacy layout is ambiguous, migrate it by hand, nothing was started`);
@@ -180,7 +213,7 @@ function migrateLegacyData(deps, opts, legacy) {
   for (const file of [config, proposal]) {
     if (!existsSync(file) || !statSync(file).isFile()) throw new Error(`the previous Server file ${file} is missing: refusing to start the new root empty over it, nothing was started`);
   }
-  const root = opts.privatePath;
+  const root = opts.privatePath as string;
   const target = { config: path.join(root, "config.json"), proposal: path.join(root, "proposal.json"), logs: path.join(root, "logs") };
   if (sameBytes(config, target.config) && sameBytes(proposal, target.proposal)) return;
   if (existsSync(target.config) || existsSync(target.proposal) || !isEmptyDir(target.logs)) throw new Error(`the private root ${root} already holds Server data that differs from the previous deployment's: refusing to overwrite it, nothing was started`);
@@ -202,36 +235,37 @@ function migrateLegacyData(deps, opts, legacy) {
 }
 
 /** Everything that must hold before Docker is touched: the root exists with the right owner and, on the first run after the layout change, carries the old data. */
-function prepareRoot(deps, opts, state) {
+function prepareRoot(deps: Deps, opts: Options, state: State) {
   assertSamePrivateRoot(opts, state.current);
   ensurePrivateRoot(deps, opts);
   if (state.legacy !== undefined && state.legacy !== null) migrateLegacyData(deps, opts, state.legacy);
 }
 
 /** A running deployment keeps its private root: moving it is a deliberate migration, not a side effect of a deploy or rollback. */
-function assertSamePrivateRoot(opts, record) {
+function assertSamePrivateRoot(opts: Options, record: DeploymentRecord | null) {
   if (record !== null && record.private_path !== null && record.private_path !== opts.privatePath) {
     throw new Error(`the current deployment uses private root ${record.private_path}, not ${opts.privatePath}: refusing to switch it`);
   }
 }
 
 /** Compose is the only runtime definition; the deployment only chooses the image and the external inputs. */
-function apply(deps, opts, d) {
+function apply(deps: Deps, opts: Options, d: DeploymentRecord) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
-    REACH_IMAGE: d.image, REACH_PRIVATE_PATH: opts.privatePath,
+    REACH_IMAGE: d.image, REACH_PRIVATE_PATH: opts.privatePath as string,
     REACH_PORT: String(opts.port), REACH_ADMIN_PORT: String(opts.adminPort),
-    REACH_ADMIN_BIND: opts.adminBind, REACH_ADMIN_ALLOW_FROM: opts.adminAllowFrom,
-    REACH_TUNNEL_BINARY: opts.tunnelBinary, REACH_TUNNEL_DIR: opts.tunnelDir,
+    REACH_ADMIN_BIND: opts.adminBind as string, REACH_ADMIN_ALLOW_FROM: opts.adminAllowFrom as string,
+    REACH_TUNNEL_BINARY: opts.tunnelBinary as string, REACH_TUNNEL_DIR: opts.tunnelDir as string,
   });
 }
 
 /** Health, running identity and smoke for one deployment. Returns { ok, checks[] } with no secret material. */
-async function verify(deps, opts, d) {
-  const checks = [];
+type Check = { name: string; ok: boolean; [k: string]: unknown };
+async function verify(deps: Deps, opts: Options, d: DeploymentRecord): Promise<{ ok: boolean; checks: Check[] }> {
+  const checks: Check[] = [];
   // Readiness and running identity come from the service plane's public release manifest (baked into the running image), never from the Admin plane,
   // whose direct-peer allowlist is deployment policy and must not depend on how a probe reaches the container.
   const manifest = `http://127.0.0.1:${opts.port}/release/manifest`;
-  let health = null;
+  let health: Untrusted = null;
   for (let i = 0; i < opts.retries && health === null; i++) {
     try {
       const res = await deps.http(manifest);
@@ -250,9 +284,9 @@ async function verify(deps, opts, d) {
   return { ok: checks.every((c) => c.ok), checks };
 }
 
-const brief = (d) => (d === null ? null : { build_id: d.build_id, repository_commit: d.repository_commit, image: d.image });
+const brief = (d: DeploymentRecord | null) => (d === null ? null : { build_id: d.build_id, repository_commit: d.repository_commit, image: d.image });
 
-async function restore(deps, opts, d) {
+async function restore(deps: Deps, opts: Options, d: DeploymentRecord) {
   try {
     apply(deps, opts, d);
     return (await verify(deps, opts, d)).ok ? "restored" : "restore-unhealthy";
@@ -261,33 +295,33 @@ async function restore(deps, opts, d) {
   }
 }
 
-function finish(dir, evidencePath, deps, evidence) {
+function finish(dir: string, evidencePath: string | undefined, deps: Deps, evidence: object): Untrusted {
   const full = { schema_version: STATE_SCHEMA, finished_at: deps.now(), ...evidence };
   writeFileSync(evidencePath ?? path.join(dir, "evidence.json"), `${JSON.stringify(full, null, 2)}\n`);
   return full;
 }
 
-export async function deploy(opts, deps = defaultDeps()) {
+export async function deploy(opts: Options, deps: Deps = defaultDeps()) {
   mkdirSync(opts.state, { recursive: true });
   return withLock(opts.state, async () => {
     const started_at = deps.now();
-    const problems = verifyRelease(opts.release);
+    const problems = verifyRelease(opts.release as string);
     if (problems.length > 0) throw new Error(`release is not verified, nothing is deployed:\n${problems.join("\n")}`);
-    const { release } = JSON.parse(readFileSync(path.join(opts.release, SERVED_DIR, MANIFEST_NAME), "utf8"));
+    const { release } = JSON.parse(readFileSync(path.join(opts.release as string, SERVED_DIR, MANIFEST_NAME), "utf8"));
     const image = `${opts.imageRepo}:${release.build_id}`;
-    const candidate = { build_id: release.build_id, repository_commit: release.repository_commit, image, private_path: opts.privatePath, deployed_at: null };
+    const candidate: DeploymentRecord = { build_id: release.build_id, repository_commit: release.repository_commit, image, private_path: opts.privatePath as string, deployed_at: null };
     const state = readState(opts.state);
     const previousGood = state.current;
     prepareRoot(deps, opts, state);
     const report = { command: "deploy", started_at, candidate: brief(candidate), previous_known_good: brief(previousGood) };
-    let outcome;
+    let outcome: { ok: boolean; checks: Check[] };
     try {
       assertInputFiles(opts);
-      buildImage({ releaseDir: opts.release, tag: image, docker: opts.docker });
+      buildImage({ releaseDir: opts.release as string, tag: image, docker: opts.docker });
       apply(deps, opts, candidate);
       outcome = await verify(deps, opts, candidate);
     } catch (error) {
-      outcome = { ok: false, checks: [{ name: "apply", ok: false, error: error.message.split("\n")[0] }] };
+      outcome = { ok: false, checks: [{ name: "apply", ok: false, error: (error as Error).message.split("\n")[0] }] };
     }
     if (outcome.ok) {
       candidate.deployed_at = deps.now();
@@ -299,7 +333,7 @@ export async function deploy(opts, deps = defaultDeps()) {
   });
 }
 
-export async function rollback(opts, deps = defaultDeps()) {
+export async function rollback(opts: Options, deps: Deps = defaultDeps()) {
   mkdirSync(opts.state, { recursive: true });
   return withLock(opts.state, async () => {
     const started_at = deps.now();
@@ -315,20 +349,20 @@ export async function rollback(opts, deps = defaultDeps()) {
   });
 }
 
-export const status = (opts) => readState(opts.state);
+export const status = (opts: Pick<Options, "state">): Untrusted => readState(opts.state);
 
-export function parseArgs(argv) {
+export function parseArgs(argv: string[]): Options {
   const [command, ...rest] = argv;
-  const flags = {};
+  const flags: Record<string, string> = {};
   for (let i = 0; i < rest.length; i += 2) {
-    if (!rest[i].startsWith("--") || rest[i + 1] === undefined) throw new Error(`bad argument ${rest[i]}`);
-    flags[rest[i].slice(2)] = rest[i + 1];
+    if (!rest[i]!.startsWith("--") || rest[i + 1] === undefined) throw new Error(`bad argument ${rest[i]}`);
+    flags[rest[i]!.slice(2)] = rest[i + 1]!;
   }
-  const need = (name) => {
+  const need = (name: string) => {
     if (flags[name] === undefined) throw new Error(`missing --${name}`);
     return flags[name];
   };
-  const opts = {
+  const opts: Options = {
     state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach", imageRepo: flags["image-repo"] ?? "reach-server",
     port: Number(flags.port ?? 8787), adminPort: Number(flags["admin-port"] ?? 8788),
     retries: Number(flags.retries ?? 30), intervalMs: Number(flags["interval-ms"] ?? 2000), ...(flags.evidence === undefined ? {} : { evidence: path.resolve(flags.evidence) }),
@@ -337,12 +371,12 @@ export function parseArgs(argv) {
   // The Admin exposure and the private root are deployment policy: every command that applies Compose names them, an unset CI variable (empty value) is refused, and there is no default.
   const policy = () => {
     for (const name of ["admin-bind", "admin-allow-from", "private-path"]) if (need(name) === "") throw new Error(`--${name} must not be empty`);
-    return { adminBind: flags["admin-bind"], adminAllowFrom: flags["admin-allow-from"], privatePath: path.resolve(flags["private-path"]) };
+    return { adminBind: flags["admin-bind"], adminAllowFrom: flags["admin-allow-from"], privatePath: path.resolve(flags["private-path"] as string) };
   };
   if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), ...tunnel(), ...policy() };
   if (command === "rollback") return { command, ...opts, ...tunnel(), ...policy() };
   if (command === "status") return { command, ...opts };
-  throw new Error("usage: deploy.mjs deploy|rollback|status --state <dir> ...");
+  throw new Error("usage: deploy.ts deploy|rollback|status --state <dir> ...");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -355,7 +389,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       process.exit(exit);
     }
   } catch (error) {
-    process.stderr.write(`${error.message}\n`);
+    process.stderr.write(`${(error as Error).message}\n`);
     process.exit(2);
   }
 }

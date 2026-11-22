@@ -1,6 +1,6 @@
-# Production Server. It runs an image already built by deploy/prod/build-image.mjs; Compose never builds from source.
+# Production Server. It runs an image already built by deploy/prod/build-image.ts; Compose never builds from source.
 # The Server keeps everything it persists (configuration, proposal, logs) under ONE host directory, REACH_PRIVATE_PATH, mounted at /reach-private.
-# It must be a directory the container user (uid 1000) can write; the controller (deploy/prod/deploy.mjs) creates or validates it, and it is never
+# It must be a directory the container user (uid 1000) can write; the controller (deploy/prod/deploy.ts) creates or validates it, and it is never
 # replaced by container-local storage. Variables come from the root .env (copy .env.example): docker compose --env-file .env -f deploy/prod/compose.yaml up -d
 # The Secure MCP Tunnel is the second service of the same stack. It is an operator-provided static binary plus a private directory holding
 # its configuration and credentials, never baked into an image:
@@ -14,7 +14,7 @@
 services:
   reach-server:
     container_name: ${REACH_CONTAINER_NAME:-reach-server}
-    image: ${REACH_IMAGE:?set REACH_IMAGE to the tag produced by build-image.mjs}
+    image: ${REACH_IMAGE:?set REACH_IMAGE to the tag produced by build-image.ts}
     restart: unless-stopped
     volumes:
       - ${REACH_PRIVATE_PATH:?absolute path of the Server private directory}:/reach-private

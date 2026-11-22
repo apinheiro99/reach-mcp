@@ -7,14 +7,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { deploy, parseArgs, rollback, status } from "../deploy/prod/deploy.mjs";
-import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS } from "../scripts/release/manifest.mjs";
+import { deploy, parseArgs, rollback, status, type Deps, type Options } from "../deploy/prod/deploy.ts";
+import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS, type Untrusted } from "../scripts/release/manifest.ts";
 
 const base = mkdtempSync(path.join(tmpdir(), "reach-deploy-"));
 const BEARER = "deploy-bearer-" + "Qw83Zk17";
 let counter = 0;
 // The deployment inputs must be real regular files (the controller refuses anything else before touching Docker).
-const inputFile = (name) => {
+const inputFile = (name: string) => {
   const file = path.join(base, name);
   writeFileSync(file, "{}\n");
   return file;
@@ -28,7 +28,7 @@ const NOT_A_DIR = inputFile("not-a-dir.json");
 const PRIVATE = path.join(base, "reach-private");
 
 /** A valid canonical release for one build id. */
-function release(buildId, commit) {
+function release(buildId: string, commit: string) {
   const dir = path.join(base, `rel-${counter++}`);
   mkdirSync(path.join(dir, "artifacts"), { recursive: true });
   mkdirSync(path.join(dir, "server"));
@@ -45,19 +45,19 @@ function release(buildId, commit) {
 }
 
 /** A docker that only records, and a fake "Server" whose reported identity follows what compose last started. */
-function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = new Set(), malformed = new Set() } = {}) {
-  const log = [];
-  const urls = [];
-  let running = null;
+function world({ failImages = new Set<string>(), wrongIdentity = new Set<string>(), unhealthy = new Set<string>(), malformed = new Set<string>() } = {}) {
+  const log: Record<string, string | undefined>[] = [];
+  const urls: string[] = [];
+  let running: string | null = null;
   const dockerBin = path.join(base, `docker-${counter++}.sh`);
   writeFileSync(dockerBin, "#!/bin/sh\nexit 0\n");
   chmodSync(dockerBin, 0o755);
-  const deps = {
+  const deps: Deps = {
     run: (cmd, args, env) => {
       assert.deepEqual(args.slice(0, 2), ["compose", "-p"]);
       log.push({ image: env.REACH_IMAGE, privatePath: env.REACH_PRIVATE_PATH, adminBind: env.REACH_ADMIN_BIND, adminAllowFrom: env.REACH_ADMIN_ALLOW_FROM });
-      if (failImages.has(env.REACH_IMAGE)) throw new Error("compose up failed");
-      running = env.REACH_IMAGE;
+      if (failImages.has(env.REACH_IMAGE!)) throw new Error("compose up failed");
+      running = env.REACH_IMAGE!;
     },
     http: async (url) => {
       urls.push(url);
@@ -65,28 +65,30 @@ function world({ failImages = new Set(), wrongIdentity = new Set(), unhealthy = 
       if (url.endsWith("/release/manifest")) {
         if (malformed.has(running)) return { status: 200, body: "<html>not a manifest" };
         const [, id] = running.split(":");
-        const release = wrongIdentity.has(running) ? { build_id: "other", repository_commit: "0".repeat(40) } : { build_id: id, repository_commit: commitOf.get(id) };
+        const release = wrongIdentity.has(running) ? { build_id: "other", repository_commit: "0".repeat(40) } : { build_id: id, repository_commit: commitOf.get(id!) };
         return { status: 200, body: JSON.stringify({ release }) };
       }
       return { status: 401, body: "" };
     },
     sleep: async () => {},
     now: () => "2026-11-16T00:00:00.000Z",
-    uid: () => process.getuid(),
+    uid: () => process.getuid!(),
     // A root deployer (the CI container) chowns by design; only a non-root deployer that already owns the root must never chown.
-    chown: () => process.getuid() === 0 || assert.fail("a deployer that already owns the root never chowns"),
+    chown: () => {
+      if (process.getuid!() !== 0) assert.fail("a deployer that already owns the root never chowns");
+    },
   };
   return { deps, log, urls, docker: dockerBin };
 }
-const commitOf = new Map();
-const make = (id) => {
+const commitOf = new Map<string, string>();
+const make = (id: string) => {
   const commit = id.padEnd(40, "a").slice(0, 40).replace(/[^0-9a-f]/g, "a");
   commitOf.set(id, commit);
   return { dir: release(id, commit), commit };
 };
 
-const opts = (w, rel, state, extra = {}) => ({
-  release: rel, state, privatePath: PRIVATE, containerUid: process.getuid(), docker: w.docker, tunnelBinary: TB, tunnelDir: TD, project: "reach", imageRepo: "reach-server",
+const opts = (w: { docker: string }, rel: string, state: string, extra: Partial<Options> = {}): Options => ({
+  release: rel, state, privatePath: PRIVATE, containerUid: process.getuid!(), docker: w.docker, tunnelBinary: TB, tunnelDir: TD, project: "reach", imageRepo: "reach-server",
   port: 8787, adminPort: 8788, adminBind: ADMIN_BIND, adminAllowFrom: ADMIN_ALLOW, retries: 2, intervalMs: 0, ...extra,
 });
 const stateDir = () => path.join(base, `state-${counter++}`);
@@ -98,7 +100,7 @@ test("first deploy builds the canonical image, starts it and promotes it only af
   const { exit, evidence } = await deploy(opts(w, r.dir, state), w.deps);
   assert.equal(exit, 0);
   assert.equal(evidence.result, "promoted");
-  assert.deepEqual(evidence.checks.map((c) => [c.name, c.ok]), [["health", true], ["running-identity", true], ["smoke-data-plane", true]]);
+  assert.deepEqual(evidence.checks.map((c: Untrusted) => [c.name, c.ok]), [["health", true], ["running-identity", true], ["smoke-data-plane", true]]);
   const s = status({ state });
   assert.deepEqual([s.current.build_id, s.current.repository_commit, s.current.image], ["b1", r.commit, "reach-server:b1"]);
   assert.equal(s.previous, null);
@@ -135,7 +137,7 @@ test("a candidate that reports a different build or commit is rolled back and ne
   await deploy(opts(w, make("b1").dir, state), w.deps);
   const { exit, evidence } = await deploy(opts(w, make("b2").dir, state), w.deps);
   assert.equal(exit, 1);
-  assert.equal(evidence.checks.find((c) => c.name === "running-identity").ok, false);
+  assert.equal(evidence.checks.find((c: Untrusted) => c.name === "running-identity").ok, false);
   assert.equal(evidence.rollback, "restored");
   assert.equal(status({ state }).current.build_id, "b1");
 });
@@ -236,7 +238,7 @@ test("the command line requires the operator's target inputs and has no defaults
 test("the deployment policy is explicit: deploy and rollback refuse a missing or empty Admin bind, Admin allowlist or private root, and status needs none", () => {
   const base = ["--state", "/s", "--tunnel-binary", "/tb", "--tunnel-dir", "/td"];
   const deployBase = [...base, "--release", "/r"];
-  for (const command of [["deploy", deployBase], ["rollback", base]]) {
+  for (const command of [["deploy", deployBase], ["rollback", base]] as [string, string[]][]) {
     assert.throws(() => parseArgs([command[0], ...command[1]]), /missing --admin-bind/);
     assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "127.0.0.1"]), /missing --admin-allow-from/);
     assert.throws(() => parseArgs([command[0], ...command[1], "--admin-bind", "", "--admin-allow-from", "127.0.0.1"]), /--admin-bind must not be empty/);
@@ -263,23 +265,23 @@ test("deploy and rollback hand the explicit Admin bind and allowlist to Compose,
 });
 
 test("the deployment sources define no private target and run no background updater", () => {
-  for (const name of ["deploy.mjs"]) {
+  for (const name of ["deploy.ts"]) {
     const src = readFileSync(path.join(import.meta.dirname, "..", "deploy", "prod", name), "utf8").replace(/^\s*(#|\/\/).*$/gm, "");
     assert.doesNotMatch(src, /192\.168\.|\.lab\b|reach-private|setInterval|watchtower|cron|auto-?update|docker\.sock/i, name);
   }
   assert.ok(process.env.PATH !== undefined);
 });
 
-test("one controller contract: nothing under deploy/prod or the pipeline still calls deploy.mjs with the removed --config, --proposal or --logs flags", () => {
+test("one controller contract: nothing under deploy/prod or the pipeline still calls deploy.ts with the removed --config, --proposal or --logs flags", () => {
   const dir = path.join(import.meta.dirname, "..", "deploy", "prod");
   const callers = [...readdirSync(dir).map((name) => path.join(dir, name)), path.join(import.meta.dirname, "..", ".gitlab-ci.yml")];
-  for (const file of callers) assert.doesNotMatch(readFileSync(file, "utf8").replace(/^\s*(#|\/\/).*$/gm, ""), /deploy\.mjs[^\n]*--(config|proposal|logs)\b/, file);
+  for (const file of callers) assert.doesNotMatch(readFileSync(file, "utf8").replace(/^\s*(#|\/\/).*$/gm, ""), /deploy\.ts[^\n]*--(config|proposal|logs)\b/, file);
   assert.ok(!existsSync(path.join(dir, "remote-deploy.sh")), "the stale SSH wrapper is gone");
 });
 
 /** A valid two-record state written by hand, then damaged in one way. */
-const goodRecord = (id) => ({ build_id: id, repository_commit: "a".repeat(40), image: `reach-server:${id}`, private_path: PRIVATE, deployed_at: "2026-11-16T00:00:00.000Z" });
-const writeState = (state, content) => {
+const goodRecord = (id: string) => ({ build_id: id, repository_commit: "a".repeat(40), image: `reach-server:${id}`, private_path: PRIVATE, deployed_at: "2026-11-16T00:00:00.000Z" });
+const writeState = (state: string, content: string) => {
   mkdirSync(state, { recursive: true });
   writeFileSync(path.join(state, "state.json"), content);
 };
@@ -347,7 +349,7 @@ test("a data plane that answers 503 (no active configuration) fails the smoke ch
   w.deps.http = async (url) => (url.endsWith("/health") ? { status: 503, body: "" } : http(url));
   const { exit, evidence } = await deploy(opts(w, make("b8").dir, stateDir()), w.deps);
   assert.equal(exit, 1);
-  assert.deepEqual(evidence.checks.find((c) => c.name === "smoke-data-plane"), { name: "smoke-data-plane", ok: false, data_plane_status: 503 });
+  assert.deepEqual(evidence.checks.find((c: Untrusted) => c.name === "smoke-data-plane"), { name: "smoke-data-plane", ok: false, data_plane_status: 503 });
 });
 
 test("readiness and running identity come from the service plane's release manifest and never from the Admin plane", async () => {
@@ -359,7 +361,7 @@ test("readiness and running identity come from the service plane's release manif
 });
 
 test("a manifest that is malformed, or names another build, never promotes the candidate and the previous deployment is restored", async () => {
-  for (const [label, w] of [["malformed", world({ malformed: new Set(["reach-server:b2"]) })], ["wrong identity", world({ wrongIdentity: new Set(["reach-server:b2"]) })]]) {
+  for (const [label, w] of [["malformed", world({ malformed: new Set(["reach-server:b2"]) })], ["wrong identity", world({ wrongIdentity: new Set(["reach-server:b2"]) })]] as [string, ReturnType<typeof world>][]) {
     const state = stateDir();
     await deploy(opts(w, make("b1").dir, state), w.deps);
     const { exit, evidence } = await deploy(opts(w, make("b2").dir, state), w.deps);
@@ -370,7 +372,7 @@ test("a manifest that is malformed, or names another build, never promotes the c
   }
 });
 
-const record = (id, privatePath) => ({ ...goodRecord(id), private_path: privatePath });
+const record = (id: string, privatePath: string | null) => ({ ...goodRecord(id), private_path: privatePath });
 
 /** The previous deployment's layout on the host: <old>/config/{server.json,proposal.json} and <old>/logs/, recorded in a schema 1 state. */
 function legacyHost({ proposalDir = "config" } = {}) {
@@ -383,7 +385,7 @@ function legacyHost({ proposalDir = "config" } = {}) {
   writeFileSync(path.join(old, "logs", "server.log"), "line 1\n");
   writeFileSync(path.join(old, "logs", "sub", "audit.log"), "audit\n");
   const state = stateDir();
-  const rec = (id) => ({ ...goodRecord(id), private_path: undefined, config: path.join(old, "config", "server.json"), proposal: path.join(old, proposalDir, "proposal.json") });
+  const rec = (id: string) => ({ ...goodRecord(id), private_path: undefined, config: path.join(old, "config", "server.json"), proposal: path.join(old, proposalDir, "proposal.json") });
   writeState(state, JSON.stringify({ schema_version: 1, current: rec("b1"), previous: null }));
   return { old, state };
 }
@@ -405,7 +407,7 @@ test("first upgrade from the canonical legacy layout copies config, proposal and
   const { old, state } = legacyHost();
   const root = fresh();
   const w = world();
-  const seen = [];
+  const seen: string[][] = [];
   const run = w.deps.run;
   w.deps.run = (cmd, args, env) => {
     seen.push([readFileSync(path.join(root, "config.json"), "utf8"), readFileSync(path.join(root, "proposal.json"), "utf8"), readFileSync(path.join(root, "logs", "sub", "audit.log"), "utf8")]);
@@ -434,7 +436,7 @@ test("a failed first candidate leaves the schema 1 state untouched and the retry
 });
 
 test("an ambiguous, incomplete or conflicting legacy migration fails before Docker and promotes nothing", async () => {
-  const cases = {
+  const cases: Record<string, [{ state: string }, (root: string) => string, RegExp]> = {
     "config and proposal in different directories": [legacyHost({ proposalDir: "elsewhere" }), (root) => root, /not siblings/],
     "legacy config file missing": [(() => { const h = legacyHost(); rmSync(path.join(h.old, "config", "server.json")); return h; })(), (root) => root, /is missing/],
     "private root already holds a different config": [legacyHost(), (root) => { mkdirSync(root, { recursive: true }); writeFileSync(path.join(root, "config.json"), "{}"); return root; }, /refusing to overwrite/],
@@ -452,12 +454,14 @@ test("an ambiguous, incomplete or conflicting legacy migration fails before Dock
 });
 
 test("a missing private root is created only when it can be handed to the container user safely: same uid, or root chowning just the new directory; otherwise nothing is created", async () => {
-  const me = process.getuid();
-  const attempt = async (deployerUid, root, extra = {}) => {
+  const me = process.getuid!();
+  const attempt = async (deployerUid: number, root: string, extra: Partial<Options> = {}) => {
     const w = world();
-    const chowned = [];
+    const chowned: [string, number][] = [];
     w.deps.uid = () => deployerUid;
-    w.deps.chown = (file, uid) => chowned.push([file, uid]);
+    w.deps.chown = (file, uid) => {
+      chowned.push([file, uid]);
+    };
     const run = () => deploy(opts(w, make("b4").dir, stateDir(), { privatePath: root, ...extra }), w.deps);
     return { w, chowned, run };
   };
@@ -498,7 +502,7 @@ test("an unusable private root stops deploy and rollback before any Docker actio
   const state = stateDir();
   writeState(state, JSON.stringify({ schema_version: 2, current: record("b2", null), previous: record("b1", null) }));
   const other = stateDir();
-  for (const [label, extra, expected] of [["a file", { privatePath: NOT_A_DIR }, /not a usable directory/], ["another owner", { containerUid: process.getuid() + 1 }, /owned by uid .* writes as uid/]]) {
+  for (const [label, extra, expected] of [["a file", { privatePath: NOT_A_DIR }, /not a usable directory/], ["another owner", { containerUid: process.getuid!() + 1 }, /owned by uid .* writes as uid/]] as [string, Partial<Options>, RegExp][]) {
     await assert.rejects(() => deploy(opts(w, make("b9").dir, other, extra), w.deps), expected, `deploy: ${label}`);
     await assert.rejects(() => rollback(opts(w, "", state, extra), w.deps), expected, `rollback: ${label}`);
   }

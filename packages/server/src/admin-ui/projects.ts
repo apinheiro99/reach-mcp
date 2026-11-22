@@ -9,10 +9,32 @@ export const PROJECTS_CSS = `
 .pj-empty{padding:var(--sp-5);text-align:center}
 `;
 
-export const PROJECTS_JS = `
+// The pure mapping between the one canonical policy object and the drawer's rule list. No second policy model: a rule is a
+// view of writable_globs (Read / Write) or deny_globs (Deny); the default mode plus the write rules derive mode.
+export const ACCESS_RULES_JS = `
+const rulesOf = (p) => ({
+  defaultMode: p.mode === "read_write" && p.writable_globs === undefined ? "read_write" : "read_only",
+  rules: [...(p.writable_globs || []).map((path) => ({ path, perm: "write" })), ...(p.deny_globs || []).map((path) => ({ path, perm: "deny" }))],
+});
+const globsOf = (rules, perm) => [...new Set(rules.filter((r) => r.perm === perm).map((r) => r.path.trim()).filter(Boolean))];
+const policyOf = (p, name, root, defaultMode, rules) => {
+  const { mode, writable_globs, deny_globs, ...rest } = p;
+  const writes = globsOf(rules, "write"), denies = globsOf(rules, "deny");
+  return { ...rest, project_id: name.trim(), physical_root: root.trim(),
+    mode: defaultMode === "read_write" || writes.length ? "read_write" : "read_only",
+    ...(defaultMode !== "read_write" && writes.length ? { writable_globs: writes } : {}),
+    ...(denies.length ? { deny_globs: denies } : {}) };
+};
+`;
+
+export const PROJECTS_JS = ACCESS_RULES_JS + `
 const MODES = [["read_only", "Read Only"], ["read_write", "Read / Write"]];
+const RULE_PERMS = [["write", "Read / Write"], ["deny", "Deny"]];
 const statusOfClient = (c) => (c.enabled ? "enabled" : c.pending ? "pending" : "disabled");
-const validProject = (p) => p.project_id.trim() !== "" && p.physical_root.startsWith("/");
+// Only a brand-new draft that is still empty is held back. A persisted project is always sent, even with a cleared id or root, so the
+// Server's canonical schema refuses it atomically instead of the replacement silently deleting it.
+const filledProject = (p) => p.project_id.trim() !== "" && p.physical_root.trim() !== "";
+const sendable = (p) => !p._draft || filledProject(p);
 
 async function renderProjects(view) {
   const ui = { data: null, search: "", client: "all", dirty: false, rev: 0, timer: null };
@@ -21,7 +43,8 @@ async function renderProjects(view) {
   const clientFilter = UI.el("div", {});
   const toolbar = UI.toolbar(
     UI.search({ id: "project-search", placeholder: "Search by client, project or root path…", onInput: (v) => { ui.search = v.trim().toLowerCase(); drawTable(); } }),
-    clientFilter);
+    clientFilter,
+    UI.button("Add project", { icon: "plus", onClick: () => { const c = ui.data.clients.find((x) => x.client_id === ui.client) || ui.data.clients[0]; if (c) newProject(c); } }));
   view.replaceChildren(stats, toolbar, tableHost);
 
   const rows = () => ui.data.clients.flatMap((c) => (ui.client === "all" || ui.client === c.client_id ? (c.projects.length ? c.projects.map((p) => ({ c, p })) : [{ c, p: null }]) : []));
@@ -37,12 +60,12 @@ async function renderProjects(view) {
   async function save() {
     const rev = ui.rev;
     const clients = ui.data.clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), enabled: c.enabled,
-      projects: c.projects.filter(validProject).map(({ _draft, ...p }) => p) }));
+      projects: c.projects.filter(sendable).map(({ _draft, ...p }) => p) }));
     say("saving", "Saving…");
     const r = await api("PUT", "/admin/api/config", { clients });
     if (!r.ok) { say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; ")); return; }
     if (rev === ui.rev) ui.dirty = false;
-    for (const c of ui.data.clients) for (const p of c.projects) if (validProject(p)) delete p._draft;
+    for (const c of ui.data.clients) for (const p of c.projects) if (filledProject(p)) delete p._draft;
     say("saved", "Autosaved · " + clock());
     drawStats();
   }
@@ -57,7 +80,58 @@ async function renderProjects(view) {
   }
 
   const newProject = (c) => { c.projects.push({ project_id: "", physical_root: "", mode: "read_only", _draft: true }); drawTable(); };
-  const removeProject = (c, p) => { c.projects.splice(c.projects.indexOf(p), 1); drawTable(); change(); };
+  const host = UI.el("div", {});
+  document.body.append(host);
+
+  // The access drawer edits a copy; Save writes the canonical policy back and autosaves, Cancel drops the copy.
+  function openAccess(c, p) {
+    const draft = { name: p.project_id, root: p.physical_root, tab: "access", ...rulesOf(p) };
+    const close = () => host.replaceChildren();
+    const body = UI.el("div", { className: "stack" });
+    const current = () => policyOf(p, draft.name, draft.root, draft.defaultMode, draft.rules);
+    const tone = (perm) => (perm === "deny" ? "bad" : "ok");
+    const pathBox = (value, onInput) => UI.el("div", { className: "pj-root" }, UI.icon("folder"), UI.input({ kind: "path", value, placeholder: "/absolute/path/on/the/client", onInput }));
+    function accessTab() {
+      const defaults = UI.select(MODES, draft.defaultMode, (v) => { draft.defaultMode = v; redraw(); });
+      const ruleRows = draft.rules.map((r, i) => {
+        const perm = UI.select(draft.defaultMode === "read_write" ? RULE_PERMS.filter(([v]) => v === "deny") : RULE_PERMS, r.perm, (v) => { r.perm = v; perm.dataset.tone = tone(v); });
+        perm.dataset.tone = tone(r.perm);
+        const path = UI.el("div", { className: "rule-path" }, UI.icon("folder"), UI.input({ kind: "path", value: r.path, placeholder: "temp/** or docs/readme.md", onInput: (v) => { r.path = v; } }));
+        return [String(i + 1), path, perm, UI.iconButton("trash", "Remove this rule", () => { draft.rules.splice(i, 1); redraw(); })];
+      });
+      return [
+        UI.card({ title: "Project configuration", children: [UI.el("div", { className: "form-grid" }, UI.field("Project name", UI.input({ value: draft.name, placeholder: "project-id", onInput: (v) => { draft.name = v; } })), UI.field("Root (base path on the client)", pathBox(draft.root, (v) => { draft.root = v; }))), UI.field("Default access mode", defaults),
+          UI.el("p", { className: "hint", textContent: "Applies to the whole project. Read / Write makes the whole root writable; Read Only lets the Read / Write rules below open only the paths they name." })] }),
+        UI.card({ title: "Access rules", subtitle: "Exact files or globs relative to the root. A Deny rule always wins over a Read / Write rule; the order of rules does not matter.", children: [
+          UI.el("div", { className: "actions" }, UI.button("Add rule", { variant: "accent", icon: "plus", onClick: () => { draft.rules.push({ path: "", perm: draft.defaultMode === "read_write" ? "deny" : "write" }); redraw(); } })),
+          ruleRows.length ? UI.table(["#", "Path (relative to root)", "Permission", "Actions"], ruleRows) : UI.unavailable("No rules: the default access applies to the whole project")] }),
+        UI.card({ variant: "inset", icon: "info", title: "How it works", children: [UI.el("ul", { className: "info-list" },
+          UI.el("li", { textContent: "The default access applies to the whole project root and reading stays open everywhere except Deny paths." }),
+          UI.el("li", { textContent: "Under Read Only, a Read / Write rule (temp/**, docs/**, .gitlab-ci.yml, .githooks/**) opens only that path for writing." }),
+          UI.el("li", { textContent: "Globs: ** crosses folders, * stays in one folder. Deny rules are additive to the built-in protections." }),
+          UI.el("li", { textContent: "Write actions (create, edit, delete) work inside the root; delete moves the file to .lixeira and never unlinks." }))] })];
+    }
+    const configTab = () => [UI.card({ title: "Canonical policy", subtitle: "The exact object the Client enforces (read-only view; Save changes writes it).", children: [UI.el("pre", { className: "json-view", textContent: JSON.stringify(current(), null, 2) })] })];
+    const detailsTab = () => [UI.card({ title: "Details", children: [
+      UI.row({ icon: "user", title: "Client", detail: c.display_name || c.client_id, aside: c.client_id }),
+      UI.row({ icon: "box", title: "Project", detail: draft.name || "(new)" }),
+      UI.row({ icon: "folder", title: "Root", detail: draft.root || "(not set)" }),
+      UI.row({ icon: "shield", title: "Default access", detail: draft.defaultMode === "read_write" ? "Read / Write" : "Read Only" }),
+      UI.row({ icon: "check-circle", title: "Rules", detail: draft.rules.filter((r) => r.perm === "write").length + " Read / Write, " + draft.rules.filter((r) => r.perm === "deny").length + " Deny" })] })];
+    const TABS = [["access", "Access & Permissions", "shield"], ["config", "Configuration (JSON)", "code"], ["details", "Details", "info"]];
+    function redraw() {
+      body.replaceChildren(UI.tabs(TABS, draft.tab, (id) => { draft.tab = id; redraw(); }), ...(draft.tab === "config" ? configTab() : draft.tab === "details" ? detailsTab() : accessTab()));
+    }
+    const save = () => {
+      const next = current();
+      for (const k of ["writable_globs", "deny_globs"]) delete p[k];
+      Object.assign(p, next);
+      close(); drawTable(); change();
+    };
+    redraw();
+    host.replaceChildren(UI.drawer({ icon: "folder", title: "Project: " + (p.project_id || "new"), subtitle: "Client: " + (c.display_name || c.client_id), onClose: close, children: [body],
+      footer: [UI.button("Cancel", { onClick: close }), UI.button("Save changes", { variant: "primary", onClick: save })] }));
+  }
 
   const row = ({ c, p }) => {
     const status = statusOfClient(c);
@@ -68,15 +142,15 @@ async function renderProjects(view) {
     if (!p) return { tone: status === "pending" ? "warn" : undefined, cells: [who, UI.unavailable("No project yet"), "", "", access, UI.el("div", { className: "pj-actions" }, UI.iconButton("plus", "Add a project", () => newProject(c)))] };
     const id = UI.input({ value: p.project_id, placeholder: "project-id", onInput: (v) => { p.project_id = v.trim(); change(); } });
     const root = UI.el("div", { className: "pj-root" }, UI.icon("folder"), UI.input({ kind: "path", value: p.physical_root, placeholder: "/absolute/path/on/the/client", onInput: (v) => { p.physical_root = v.trim(); change(); } }));
-    const mode = UI.select(MODES, p.mode, (v) => { p.mode = v; change(); });
+    const mode = UI.select(MODES, p.mode, (v) => { p.mode = v; if (v === "read_only") delete p.writable_globs; change(); });
     return {
       tone: status === "pending" ? "warn" : undefined,
-      cells: [who, id, root, mode, access, UI.el("div", { className: "pj-actions" }, UI.iconButton("plus", "Add a project", () => newProject(c)), UI.iconButton("trash", "Remove this project", () => removeProject(c, p)))],
+      cells: [who, id, root, mode, access, UI.el("div", { className: "pj-actions" }, UI.iconButton("shield", "Edit access and permissions", () => openAccess(c, p)), UI.iconButton("trash", "Remove this project", () => removeProject(c, p)))],
     };
   };
 
   function drawStats() {
-    const all = ui.data.clients.flatMap((c) => c.projects.filter(validProject).map((p) => ({ c, p })));
+    const all = ui.data.clients.flatMap((c) => c.projects.filter(sendable).map((p) => ({ c, p })));
     const of = (status) => all.filter(({ c }) => statusOfClient(c) === status).length;
     stats.replaceChildren(UI.stats([
       UI.stat({ icon: "box", value: all.length, label: "Projects" }),

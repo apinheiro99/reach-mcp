@@ -1,6 +1,6 @@
 # REACH MCP — Architecture
 
-**Status:** approved architecture. REACH is in pre-alpha development; implementation proceeds from this document.
+**Status:** approved architecture with a working production implementation. REACH remains pre-alpha while SCOPE migration and the remaining production hardening backlog are completed; this document describes the architecture that exists now, not a future target.
 **Product:** REACH MCP — Remote Environment Access & Context Hub.
 **Purpose:** the canonical architecture authority, for design, implementation, review and future AI context. The other documents link here instead of restating it: [development-environment.md](development-environment.md) (develop and rebuild the environment), [configuration.md](configuration.md) (configure and operate), [install.md](install.md) (install, distribution and current state).
 
@@ -49,7 +49,7 @@ KISS and YAGNI are binding: protect against realistic failures; do not build spe
 - **Outbound only.** Clients dial the Server; target machines expose no inbound REACH port.
 - **Zero-touch onboarding.** Normal installation starts from one operator instruction to an authorized agent: access the target machine and install the Client. Artifact retrieval, identity creation, enrollment, bootstrap creation, service installation and first connection are automatic.
 - **One owner per responsibility.** Client identity key generation belongs to the Client; public-key admission and routing belong to the Server; private environment defaults belong to deployment/private configuration; filesystem safety belongs to the Client safety engine. No duplicated owner or parallel credential system.
-- **Explicit roots after onboarding.** The onboarding path may propose the agent's current project directory as the initial project root, but the Client must know the exact local anchor it is authorizing and the Server must persist the resulting logical project mapping. There is no source-code hardcoded project root.
+- **Explicit roots after onboarding.** The onboarding path may propose the agent's current project directory as the initial project root, but the Client must know the exact local anchor it is authorizing and the Server must persist the resulting logical project mapping. The operator may explicitly authorize any valid absolute root, including a filesystem root such as `/` or a Windows drive root such as `C:\\`. REACH must not invent path-depth or topology restrictions as safety proxies. When the selected anchor exposes an entire filesystem/drive, the product must warn clearly that the whole filesystem/drive is being shared and require explicit operator confirmation before activation. There is no source-code hardcoded project root.
 - **Read-only by default outside the controlled writable surface.** Initial controlled write access is limited to `temp/**` with delete-as-trash unless later changed through Server configuration/UI.
 - **Bounded behavior.** Reads, search and listing operate under configurable limits.
 
@@ -70,7 +70,7 @@ The current Dev MCP is a working prototype and provides proven implementation pa
 
 Implemented runtime composition (Server): one Node HTTP listener exposes `/mcp` (stateless Streamable HTTP, dedicated bearer, a fresh MCP server and transport per request) and one WebSocket upgrade path for Clients, which is handed to the connection registry. `GET /health` is the single service-plane health contract and stays behind the same bearer: missing/wrong bearer returns 401; while no configuration is active it returns 503; with active configuration it returns the minimal operational snapshot (`status`, `server_build`, `repository_commit`, `uptime_seconds`, `config_active`, Client online/build/last-seen state and request totals). It never includes roots, private keys, bearer values, credentials or paths. There is no second readiness route. `GET /`, `GET /install.sh` and `GET /install.ps1` are the public install-discovery routes (`install-discovery.ts`): a minimal page with the canonical Client install commands for the request's own safe `Host` (never a forwarded header), and the two fixed installer scripts, whose bytes come only from the injected `ArtifactSource` by those two exact names; a command is advertised only while its installer exists, any other method is 405 and the page never depends on Admin or on an active configuration. Every other non-release, non-install path answers 404; there is no admin UI or MCP session state on this listener. Each MCP tool result carries the `request_id` that travelled on the wire to the Client. The MCP tools are one discovery tool plus one tool per shared operation, each addressed by `client_id` and `project_id`.
 
-REACH should remain Node/TypeScript unless a concrete blocker appears.
+REACH is Node/TypeScript. **All first-party source, tooling and tests are TypeScript.** `.mjs` is not an accepted project source format. The repository has no first-party `.mjs` file: release, deployment, tooling and tests are `.ts` and run directly on Node >=24 (native type stripping, `tsc` for checking). The only `.mjs` names are generated release output: the packaged launchers `reach-client.mjs` and `reach-server.mjs` are produced from `scripts/release/launcher.ts` by stripping types at release build time, because the installers and the service unit reference those external filenames. Do not add `.mjs` source files. An exception is allowed only when a concrete runtime or packaging constraint makes TypeScript impossible, with explicit Product Owner approval and documentation of that constraint.
 
 ### Proven capabilities/primitives to port
 
@@ -585,7 +585,7 @@ The Server may define logical projects, modes, allowlists, deny rules and limits
 
 This is not a second policy system. It is a host-level blast-radius boundary stored in the Client's protected local state together with the Server endpoint, client identity and private key. Private environment defaults and recovery metadata belong to deployment/private configuration, not public source.
 
-When Server configuration changes, the effective project/root policy is sent to the Client. The Client validates the received policy against its local root anchors before accepting it; any policy that escapes those anchors is rejected.
+When Server configuration changes, the effective project/root policy is sent to the Client. The Client validates the received policy against its local root anchors before accepting it; any policy that escapes those anchors is rejected. The anchor itself is an operator decision and may intentionally be as broad as the filesystem/drive root after explicit confirmation. Confinement means “never escape the selected anchor”; it does not mean REACH may substitute its own opinion about how narrow that anchor must be.
 
 ---
 
@@ -663,6 +663,10 @@ Secret-bearing files such as `.env`, keys and credentials are denied by default.
 CI/CD definition files such as `.gitlab-ci.yml`, workflow files and equivalent execution-control files are **not writable by default**. An operator may explicitly allow them, but that is a deliberate trust decision because changing CI/CD definitions can become shell-equivalent execution through the runner.
 
 All ordinary policy values are centrally configurable through Server/Web UI. Non-negotiable safety invariants remain code-level constraints.
+
+The project access model is one canonical policy object, not an ACL hierarchy and not one project per permission level. `physical_root` defines the readable base scope; `writable_globs` narrows the mutation surface when controlled write is enabled; `deny_globs` are additive restrictions that win over writable allowlists; limits travel with the same effective policy. Server persistence, wire policy sync, Client enforcement and Admin UI all consume that same contract. The Dev MCP's proven `PROJECT_ROOT` + restricted write paths + additive deny rules + trash-delete behavior is the behavioral reference, adapted to REACH's distributed Server-owned policy model rather than copied as a parallel implementation.
+
+The approved Admin interaction is a right-side Project Access drawer over the Projects page, visually matching `docs/screens/REACH 08_MCP Project Access Dashboard.png`. It edits the full project access policy as one draft with explicit Save changes/Cancel (the scoped exception to autosave, see Configuration editing); its tabs are Access & Permissions (the rules), Configuration (JSON) (the canonical policy object, read-only) and Details (identity and rule counts); the row-level UI must not imply that adding another logical project is the way to express a narrower writable path.
 
 ### Symlink discovery behavior
 
@@ -824,9 +828,9 @@ Normal configuration uses **autosave**.
 
 Changing an ordinary field, select/combo, toggle or checkbox persists automatically after a short debounce/validation interval.
 
-There is **no generic Save button**.
+There is **no generic Save button** for inline fields.
 
-Normal human-originated Web UI configuration remains autosave, including capability and allowlist changes.
+Ordinary inline Projects fields (project id, root, default policy) remain autosave. The one scoped exception is the Project Access drawer: it is a transactional draft over one project's whole access policy, so it has explicit Save changes / Cancel. Cancel discards the draft; Save changes writes the complete policy back to the project and the same ~500 ms autosave then persists it through the one config endpoint, atomically.
 
 Explicit action buttons are reserved only for actions that are inherently actions rather than field edits, such as:
 
@@ -834,7 +838,7 @@ Explicit action buttons are reserved only for actions that are inherently action
 - rotate/revoke a credential;
 - destructive operations that are not ordinary configuration edits.
 
-There is no generic Save/Confirm button for ordinary configuration changes.
+There is no generic Save/Confirm button for ordinary inline configuration changes; the Project Access drawer's Save/Cancel is the single, scoped exception described above.
 
 ---
 
@@ -1097,9 +1101,9 @@ Public publication may happen **before** REACH is generally usable.
 The repository should truthfully state:
 
 - pre-alpha / active development;
-- not production-ready;
-- installation may not yet be available;
-- an earlier working prototype exists and is being used as the development foundation for the redesigned distributed Server + Client architecture.
+- a production deployment exists and is being actively dogfooded, but general-use readiness is not yet declared;
+- canonical Client installation is implemented for Linux and Windows and remains under migration/hardening validation;
+- the distributed Server + Client architecture is implemented; SCOPE migration and bounded production hardening are still in progress.
 
 Early publication exists to expose real engineering work, architecture, roadmap, CI evolution, security model, HITL governance and implementation progress.
 
@@ -1224,20 +1228,17 @@ Do not build a generalized self-management framework unless a real need appears.
 
 ## 27. Current architecture verdict
 
-**READY TO IMPLEMENT.**
+**IMPLEMENTED AND RUNNING; MIGRATION/HARDENING IN PROGRESS.**
 
-No material architecture question remains open.
+The core distributed architecture is no longer a design-only target. The production Server is deployed behind the OpenAI Secure MCP Tunnel; the service and admin planes are separate; the Admin UI/API is implemented; Clients use Client-owned Ed25519 identity with Pending → Enabled admission; Server-owned project policy and local root-anchor enforcement are implemented; coordinated release artifacts and Linux/Windows installers exist; and ChatGPT Web → tunnel → PROD Server → authorized Client/project routing has been proven with read, controlled write, read-back, trash and denied-path evidence.
 
-The next work is execution:
+Current execution state:
 
-1. retain the CI independence already established;
-2. port proven safe filesystem primitives;
-3. implement Client identity/enrollment and persistent WS;
-4. implement Server routing and configuration;
-5. implement setup mode/Web UI/HITL;
-6. implement logging/audit;
-7. dogfood;
-8. migrate SCOPE while Dev MCP remains available;
-9. publish progress publicly as pre-alpha when approved.
+1. SCOPE migration is active and intentionally coexists with Dev MCP until comparison, write/security, cutover and restart/rollback evidence are complete;
+2. the canonical Linux installer is being hardened against assumptions about operator-owned roots discovered by that migration;
+3. production private-root bootstrap/legacy-state cleanup, explicit Client retirement, Windows elevation robustness, GitGate mirror repair and Bridge wake/reconnect remain bounded follow-up work;
+4. public status remains pre-alpha until the remaining migration/hardening gates are complete and the Product Owner changes it.
+
+Architecture decisions that materially restrict valid operator behavior are Product Owner decisions. Implementation must not invent structural rules such as arbitrary path-depth requirements, fixed topology assumptions or new lifecycle constraints merely as safety proxies. Security guards must protect a concrete invariant and should be expressed directly in terms of that invariant.
 
 Any future architecture change must identify a concrete requirement or defect; do not reopen settled decisions for cosmetic redesign.

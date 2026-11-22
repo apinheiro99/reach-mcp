@@ -11,6 +11,7 @@ $ProgressPreference = 'SilentlyContinue'
 $StateDir = if ($env:REACH_STATE_DIR) { $env:REACH_STATE_DIR } else { 'C:\ProgramData\REACH\Client' }
 $InstallDir = if ($env:REACH_INSTALL_DIR) { $env:REACH_INSTALL_DIR } else { 'C:\Program Files\REACH\Client' }
 $RootGiven = [bool]$env:REACH_ROOT
+$AllowWholeDrive = $env:REACH_ALLOW_WHOLE_DRIVE -eq '1'
 $Root = if ($env:REACH_ROOT) { $env:REACH_ROOT } else { Join-Path $StateDir 'root' }
 $Origin = "$env:REACH_SERVER_ORIGIN".TrimEnd('/')
 
@@ -20,10 +21,21 @@ function Fail([string]$Message) { throw "install.ps1: $Message" }
 if ($Origin -eq '') { Fail 'set $env:REACH_SERVER_ORIGIN to http://<host>[:<port>] first' }
 if ($Origin -notmatch '^http://(?<authority>([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?)$') { Fail 'REACH_SERVER_ORIGIN must be a plain http://host[:port] with no credentials, path, query or fragment' }
 $Authority = $Matches['authority']
-foreach ($pair in @(@('REACH_STATE_DIR', $StateDir), @('REACH_INSTALL_DIR', $InstallDir), @('REACH_ROOT', $Root))) {
-  if ($pair[1] -notmatch '^[A-Za-z]:\\[A-Za-z0-9._ \\-]+$' -or $pair[1] -match '(^|\\)\.\.?(\\|$)|\\\\') { Fail "$($pair[0]) must be an absolute drive path of letters, digits, space and . _ -" }
+# Plain syntax only: an absolute drive path of letters, digits, space and . _ -, no . or .. segments. How deep a path is is not a safety property;
+# what protects the machine is ownership (a state or install directory that is not REACH's is refused below and by the machine installer).
+# The state and install directories are what this installer owns, so they must be a directory below the drive root; the project root is the operator's choice.
+foreach ($pair in @(@('REACH_STATE_DIR', $StateDir, $false), @('REACH_INSTALL_DIR', $InstallDir, $false), @('REACH_ROOT', $Root, $true))) {
+  $Pattern = if ($pair[2]) { '^[A-Za-z]:\\[A-Za-z0-9._ \\-]*$' } else { '^[A-Za-z]:\\[A-Za-z0-9._ \\-]+$' }
+  if ($pair[1] -notmatch $Pattern -or $pair[1] -match '(^|\\)\.\.?(\\|$)|\\\\') { Fail "$($pair[0]) must be an absolute drive path of letters, digits, space and . _ -" }
 }
-if ($Root.TrimEnd('\').Length -le 3) { Fail 'the root must not be a drive root' }
+# A drive root is one comparable form everywhere: "C:\", never "C:" (which Windows reads as the current directory of that drive).
+function Format-Root([string]$Path) { $t = $Path.TrimEnd('\'); if ($t -match '^[A-Za-z]:$') { return "$t\" } return $t }
+$Root = Format-Root $Root
+if ($Root.Length -le 3) {
+  # Sharing a whole drive is the operator's decision, never a default: it is shown and confirmed on purpose.
+  [Console]::Error.WriteLine("install.ps1: WARNING: REACH_ROOT $Root shares the WHOLE DRIVE of this machine with the REACH Server (as / would on Linux).")
+  if (-not $AllowWholeDrive) { Fail 'to confirm it, set $env:REACH_ALLOW_WHOLE_DRIVE=''1'' and run again' }
+}
 
 $Arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($Arch -ne 'AMD64') { Fail "unsupported architecture ${Arch}: only x64 is supported" }
@@ -40,7 +52,7 @@ if (Test-Path -LiteralPath $Receipt -PathType Leaf) {
   # The receipt is the identity of one installation: its runtime coordinates cannot be redefined by a rerun.
   if ($Prior.task_name -ne 'REACH Client' -or $Prior.state_dir -isnot [string] -or $Prior.state_dir.TrimEnd('\') -ne $StateDir.TrimEnd('\') -or $Prior.bootstrap -ne $Bootstrap) { Fail "the install receipt $Receipt does not match this machine's REACH state" }
   if ($Prior.install_dir -isnot [string] -or $Prior.install_dir.TrimEnd('\') -ne $InstallDir.TrimEnd('\')) { Fail "this machine is already installed in $($Prior.install_dir): uninstall first to change REACH_INSTALL_DIR" }
-  if ($RootGiven -and $Prior.root.TrimEnd('\') -ne $Root.TrimEnd('\')) { Fail "this machine is already installed with root $($Prior.root): uninstall first to change it" }
+  if ($RootGiven -and $(Format-Root $Prior.root) -ne $Root) { Fail "this machine is already installed with root $($Prior.root): uninstall first to change it" }
   $Root = $Prior.root
   $OwnState = [bool]$Prior.owned.state_dir
   $OwnRoot = [bool]$Prior.owned.root
@@ -114,7 +126,7 @@ try {
     $Updated = [Text.RegularExpressions.Regex]::Replace($Text, '(?m)^REACH_SERVER_URL=.*$', "REACH_SERVER_URL=$Endpoint")
     if ($Updated -ne $Text) { [IO.File]::WriteAllText($Bootstrap, $Updated, $Utf8) }
   } else {
-    $RootJson = $Root.TrimEnd('\').Replace('\', '\\')
+    $RootJson = $Root.Replace('\', '\\')
     [IO.File]::WriteAllText($Bootstrap, "REACH_SERVER_URL=$Endpoint`nREACH_ROOTS=[`"$RootJson`"]`n", $Utf8)
   }
 
@@ -123,7 +135,7 @@ try {
   & $Shell -NoProfile -ExecutionPolicy Bypass -File $LowLevel -Archive $ArchiveFile -Bootstrap $Bootstrap -Build $Build -InstallDir $InstallDir -AllowInsecureWs -Start
   if ($LASTEXITCODE -ne 0) { Fail 'the machine installer failed; see its message above' }
   # The receipt is written only after a successful install and holds no identity or secret: it is what the uninstaller trusts.
-  $ReceiptBody = [ordered]@{ schema_version = 1; platform = 'win32'; install_dir = $InstallDir; state_dir = $StateDir; bootstrap = $Bootstrap; root = $Root.TrimEnd('\'); task_name = 'REACH Client'; owned = [ordered]@{ state_dir = $OwnState; root = $OwnRoot } }
+  $ReceiptBody = [ordered]@{ schema_version = 1; platform = 'win32'; install_dir = $InstallDir; state_dir = $StateDir; bootstrap = $Bootstrap; root = $Root; task_name = 'REACH Client'; owned = [ordered]@{ state_dir = $OwnState; root = $OwnRoot } }
   [IO.File]::WriteAllText("$Receipt.tmp", ($ReceiptBody | ConvertTo-Json -Depth 4), $Utf8)
   Move-Item -LiteralPath "$Receipt.tmp" -Destination $Receipt -Force
   Write-Output "To remove it later (elevated): powershell -NoProfile -ExecutionPolicy Bypass -File `"$InstallDir\deploy\uninstall-windows.ps1`" -StateDir `"$StateDir`""

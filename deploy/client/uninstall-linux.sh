@@ -54,9 +54,10 @@ const fs = require("node:fs");
 const fail = (m) => { process.stderr.write("uninstall-linux: " + m + "\n"); process.exit(2); };
 let r;
 try { r = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { fail("the install receipt is not valid JSON"); }
-const plain = (v) => typeof v === "string" && /^\/[A-Za-z0-9._ \/-]+$/.test(v) && !/(^|\/)\.\.?(\/|$)|\/\// .test(v) && v.replace(/\/$/, "").split("/").length >= 3;
+const plain = (v) => typeof v === "string" && /^\/[A-Za-z0-9._ \/-]+$/.test(v) && !/(^|\/)\.\.?(\/|$)|\/\// .test(v);
 if (r.schema_version !== 1 || r.platform !== "linux") fail("unsupported install receipt");
-for (const k of ["install_dir", "state_dir", "bootstrap", "root", "unit_dir"]) if (!plain(r[k])) fail("the receipt has a bad " + k);
+for (const k of ["install_dir", "state_dir", "bootstrap", "unit_dir"]) if (!plain(r[k])) fail("the receipt has a bad " + k);
+if (r.root !== "/" && !plain(r.root)) fail("the receipt has a bad root");
 if (r.state_dir.replace(/\/$/, "") !== process.argv[2]) fail("the receipt belongs to another state directory");
 if (r.bootstrap !== process.argv[2] + "/bootstrap.env") fail("the receipt bootstrap is not inside its state directory");
 if (r.unit_name !== "reach-mcp-client.service") fail("the receipt names a unit that is not the REACH unit");

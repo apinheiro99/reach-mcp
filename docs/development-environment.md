@@ -6,6 +6,7 @@ This file documents only the REACH development environment. Architecture lives i
 
 - Node.js >=24;
 - TypeScript + ESM;
+- **TypeScript-only first-party policy:** source, tooling and tests use `.ts`. The repository has no first-party `.mjs` file (release/deploy/tooling/tests run as `.ts` directly on Node >=24, checked by `tsc -p tsconfig.json` as part of `npm run typecheck`); new `.mjs` source files are not allowed unless TypeScript is technically impossible and the Product Owner explicitly approves the exception;
 - npm + Git;
 - Debian 13 is the reference DEV target.
 
@@ -17,13 +18,13 @@ This file documents only the REACH development environment. Architecture lives i
   reach-private/   private runtime/provisioning data
 ```
 
-The source tree is an npm workspace under `packages/server`, `packages/client`, `packages/shared` and isolated legacy compatibility code.
+The source tree is an npm workspace under `packages/server`, `packages/client`, `packages/shared` and isolated compatibility code. Runtime/domain code, repository tooling and tests are TypeScript. The only `.mjs` files that exist are generated inside release archives (`reach-client.mjs`, `reach-server.mjs`), built from `scripts/release/launcher.ts`.
 
 ## DEV runtime
 
-The Server runs from the source workspace. The Client uses the installed release artifact. systemd owns process restart; REACH does not supervise itself.
+The former dedicated REACH DEV Server runtime is retired and is no longer part of the active operating topology. PROD is the canonical runtime for current integration, migration and dogfooding. Development still occurs from the source workspace and CI/tests/disposable targets remain valid engineering surfaces, but no always-on REACH DEV Server is required. If an isolated DEV runtime is ever needed again, it must be created deliberately rather than treated as an implicit dependency.
 
-The Server uses the same V1 architecture as production:
+When an isolated development Server is intentionally started, it uses the same V1 architecture as production:
 
 - service plane on 8787;
 - admin plane on 8788;

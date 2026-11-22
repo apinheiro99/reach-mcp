@@ -56,3 +56,19 @@ The Server stores only the matching public key and Server-owned logical configur
 Runtime configuration, proposal state and logs live under the deployment-provided persistent root (`REACH_PRIVATE_PATH`, mounted at `/reach-private` as `config.json`, `proposal.json` and `logs/`). Secrets never belong in the public repository, logs or CI output.
 
 Project roots are explicit. There is no default root.
+
+## Project filesystem access policy
+
+Each logical project has one canonical access-policy object shared by Server configuration, wire sync, Client enforcement and Admin UI. The object describes one readable `physical_root`, an access mode, optional `writable_globs`, additive `deny_globs` and optional limits. There is no second UI-only permission model and nested permissions are not represented by duplicate projects.
+
+The proven baseline is the Dev MCP contract: read access is rooted at the project root; controlled writes are an explicit allowlist of project-relative paths/globs; deny rules remain additive; bounded limits are part of the same policy; and delete moves allowed targets to `.lixeira` rather than unlinking them. REACH keeps those semantics while distributing policy from the Server to the Client.
+
+Effective semantics are intentionally small:
+
+- `read_only`: the project root is readable, subject to deny/content policy, and no filesystem mutation surface exists;
+- `read_write` without `writable_globs`: the project root is writable, subject to deny/content policy and write limits;
+- `read_write` with `writable_globs`: the project root remains readable, but filesystem mutation is allowed only for matching project-relative files/directories;
+- `deny_globs` are additive restrictions and take precedence over writable allowlists;
+- delete of an allowed target is trash semantics, not immediate unlink.
+
+The Admin Projects view exposes this same object through the approved Project Access drawer (`docs/screens/REACH 08_MCP Project Access Dashboard.png`). The drawer opens over the Projects page and uses explicit Save changes/Cancel actions so an operator can review a complete policy change before it is applied (the scoped exception to autosave; inline fields on the table still autosave, and Save changes is then persisted by that same autosave). It has three tabs: Access & Permissions, Configuration (JSON) (the canonical object, read-only) and Details. Its visual hierarchy, layout and REACH dark/yellow design follow the approved reference rather than introducing a separate visual pattern.

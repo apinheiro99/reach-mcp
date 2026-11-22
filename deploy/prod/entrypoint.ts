@@ -16,7 +16,7 @@ export const LAYOUT = {
 };
 
 /** The Server command line for one container start. `layout` is overridable only so tests can run it outside an image. */
-export function serverArgs(env, layout = LAYOUT) {
+export function serverArgs(env: Record<string, string | undefined>, layout = LAYOUT) {
   const { release } = JSON.parse(readFileSync(path.join(layout.artifacts, "manifest.json"), "utf8"));
   return [
     layout.server,
@@ -32,6 +32,6 @@ export function serverArgs(env, layout = LAYOUT) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const child = spawn(process.execPath, serverArgs(process.env), { stdio: "inherit" });
-  for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => child.kill(signal));
+  for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => child.kill(signal));
   child.on("exit", (code, signal) => process.exit(code ?? (signal === null ? 1 : 143)));
 }

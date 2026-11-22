@@ -5,29 +5,31 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
-import { build } from "../../scripts/release.mjs";
-import { collectEntries } from "../../scripts/release/archive.mjs";
-import { serverArgs } from "../../deploy/prod/entrypoint.mjs";
-import { selectClient } from "./select-client.mjs";
-import { sha256, validateManifest, verifyRelease } from "../../scripts/release/manifest.mjs";
+import { build } from "../../scripts/release.ts";
+import { collectEntries } from "../../scripts/release/archive.ts";
+import { serverArgs } from "../../deploy/prod/entrypoint.ts";
+import { selectClient } from "./select-client.ts";
+import { sha256, validateManifest, verifyRelease, type Untrusted } from "../../scripts/release/manifest.ts";
+import { type AddressInfo } from "node:net";
+import { type ChildProcess, type SpawnOptions } from "node:child_process";
 
 const { fetch } = globalThis;
 const BUILD_ID = "release-test-1";
 const COMMIT = "b".repeat(40);
-let base;
-let out;
-let manifest;
+let base: string;
+let out: string;
+let manifest: Untrusted;
 const names = { linux: "reach-client-linux-x64.tgz", windows: "reach-client-win32-x64.zip", server: "reach-server-linux-x64.tgz" };
 
-const extracted = new Map();
-const extract = (kind) => {
-  if (extracted.has(kind)) return extracted.get(kind);
+const extracted = new Map<string, string>();
+const extract = (kind: keyof typeof names): string => {
+  if (extracted.has(kind)) return extracted.get(kind)!;
   const dir = path.join(base, `x-${kind}`);
   extracted.set(kind, dir);
   mkdirSync(dir);
@@ -35,35 +37,36 @@ const extract = (kind) => {
   else execFileSync("tar", ["-xzf", path.join(out, kind === "server" ? "server" : "artifacts", names[kind]), "-C", dir]);
   return dir;
 };
-const files = (dir) => collectEntries(dir).map((e) => e.path);
+const files = (dir: string) => collectEntries(dir).map((e) => e.path);
 
 const START_MS = 5000;
 const STOP_MS = 5000;
 /** Start a Server child and resolve once it prints "listening"; reject at once, with the captured output, if it exits first or the wait runs out. */
-const startServer = (args, options) =>
+type ServerHandle = { child: ChildProcess; output: string };
+const startServer = (args: string[], options: SpawnOptions = {}): Promise<ServerHandle> =>
   new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
-    const handle = { child, output: "" };
+    const handle: ServerHandle = { child, output: "" };
     const timer = setTimeout(() => settle(new Error(`no "listening" within ${START_MS} ms:\n${handle.output}`)), START_MS);
-    const settle = (error) => {
+    const settle = (error?: Error) => {
       clearTimeout(timer);
       child.off("exit", onExit);
-      child.stdout.off("data", onData);
-      child.stderr.off("data", onData);
+      child.stdout!.off("data", onData);
+      child.stderr!.off("data", onData);
       if (error) stopChild(child).finally(() => reject(error));
       else resolve(handle);
     };
-    const onData = (c) => {
+    const onData = (c: Buffer) => {
       handle.output += c;
       if (handle.output.includes("listening")) settle();
     };
-    const onExit = (code, signal) => settle(new Error(`exited before listening (code=${code} signal=${signal}):\n${handle.output}`));
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => settle(new Error(`exited before listening (code=${code} signal=${signal}):\n${handle.output}`));
+    child.stdout!.on("data", onData);
+    child.stderr!.on("data", onData);
     child.once("exit", onExit);
   });
 /** Stop a child without ever waiting unbounded: nothing to do if it already exited, SIGTERM, then SIGKILL after STOP_MS. */
-const stopChild = (child) =>
+const stopChild = (child: ChildProcess): Promise<void> =>
   new Promise((resolve) => {
     if (child.exitCode !== null || child.signalCode !== null) return resolve();
     const kill = setTimeout(() => child.kill("SIGKILL"), STOP_MS);
@@ -86,14 +89,14 @@ test("one invocation: manifest valid and coherent, exactly the three archives, h
   assert.deepEqual(validateManifest(manifest), []);
   assert.deepEqual([manifest.release.build_id, manifest.server.build_id, manifest.client.build_id, manifest.release.repository_commit], [BUILD_ID, BUILD_ID, BUILD_ID, COMMIT]);
   assert.deepEqual(manifest.compatibility, { strategy: "exact", accepted_client_builds: [BUILD_ID] });
-  assert.deepEqual(manifest.artifacts.map((a) => a.name).sort(), Object.values(names).sort());
+  assert.deepEqual(manifest.artifacts.map((a: Untrusted) => a.name).sort(), Object.values(names).sort());
   assert.deepEqual(files(out).sort(), ["artifacts/manifest.json", "artifacts/install.sh", "artifacts/install.ps1", `artifacts/${names.linux}`, `artifacts/${names.windows}`, `server/${names.server}`].sort());
   assert.deepEqual(verifyRelease(out), []);
 });
 
 test("every archive is a self-contained runtime: REACH packages as plain dirs, production dependencies, no link, no Git, no dev or test material", () => {
-  const seen = {};
-  for (const kind of ["linux", "windows", "server"]) {
+  const seen = {} as Record<keyof typeof names, string[]>;
+  for (const kind of ["linux", "windows", "server"] as const) {
     const dir = extract(kind);
     const list = files(dir); // collectEntries throws on any symlink
     seen[kind] = list;
@@ -108,14 +111,14 @@ test("every archive is a self-contained runtime: REACH packages as plain dirs, p
   assert.ok(seen.linux.some((f) => f.includes("lib/git-compat/src/")) && !seen.server.some((f) => f.includes("lib/client/")), "the Client closure has git-compat; the Server has no Client code");
   assert.ok(seen.windows.some((f) => f.includes("canvas-win32-x64-msvc")) && !seen.windows.some((f) => f.includes("canvas-linux-")), "the Windows archive carries only its own native binary");
   assert.ok(seen.linux.some((f) => f.includes("canvas-linux-x64-gnu")) && !seen.linux.some((f) => f.includes("canvas-win32-")), "the Linux archive carries only its own native binary");
-  const logical = (list) => list.filter((f) => f.includes("/lib/")).sort();
+  const logical = (list: string[]) => list.filter((f) => f.includes("/lib/")).sort();
   assert.deepEqual(logical(seen.linux), logical(seen.windows), "Linux and Windows hold the same logical REACH runtime");
   const zipinfo = execFileSync("unzip", ["-Z", path.join(out, "artifacts", names.windows)], { encoding: "utf8" });
   assert.ok(!/^l/m.test(zipinfo), "no symlink entry in the ZIP");
 });
 
 test("extracted artifacts run their own entrypoints without module-resolution failure (no workspace, no repository)", () => {
-  for (const [kind, top, usage] of [["linux", "reach-client", "usage: client"], ["windows", "reach-client", "usage: client"], ["server", "reach-server", "usage: server"]]) {
+  for (const [kind, top, usage] of [["linux", "reach-client", "usage: client"], ["windows", "reach-client", "usage: client"], ["server", "reach-server", "usage: server"]] as [keyof typeof names, string, string][]) {
     const dir = path.join(extract(kind), top);
     const run = spawnSync(process.execPath, [`${top}.mjs`], { cwd: dir, encoding: "utf8", env: { PATH: process.env.PATH } });
     assert.equal(run.status, 2, `${kind}: ${run.stderr}`);
@@ -151,7 +154,7 @@ test("a real Server from the extracted runtime serves the produced manifest and 
     const service = `http://127.0.0.1:${port[1]}`;
     const auth = {};
     assert.deepEqual(Buffer.from(await (await fetch(`${service}/release/manifest`, auth)).arrayBuffer()), readFileSync(path.join(out, "artifacts", "manifest.json")), "the manifest served is the manifest produced");
-    for (const [os, arch] of [["linux", "x64"], ["win32", "x64"]]) {
+    for (const [os, arch] of [["linux", "x64"], ["win32", "x64"]] as [string, string][]) {
       const a = selectClient(manifest, os, arch);
       assert.equal(a.download_path, `/release/artifacts/${a.name}`);
       const res = await fetch(`${service}${a.download_path}`, auth);
@@ -178,15 +181,15 @@ test("the production entrypoint starts the real extracted Server from the manife
   try {
     const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
-    const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: port[1] } });
+    const health = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.ts")], { env: { PATH: process.env.PATH, REACH_PORT: port[1] } });
     assert.ok(existsSync(path.join(root, "logs")), "the Server created its log directory inside the private root");
     assert.equal(health.status, 0, "healthy in setup mode with no bearer configured, while the Admin allowlist excludes the probe's loopback address");
     assert.equal((await fetch(`http://127.0.0.1:${port[2]}/admin/api/state`)).status, 403, "the Admin plane really refuses a peer outside the allowlist");
-    const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.mjs")], { env: { PATH: process.env.PATH, REACH_PORT: "1" } });
+    const down = spawnSync(process.execPath, [path.join(import.meta.dirname, "..", "..", "deploy", "prod", "healthcheck.ts")], { env: { PATH: process.env.PATH, REACH_PORT: "1" } });
     assert.equal(down.status, 1, "unhealthy when nothing listens");
     const service = `http://127.0.0.1:${port[1]}`;
     const auth = {};
-    for (const a of manifest.artifacts.filter((x) => x.role === "client")) {
+    for (const a of manifest.artifacts.filter((x: Untrusted) => x.role === "client")) {
       const bytes = Buffer.from(await (await fetch(`${service}/release/artifacts/${a.name}`, auth)).arrayBuffer());
       assert.deepEqual(bytes, readFileSync(path.join(out, "artifacts", a.name)), `${a.name}: the baked bytes are the canonical bytes`);
     }
@@ -196,7 +199,7 @@ test("the production entrypoint starts the real extracted Server from the manife
 });
 
 test("can it fail: a corrupted, truncated, missing or undeclared artifact makes verification fail", () => {
-  const copy = (name) => {
+  const copy = (name: string) => {
     const dir = path.join(base, name);
     cpSync(out, dir, { recursive: true });
     return dir;
@@ -204,7 +207,7 @@ test("can it fail: a corrupted, truncated, missing or undeclared artifact makes 
   const flipped = copy("c-flip");
   const file = path.join(flipped, "artifacts", names.windows);
   const bytes = readFileSync(file);
-  bytes[bytes.length >> 1] ^= 0xff;
+  bytes[bytes.length >> 1]! ^= 0xff;
   writeFileSync(file, bytes);
   assert.match(verifyRelease(flipped).join(), /sha256 differs/);
   const cut = copy("c-cut");
@@ -220,13 +223,13 @@ test("can it fail: a corrupted, truncated, missing or undeclared artifact makes 
     const mutilated = copy(`c-drop-${dropped}`);
     const manifestFile = path.join(mutilated, "artifacts", "manifest.json");
     const edited = JSON.parse(readFileSync(manifestFile, "utf8"));
-    edited.artifacts = edited.artifacts.filter((a) => a.name !== dropped);
+    edited.artifacts = edited.artifacts.filter((a: Untrusted) => a.name !== dropped);
     writeFileSync(manifestFile, JSON.stringify(edited));
     rmSync(path.join(mutilated, dropped === names.server ? "server" : "artifacts", dropped));
-    assert.deepEqual(verifyRelease(mutilated).filter((p) => !/is missing$/.test(p)), [], `${dropped}: only the completeness problem, files and manifest agree`);
+    assert.deepEqual(verifyRelease(mutilated).filter((p: string) => !/is missing$/.test(p)), [], `${dropped}: only the completeness problem, files and manifest agree`);
     assert.match(verifyRelease(mutilated).join(), /required .* is missing/, `${dropped}: a consistently mutilated release is rejected`);
   }
-  const cli = spawnSync(process.execPath, ["scripts/release.mjs", "verify", "--out", flipped], { encoding: "utf8", cwd: path.join(import.meta.dirname, "..", "..") });
+  const cli = spawnSync(process.execPath, ["scripts/release.ts", "verify", "--out", flipped], { encoding: "utf8", cwd: path.join(import.meta.dirname, "..", "..") });
   assert.equal(cli.status, 2);
   assert.match(cli.stderr, /verification failed/);
 });
@@ -236,7 +239,7 @@ test("can it hang: a Server that exits before listening fails at once with its o
   await assert.rejects(startServer(["-e", 'console.error("boom"); process.exit(3)']), /exited before listening \(code=3 signal=null\):\nboom/);
   assert.ok(Date.now() - started < 2000, "early exit does not wait for the startup timeout");
   const exited = spawn(process.execPath, ["-e", ""]);
-  await new Promise((r) => exited.once("exit", r));
+  await new Promise<void>((r) => exited.once("exit", () => r()));
   await stopChild(exited);
 });
 
@@ -250,8 +253,8 @@ test("the production entrypoint contract: the Admin listener is non-loopback by 
 
 // ---- Task #90: the public Linux one-line installer, against the real build and a real Server and Client ----
 const INSTALL_SH = path.join(import.meta.dirname, "..", "..", "deploy", "client", "install.sh");
-const hex = (s) => createHash("sha256").update(s).digest("hex");
-const waitFor = async (fn, ms = 8000) => {
+const hex = (s: string | Uint8Array) => createHash("sha256").update(s).digest("hex");
+const waitFor = async <T,>(fn: () => Promise<T> | T, ms = 8000): Promise<T> => {
   const end = Date.now() + ms;
   for (;;) {
     const value = await fn();
@@ -260,21 +263,23 @@ const waitFor = async (fn, ms = 8000) => {
     await new Promise((r) => setTimeout(r, 100));
   }
 };
-const installer = (args) => spawnSync("sh", [INSTALL_SH, ...args], { encoding: "utf8", env: { PATH: process.env.PATH } });
-const installerAsync = (args) =>
+const installer = (args: string[]) => spawnSync("sh", [INSTALL_SH, ...args], { encoding: "utf8", env: { PATH: process.env.PATH } });
+type InstallerResult = { status: number | null; stderr: string; stdout: string };
+const installerAsync = (args: string[]): Promise<InstallerResult> =>
   new Promise((resolve) => {
     const child = spawn("sh", [INSTALL_SH, ...args], { env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     let stdout = "";
-    child.stderr.on("data", (c) => (stderr += c));
-    child.stdout.on("data", (c) => (stdout += c));
+    child.stderr!.on("data", (c: Buffer) => (stderr += c));
+    child.stdout!.on("data", (c: Buffer) => (stdout += c));
     child.on("exit", (status) => resolve({ status, stderr, stdout }));
   });
-const machine = (name) => {
+type Machine = { state: string; install: string; units: string; uninstall?: string };
+const machine = (name: string): Machine => {
   const root = path.join(base, name);
   return { state: path.join(root, "state"), install: path.join(root, "opt", "client"), units: path.join(root, "units") };
 };
-const flags = (m, origin) => ["--server-origin", origin, "--state-dir", m.state, "--install-dir", m.install, "--unit-dir", m.units, "--test-no-system"];
+const flags = (m: Machine, origin: string) => ["--server-origin", origin, "--state-dir", m.state, "--install-dir", m.install, "--unit-dir", m.units, "--test-no-system"];
 
 test("install.sh rejects a bad origin, a cross-origin or unsupported setup and a corrupt manifest before any machine change", async () => {
   const m = machine("rej");
@@ -285,16 +290,16 @@ test("install.sh rejects a bad origin, a cross-origin or unsupported setup and a
   assert.equal(installer(["--state-dir", m.state]).status, 2, "the origin is required, never guessed");
   assert.ok(!existsSync(m.state) && !existsSync(m.install) && !existsSync(m.units), "nothing was created");
   // A fake origin that serves a manifest with a wrong hash, then one with two selectors, then a redirect to another origin.
-  const bad = async (manifestFor, archive) => {
+  const bad = async (manifestFor: () => Untrusted, archive: Buffer) => {
     const server = createServer((req, res) => {
       if (req.url === "/release/manifest") return res.end(JSON.stringify(manifestFor()));
-      if (req.url.startsWith("/release/artifacts/")) return res.end(archive);
+      if (req.url!.startsWith("/release/artifacts/")) return res.end(archive);
       res.writeHead(404).end();
     });
-    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
     try {
       const mm = machine(`rej-${Math.random().toString(36).slice(2)}`);
-      const r = await installerAsync(flags(mm, `http://127.0.0.1:${server.address().port}`)); // async: this process also hosts the fake origin
+      const r = await installerAsync(flags(mm, `http://127.0.0.1:${(server.address() as AddressInfo).port}`)); // async: this process also hosts the fake origin
       assert.ok(!existsSync(mm.install) && !existsSync(mm.state) && !existsSync(mm.units), "no machine change");
       return r;
     } finally {
@@ -304,12 +309,12 @@ test("install.sh rejects a bad origin, a cross-origin or unsupported setup and a
   const good = () => JSON.parse(JSON.stringify(manifest));
   const bytes = readFileSync(path.join(out, "artifacts", names.linux));
   assert.match((await bad(() => ({ ...good(), schema_version: 1 }), bytes)).stderr, /schema_version/);
-  assert.match((await bad(() => { const x = good(); x.artifacts.push({ ...x.artifacts.find((a) => a.role === "client" && a.os === "linux") }); return x; }, bytes)).stderr, /exactly one client artifact/);
-  assert.match((await bad(() => { const x = good(); x.artifacts.find((a) => a.role === "client" && a.os === "linux").download_path = "http://evil/x.tgz"; return x; }, bytes)).stderr, /download_path/);
-  assert.match((await bad(() => { const x = good(); x.artifacts.find((a) => a.role === "client" && a.os === "linux").download_path = "/release/artifacts/../x"; return x; }, bytes)).stderr, /download_path/);
+  assert.match((await bad(() => { const x = good(); x.artifacts.push({ ...x.artifacts.find((a: Untrusted) => a.role === "client" && a.os === "linux") }); return x; }, bytes)).stderr, /exactly one client artifact/);
+  assert.match((await bad(() => { const x = good(); x.artifacts.find((a: Untrusted) => a.role === "client" && a.os === "linux").download_path = "http://evil/x.tgz"; return x; }, bytes)).stderr, /download_path/);
+  assert.match((await bad(() => { const x = good(); x.artifacts.find((a: Untrusted) => a.role === "client" && a.os === "linux").download_path = "/release/artifacts/../x"; return x; }, bytes)).stderr, /download_path/);
   assert.match((await bad(() => good(), Buffer.concat([bytes, Buffer.from("x")]))).stderr, /size/);
   const flipped = Buffer.from(bytes);
-  flipped[flipped.length - 1] ^= 1;
+  flipped[flipped.length - 1]! ^= 1;
   assert.match((await bad(() => good(), flipped)).stderr, /SHA-256/);
 });
 
@@ -321,7 +326,7 @@ test("the real one-line install: the Server's own install.sh and manifest-select
   const dir = path.join(extract("server"), "reach-server");
   const args = ["reach-server.mjs", "--config", `${priv}/config.json`, "--proposal", `${priv}/proposal.json`, "--logs", `${priv}/logs`, "--port", "0", "--admin-port", "0", "--build", BUILD_ID, "--artifacts", path.join(out, "artifacts")];
   const { child, output } = await startServer(args, { cwd: dir });
-  let client = null;
+  let client: ChildProcess | null = null;
   try {
     const port = /listening port=(\d+) admin_port=(\d+)/.exec(output);
     assert.ok(port, output);
@@ -352,13 +357,13 @@ test("the real one-line install: the Server's own install.sh and manifest-select
     // Start the installed Client exactly as the unit would, and let it generate its own identity.
     client = spawn(process.execPath, [path.join(m.install, "reach-client.mjs"), "--bootstrap", bootstrap, "--build", BUILD_ID, "--allow-insecure-ws"], { stdio: ["ignore", "pipe", "pipe"] });
     let clientOutput = "";
-    client.stdout.on("data", (c) => (clientOutput += c));
-    client.stderr.on("data", (c) => (clientOutput += c));
+    client.stdout!.on("data", (c: Buffer) => (clientOutput += c));
+    client.stderr!.on("data", (c: Buffer) => (clientOutput += c));
     const pending = await waitFor(async () => {
-      const view = await (await fetch(`http://127.0.0.1:${port[2]}/admin/api/clients`)).json();
-      return view.clients.find((c) => c.status === "pending" || c.enabled === false) ?? null;
+      const view = (await (await fetch(`http://127.0.0.1:${port[2]}/admin/api/clients`)).json()) as Untrusted;
+      return view.clients.find((c: Untrusted) => c.status === "pending" || c.enabled === false) ?? null;
     });
-    assert.equal((await (await fetch(`http://127.0.0.1:${port[2]}/admin/api/clients`)).json()).clients.length, 1, "exactly one unknown Client");
+    assert.equal(((await (await fetch(`http://127.0.0.1:${port[2]}/admin/api/clients`)).json()) as Untrusted).clients.length, 1, "exactly one unknown Client");
     const text = readFileSync(bootstrap, "utf8");
     const id = /^REACH_CLIENT_ID=(.+)$/m.exec(text)?.[1];
     const key = /^REACH_CLIENT_IDENTITY_KEY=(.+)$/m.exec(text)?.[1];
@@ -371,7 +376,7 @@ test("the real one-line install: the Server's own install.sh and manifest-select
 
     // A rerun against the same machine keeps the identity and replaces the runtime.
     client.kill("SIGTERM");
-    await new Promise((r) => client.once("exit", r));
+    await new Promise((r) => client!.once("exit", r));
     client = null;
     writeFileSync(path.join(m.install, "stale.txt"), "old");
     const second = run();
@@ -400,21 +405,21 @@ test("the Windows Client archive carries the pinned Node runtime and its low-lev
   const lin = extract("linux");
   assert.ok(!existsSync(path.join(lin, "reach-client", "runtime")) && !existsSync(path.join(lin, "reach-client", "deploy", "install-windows.ps1")) && !existsSync(path.join(lin, "reach-client", "deploy", "uninstall-windows.ps1")));
   assert.ok(existsSync(path.join(lin, "reach-client", "deploy", "install-linux.sh")) && existsSync(path.join(lin, "reach-client", "deploy", "uninstall-linux.sh")), "the Linux archive carries its install and uninstall scripts");
-  assert.deepEqual(manifest.installers.map((i) => [i.name, i.os, i.download_path]), [["install.sh", "linux", "/install.sh"], ["install.ps1", "win32", "/install.ps1"]]);
+  assert.deepEqual(manifest.installers.map((i: Untrusted) => [i.name, i.os, i.download_path]), [["install.sh", "linux", "/install.sh"], ["install.ps1", "win32", "/install.ps1"]]);
 });
 
 // ---- Task #97: the install receipt and the Linux uninstaller, against the real build served by a fake origin ----
 const serveRelease = async () => {
   const server = createServer((req, res) => {
     if (req.url === "/release/manifest") return res.end(JSON.stringify(manifest));
-    const artifact = manifest.artifacts.find((a) => a.download_path === req.url);
+    const artifact = manifest.artifacts.find((a: Untrusted) => a.download_path === req.url);
     if (artifact) return res.end(readFileSync(path.join(out, "artifacts", artifact.name)));
     res.writeHead(404).end();
   });
-  await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  return { server, origin: `http://127.0.0.1:${server.address().port}` };
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  return { server, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 };
-const uninstallSh = (m, extra = []) => spawnSync("sh", [m.uninstall ?? path.join(m.install, "deploy", "uninstall-linux.sh"), "--state-dir", m.state, "--test-no-system", ...extra], { encoding: "utf8", env: { PATH: process.env.PATH } });
+const uninstallSh = (m: Machine, extra: string[] = []) => spawnSync("sh", [m.uninstall ?? path.join(m.install, "deploy", "uninstall-linux.sh"), "--state-dir", m.state, "--test-no-system", ...extra], { encoding: "utf8", env: { PATH: process.env.PATH } });
 
 test("Linux install writes a secret-free receipt, and uninstall removes exactly what REACH owns and is harmless to repeat", async () => {
   const { server, origin } = await serveRelease();
@@ -427,6 +432,7 @@ test("Linux install writes a secret-free receipt, and uninstall removes exactly 
     const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
     assert.deepEqual(receipt, { schema_version: 1, platform: "linux", install_dir: m.install, state_dir: m.state, bootstrap: path.join(m.state, "bootstrap.env"), root: `${m.state}/root`, unit_dir: m.units, unit_name: "reach-mcp-client.service", service_user: null, owned: { state_dir: true, root: true, service_user: false } });
     assert.doesNotMatch(readFileSync(receiptFile, "utf8"), /KEY|CLIENT_ID|secret|token/i, "no identity or secret in the receipt");
+    assert.equal(statSync(`${m.state}/root`).mode & 0o777, 0o700, "a root this install created is restricted to its owner");
     m.uninstall = path.join(base, "un-copy-uninstall-linux.sh"); // the shipped script deletes its own directory, so the repeat runs a copy
     writeFileSync(m.uninstall, readFileSync(path.join(m.install, "deploy", "uninstall-linux.sh")));
     const gone = uninstallSh(m);
@@ -447,10 +453,14 @@ test("Linux uninstall keeps a custom root and what it did not create; a rerun ke
     const custom = path.join(base, "un-custom-root");
     mkdirSync(custom, { recursive: true });
     writeFileSync(path.join(custom, "sentinel.txt"), "project data");
-    const flagsWithRoot = (root) => [...flags(m, origin), "--root", root];
+    chmodSync(custom, 0o2775); // a shared tree such as a live project root
+    const customMode = statSync(custom).mode & 0o7777;
+    const flagsWithRoot = (root: string) => [...flags(m, origin), "--root", root];
     assert.equal((await installerAsync(flagsWithRoot(custom))).status, 0);
     const receipt = JSON.parse(readFileSync(path.join(m.state, "install-receipt.json"), "utf8"));
     assert.deepEqual(receipt.owned, { state_dir: true, root: false, service_user: false }, "an existing root is never claimed");
+    assert.equal(statSync(custom).mode & 0o7777, customMode, "an existing root keeps its mode: the installer never restricts a directory it did not create");
+    assert.equal(statSync(m.state).mode & 0o777, 0o700, "the state directory is still restricted");
     const other = path.join(base, "un-other-root");
     const conflict = await installerAsync(flagsWithRoot(other));
     assert.equal(conflict.status, 2);
@@ -466,6 +476,46 @@ test("Linux uninstall keeps a custom root and what it did not create; a rerun ke
   }
 });
 
+test("install.sh paths: depth is not a rule: a single-segment existing root is accepted and untouched, / as --root needs --allow-whole-disk and is refused for installer-owned paths, and a foreign non-empty state directory is refused by ownership", async () => {
+  const { server, origin } = await serveRelease();
+  try {
+    const refused = machine("root-slash");
+    const slash = await installerAsync([...flags(refused, origin), "--root", "/"]);
+    assert.equal(slash.status, 2);
+    assert.match(slash.stderr, /WHOLE DISK/);
+    assert.match(slash.stderr, /--allow-whole-disk/);
+    assert.ok(!existsSync(refused.state), "nothing was created without the confirmation");
+    for (const flag of ["--state-dir", "--install-dir", "--unit-dir"]) {
+      const base = { "--state-dir": refused.state, "--install-dir": refused.install, "--unit-dir": refused.units };
+      const r = await installerAsync(["--server-origin", origin, ...Object.entries({ ...base, [flag]: "/" }).flat(), "--test-no-system"]);
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, new RegExp(`${flag} must not be /`));
+    }
+    const foreign = path.join(base, "foreign-state");
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(path.join(foreign, "not-reach.txt"), "x");
+    const usr = await installerAsync(["--server-origin", origin, "--state-dir", foreign, "--install-dir", refused.install, "--unit-dir", refused.units, "--test-no-system"]);
+    assert.equal(usr.status, 2);
+    assert.match(usr.stderr, /is not a REACH Client state directory/);
+    assert.equal(readFileSync(path.join(foreign, "not-reach.txt"), "utf8"), "x", "the foreign directory is untouched");
+    const whole = machine("root-whole");
+    const confirmed = await installerAsync([...flags(whole, origin), "--root", "/", "--allow-whole-disk"]);
+    assert.equal(confirmed.status, 0, confirmed.stderr);
+    assert.match(confirmed.stderr, /WHOLE DISK/);
+    assert.equal(JSON.parse(readFileSync(path.join(whole.state, "install-receipt.json"), "utf8")).root, "/");
+    assert.equal(uninstallSh(whole).status, 0, "the receipt root / is accepted and / is never removed");
+    const ok = machine("root-single");
+    const modeBefore = statSync("/tmp").mode & 0o7777;
+    const done = await installerAsync([...flags(ok, origin), "--root", "/tmp"]);
+    assert.equal(done.status, 0, done.stderr);
+    assert.equal(statSync("/tmp").mode & 0o7777, modeBefore, "the existing single-segment root keeps its mode");
+    assert.equal(JSON.parse(readFileSync(path.join(ok.state, "install-receipt.json"), "utf8")).root, "/tmp");
+    assert.equal(uninstallSh(ok).status, 0);
+  } finally {
+    server.close();
+  }
+});
+
 test("Linux rerun cannot move the install or the unit directory, and a unit that only mentions the launcher at another path is foreign", async () => {
   const { server, origin } = await serveRelease();
   try {
@@ -475,7 +525,7 @@ test("Linux rerun cannot move the install or the unit directory, and a unit that
     const unitFile = path.join(m.units, "reach-mcp-client.service");
     const before = [readFileSync(receiptFile, "utf8"), readFileSync(unitFile, "utf8")];
     const moved = { install: path.join(base, "un-coords-moved", "opt"), units: path.join(base, "un-coords-moved", "units") };
-    const withDirs = (install, units) => ["--server-origin", origin, "--state-dir", m.state, "--install-dir", install, "--unit-dir", units, "--test-no-system"];
+    const withDirs = (install: string, units: string) => ["--server-origin", origin, "--state-dir", m.state, "--install-dir", install, "--unit-dir", units, "--test-no-system"];
     const newInstall = await installerAsync(withDirs(moved.install, m.units));
     assert.equal(newInstall.status, 2);
     assert.match(newInstall.stderr, /uninstall first to change --install-dir/);
@@ -493,7 +543,7 @@ test("Linux rerun cannot move the install or the unit directory, and a unit that
       assert.match(refused.stderr, /not a REACH Client unit/);
       assert.equal(readFileSync(unitFile, "utf8"), body, "the foreign unit is untouched");
     }
-    const lowLevel = spawnSync("sh", [path.join(m.install, "deploy", "install-linux.sh"), "--archive", path.join(out, "artifacts", manifest.artifacts.find((a) => a.role === "client" && a.os === "linux").name), "--bootstrap", path.join(m.state, "bootstrap.env"), "--build", "x", "--install-dir", m.install, "--unit-dir", m.units], { encoding: "utf8" });
+    const lowLevel = spawnSync("sh", [path.join(m.install, "deploy", "install-linux.sh"), "--archive", path.join(out, "artifacts", manifest.artifacts.find((a: Untrusted) => a.role === "client" && a.os === "linux").name), "--bootstrap", path.join(m.state, "bootstrap.env"), "--build", "x", "--install-dir", m.install, "--unit-dir", m.units], { encoding: "utf8" });
     assert.equal(lowLevel.status, 2);
     assert.match(lowLevel.stderr, /not a REACH Client unit/, "the low-level installer refuses the same unit");
     const gone = uninstallSh(m);

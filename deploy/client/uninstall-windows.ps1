@@ -30,18 +30,20 @@ if (-not (Test-Path -LiteralPath $Receipt -PathType Leaf)) {
 }
 
 try { $R = Get-Content -LiteralPath $Receipt -Raw | ConvertFrom-Json } catch { Fail 'the install receipt is not valid JSON' }
-function Test-PlainPath($Value) {
-  if ($Value -isnot [string] -or $Value -notmatch '^[A-Za-z]:\\[A-Za-z0-9._ \\-]+$' -or $Value -match '(^|\\)\.\.?(\\|$)|\\\\') { return $false }
-  return $Value.Substring(3).TrimEnd('\').Split('\').Count -ge 2
+# Plain syntax only, the grammar the installer writes: the state and install directories sit below the drive root, the project root may be a whole drive.
+function Test-PlainPath($Value, [bool]$AllowDriveRoot = $false) {
+  $Pattern = if ($AllowDriveRoot) { '^[A-Za-z]:\\[A-Za-z0-9._ \\-]*$' } else { '^[A-Za-z]:\\[A-Za-z0-9._ \\-]+$' }
+  return ($Value -is [string]) -and ($Value -match $Pattern) -and ($Value -notmatch '(^|\\)\.\.?(\\|$)|\\\\')
 }
 if ($R.schema_version -ne 1 -or $R.platform -ne 'win32') { Fail 'unsupported install receipt' }
-foreach ($key in @('install_dir', 'state_dir', 'bootstrap', 'root')) { if (-not (Test-PlainPath $R.$key)) { Fail "the receipt has a bad $key" } }
+foreach ($key in @('install_dir', 'state_dir', 'bootstrap', 'root')) { if (-not (Test-PlainPath $R.$key ($key -eq 'root'))) { Fail "the receipt has a bad $key" } }
 if ($R.state_dir.TrimEnd('\') -ne $StateDir) { Fail 'the receipt belongs to another state directory' }
 if ($R.bootstrap -ne (Join-Path $StateDir 'bootstrap.env')) { Fail 'the receipt bootstrap is not inside its state directory' }
 if ($R.task_name -ne 'REACH Client') { Fail 'the receipt names a task that is not the REACH task' }
 if ($null -eq $R.owned) { Fail 'the receipt has no ownership flags' }
 $InstallDir = $R.install_dir.TrimEnd('\')
 $Root = $R.root.TrimEnd('\')
+if ($Root -match '^[A-Za-z]:$') { $Root = "$Root\" }
 if ($Root -eq $InstallDir) { Fail 'the receipt root is the install directory' }
 $Kept = @()
 
@@ -69,7 +71,8 @@ function Remove-IfEmpty([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) { return }
   if (Get-ChildItem -LiteralPath $Path -Force | Select-Object -First 1) { $script:Kept += $Path } else { Remove-Item -LiteralPath $Path -Force }
 }
-if ([bool]$R.owned.root) { Remove-IfEmpty $Root }
+# A drive root is never removed, whatever the receipt says.
+if ([bool]$R.owned.root -and $Root.Length -gt 3) { Remove-IfEmpty $Root }
 Remove-Item -LiteralPath $Receipt -Force
 if ([bool]$R.owned.state_dir) { Remove-IfEmpty $StateDir }
 foreach ($parent in @((Split-Path -Parent $InstallDir), (Split-Path -Parent $StateDir))) {
