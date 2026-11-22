@@ -4,7 +4,7 @@
 export const THEME_CSS = `
 :root,[data-theme="dark"]{
   color-scheme:dark;
-  --c-bg:#050607;--c-surface:#0b0d10;--c-elevated:#101318;--c-border:rgba(255,255,255,.1);--c-border-strong:rgba(255,255,255,.18);
+  --c-bg:#050607;--c-scrim:rgba(0,0,0,.55);--c-surface:#0b0d10;--c-elevated:#101318;--c-border:rgba(255,255,255,.1);--c-border-strong:rgba(255,255,255,.18);
   --c-text:#f3f4f6;--c-muted:#8c939d;
   --c-accent:#f2b829;--c-accent-hover:#ffd45a;--c-accent-contrast:#0b0d10;--c-accent-soft:rgba(242,184,41,.14);
   --c-ok:#2ddf8a;--c-warn:#f2b829;--c-bad:#ff667a;
@@ -15,7 +15,7 @@ export const THEME_CSS = `
 }
 [data-theme="light"]{
   color-scheme:light;
-  --c-bg:#f6f6f4;--c-surface:#ffffff;--c-elevated:#ffffff;--c-border:rgba(0,0,0,.12);--c-border-strong:rgba(0,0,0,.22);
+  --c-bg:#f6f6f4;--c-scrim:rgba(0,0,0,.35);--c-surface:#ffffff;--c-elevated:#ffffff;--c-border:rgba(0,0,0,.12);--c-border-strong:rgba(0,0,0,.22);
   --c-text:#15171a;--c-muted:#5c636d;
   --c-accent:#c98f00;--c-accent-hover:#e0a200;--c-accent-contrast:#ffffff;--c-accent-soft:rgba(201,143,0,.12);
   --c-ok:#14803f;--c-warn:#c98f00;--c-bad:#c0233a;

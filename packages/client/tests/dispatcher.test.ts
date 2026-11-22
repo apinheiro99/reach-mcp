@@ -84,6 +84,21 @@ test("mode and policy: read_only never touches disk; writable_globs, deny_globs 
   assert.ok(read.ok && read.result.op === "fs_read" && read.result.end_line === 2 && read.result.next_start_line === 3, "Server limit applied");
 });
 
+test("restricted write: temp/** and exact files are writable, an unlisted path is denied, deny beats the allowlist and delete moves to .lixeira", async () => {
+  const root = dir("restricted");
+  mkdirSync(path.join(root, "temp"));
+  writeFileSync(path.join(root, "temp", "old.txt"), "old\n");
+  const d = new ClientDispatcher({ anchors: [anchor] });
+  d.applyPolicy(snapshot(pol("r", root, { writable_globs: ["temp/**", ".gitlab-ci.yml"], deny_globs: ["temp/private/**"] })));
+  assert.equal(fail(await d.handle(req("r", { op: "fs_write", path: "temp/new.txt", content: "ok" }))), "OK");
+  assert.equal(fail(await d.handle(req("r", { op: "fs_write", path: ".gitlab-ci.yml", content: "ok" }))), "OK", "an exact file is a rule");
+  assert.equal(fail(await d.handle(req("r", { op: "fs_write", path: "src/app.ts", content: "no" }))), "DENIED", "unlisted path");
+  assert.equal(fail(await d.handle(req("r", { op: "fs_write", path: "temp/private/k.txt", content: "no" }))), "DENIED", "deny wins over the allowlist");
+  const removed = await d.handle(req("r", { op: "fs_remove", path: "temp/old.txt" }));
+  assert.ok(removed.ok && removed.result.op === "fs_remove" && removed.result.moved_to.startsWith(".lixeira/"), "delete is move-to-trash");
+  assert.throws(() => readFileSync(path.join(root, "temp", "old.txt")), "the original is gone from its place");
+});
+
 test("every operation maps to a wire-valid result with the request's id and op", async () => {
   const p = dir("ops");
   mkdirSync(path.join(p, "sub"));

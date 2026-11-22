@@ -94,6 +94,12 @@ export const COMPONENT_CSS = `
 .autosave .dot{width:.6rem;height:.6rem;border-radius:50%;background:var(--c-ok)}
 .autosave[data-state="editing"] .dot,.autosave[data-state="saving"] .dot{background:var(--c-warn)}
 .autosave[data-state="error"] .dot{background:var(--c-bad)}
+.drawer-scrim{position:fixed;inset:0;background:var(--c-scrim);z-index:40}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(46rem,100vw);background:var(--c-surface);border-left:1px solid var(--c-border-strong);display:flex;flex-direction:column;z-index:41}
+.drawer-head{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4);border-bottom:1px solid var(--c-border)}
+.drawer-head>div{flex:1;min-width:0}
+.drawer-body{flex:1;overflow-y:auto;padding:var(--sp-4);display:flex;flex-direction:column;gap:var(--sp-4)}
+.drawer-foot{display:flex;justify-content:flex-end;gap:var(--sp-3);padding:var(--sp-4);border-top:1px solid var(--c-border)}
 :where(a,button,input,select,summary):focus-visible{outline:none;box-shadow:var(--focus-ring)}
 `;
 
@@ -127,6 +133,7 @@ const ICONS = {
   alert: "M12 3l10 18H2L12 3zM12 10v5M12 18h.01",
   database: "M12 5c4.4 0 8-1 8-2.5S16.4 0 12 0 4 1 4 2.5 7.6 5 12 5zM4 2.5v15C4 19 7.6 20 12 20s8-1 8-2.5v-15M4 10c0 1.5 3.6 2.5 8 2.5s8-1 8-2.5",
   shield: "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM8.5 12l2.5 2.5 4.5-5",
+  close: "M6 6l12 12M18 6L6 18",
   refresh: "M20 11a8 8 0 00-14.5-4M4 4v4h4M4 13a8 8 0 0014.5 4M20 20v-4h-4"
 };
 const UI = {
@@ -216,6 +223,16 @@ const UI = {
       return [tr, extra];
     });
     return UI.el("table", { className: "table" }, UI.el("thead", {}, UI.el("tr", {}, ...headers.map((h) => UI.el("th", { textContent: h })))), UI.el("tbody", {}, ...body));
+  },
+  // A right-side panel over a scrim: header (title, subtitle, close), scrolling body, footer actions. The caller owns what closing means.
+  drawer({ title, subtitle, children, footer, onClose }) {
+    const scrim = UI.el("div", { className: "drawer-scrim" });
+    const panel = UI.el("aside", { className: "drawer" },
+      UI.el("header", { className: "drawer-head" }, UI.el("div", {}, UI.el("h2", { className: "card-title", textContent: title }), subtitle ? UI.el("p", { className: "card-sub", textContent: subtitle }) : ""), UI.iconButton("close", "Close", onClose)),
+      UI.el("div", { className: "drawer-body" }, ...children), UI.el("footer", { className: "drawer-foot" }, ...footer));
+    panel.setAttribute("role", "dialog"); panel.setAttribute("aria-label", title);
+    scrim.addEventListener("click", onClose);
+    return UI.el("div", {}, scrim, panel);
   },
   unavailable(text) { return UI.el("div", { className: "unavailable" }, UI.icon("info"), text || "Not exposed yet"); },
   autosave() {
