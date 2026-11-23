@@ -115,3 +115,12 @@ The `logging` section of the Server config (the one owner; editable in the Admin
 Files are `reach-YYYY-MM-DD.log` and `audit-YYYY-MM-DD.log`. When a line would pass `max_bytes`, the same-day segment `...log.1`, then `.2`, is used (a restart continues in the highest segment). A line larger than `max_bytes` is refused whole. After `retention_days`, every segment of an expired date is deleted together, never only some.
 
 Redaction: every operational and audit text is passed through one function immediately before it is written, at every level including DEBUG. Passwords, `Bearer`/`Basic` credentials, credentials inside URLs, API keys, any `name=value` or `name: value` whose name contains password, secret, token, api key, private key or credential (so `.env` style assignments too), known key shapes and private-key blocks become `[REDACTED]`; the surrounding text stays visible. Files are plain text, one line per event, with no control or ANSI characters.
+
+## Admin UI
+
+Ordinary edits autosave: the page waits `admin_autosave_debounce_ms` (from `/admin/api/state`, never a page constant) after the last change, then sends one edit; the header shows Editing, Saving, Autosaved or the Server's refusal as it is. There is no Save or Cancel for ordinary edits, and closing the Access drawer or leaving the page after Autosaved never reverts the Server state.
+
+- **Projects**: the drawer lists the project's rules as Read / Write, Allow and Deny and writes `writable_globs`, `allow_globs` and `deny_globs` back losslessly; the browser never decides which rule wins (the Server does, see Access Rules). A root of `/` or a Windows drive root (`C:\`, `C:/`) asks for a confirmation before the request is sent; cancelling reloads the Server state and sends nothing. This is a warning only, and the Server still validates every root.
+- **Proposals**: a proposal from MCP appears on the Projects screen with one row per item, each approved or rejected on its own; Approve all pending and Reject all pending act only on items still pending. A stored proposal that cannot be read is shown as unusable and blocks new proposals.
+- **Clients**: each row shows the friendly name, the Machine UUID, the build the Client last connected with, Online or Offline, and the relative last seen, all from `/admin/api/clients`. Client delete and uninstall are not part of this screen.
+- **System**: Logging (level, maximum size, retention) and Runtime (every knob, with its bounds) are fields that autosave through `PUT /admin/api/config`; the Server validates and applies them live.

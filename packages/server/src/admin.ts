@@ -91,7 +91,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   /** Every Client as the Clients screen reads it: config facts and live session facts joined, plus the counts that always add up. */
   const clientsView = () => {
     const sessions = connections.status();
-    const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), last_seen: connections.lastSeen(c.client_id) }));
+    const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), last_seen: connections.lastSeen(c.client_id), client_build: connections.lastBuild(c.client_id) ?? null }));
     const count = (status: string) => clients.filter((c) => c.status === status).length;
     const online = clients.filter((c) => c.online).length;
     return { clients, counts: { total: clients.length, enabled: count("enabled"), pending: count("pending"), disabled: count("disabled"), online, offline: clients.length - online } };

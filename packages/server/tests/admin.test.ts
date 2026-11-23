@@ -144,7 +144,7 @@ test("the page is vanilla: no framework or remote script, no generic Save button
   assert.ok(!/>\s*Save\s*</i.test(html), "no generic Save button");
   assert.ok(!/<script[^>]*\ssrc=|react|vue|svelte|angular|jquery/i.test(html));
   assert.ok(html.includes("/admin/api/clients") && html.includes("/rotate-key") && html.includes('"/enable"') && html.includes('"/disable"'), "the Clients screen drives the lifecycle API");
-  assert.ok(!html.includes("/admin/api/proposal"), "the proposal flow has no screen of its own");
+  assert.ok(html.includes("/admin/api/proposal") && !html.includes("mcp_bearer_sha256"), "the proposal review is a card of the Projects screen and calls only the proposal API");
   assert.equal((await fetch(`${rt.a}/`, { redirect: "manual" })).status, 302);
   await rt.close();
 });

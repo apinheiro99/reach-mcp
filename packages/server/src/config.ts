@@ -115,7 +115,7 @@ export type PublicClient = { client_id: string; display_name?: string; enabled: 
 /** The one status of a Client: Pending (enrolled, never decided), Enabled or Disabled (a human decision). */
 export type ClientStatus = "pending" | "enabled" | "disabled";
 /** What the admin Clients screen reads of one Client: identity and authorization, never the key itself. */
-export type ClientSummary = { client_id: string; display_name?: string; status: ClientStatus; fingerprint: string | null; projects: number };
+export type ClientSummary = { client_id: string; display_name?: string; machine_uuid?: string; status: ClientStatus; fingerprint: string | null; projects: number };
 /** What admission needs: whether the id is registered, its authorization status and its stored public key, whatever the status. */
 export type ClientAdmission = { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null; machineUuid: string | null } | null;
 /** The editable view of one Client: whether it is enrolled (has a public key), never the key itself. */
@@ -235,7 +235,7 @@ export class ServerConfigStore {
 
   /** Every Client as the Clients screen shows it: status and fingerprint, never the key. */
   clientSummaries(): ClientSummary[] {
-    return this.#requireActive().clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), status: statusOf(c), fingerprint: c.public_key ? publicKeyFingerprint(c.public_key) : null, projects: c.projects.length }));
+    return this.#requireActive().clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), ...(c.machine_uuid ? { machine_uuid: c.machine_uuid } : {}), status: statusOf(c), fingerprint: c.public_key ? publicKeyFingerprint(c.public_key) : null, projects: c.projects.length }));
   }
 
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
