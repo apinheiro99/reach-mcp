@@ -62,6 +62,10 @@ validation -> Build Release -> Deploy Production
 
 Rollback remains explicit. The existing deployment controller remains the single deployment transaction owner.
 
+### GitHub publication
+
+`Publish GitHub` runs on the `docker-prod` runner for successful default-branch push pipelines only, after `ci-tag-green` and `Build Release`, and before `Deploy Production`, which needs it. The script is `scripts/git-ci/publish-github.ts`. It reads, under `REACH_PRIVATE_PATH`, the deploy key `credentials/github/reach-mcp` and the data file `config/github.env` (`REACH_GITHUB_OWNER`, `REACH_GITHUB_REPO`, optional `REACH_GITHUB_REPOSITORY` to override the remote). Nothing from those files is tracked, logged or placed in GitLab variables. SSH uses `IdentitiesOnly` and host verification stays on. The tag is the green tag of the pipeline (`vYYYY.MM.NNNNNN`), fetched from GitLab and checked against the tested commit; `-fail` tags are never published. Operator prerequisite: create the two private files on the production host before the first default-branch run.
+
 ## Acceptance
 
 Production is accepted when:

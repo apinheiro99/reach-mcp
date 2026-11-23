@@ -21,7 +21,7 @@ test("invalid combinations and unknown fields are refused without echoing the in
   assert.equal(RuntimeSettings.safeParse({ heartbeat_interval_ms: 30_000, stale_ms: 30_000 }).success, false, "stale must exceed the heartbeat");
   assert.equal(RuntimeSettings.safeParse({ reconnect_initial_ms: 5_000, reconnect_max_ms: 1_000 }).success, false);
   assert.equal(RuntimeSettings.safeParse({ heartbeat_interval_ms: 1.5 }).success, false, "whole milliseconds");
-  const leak = RuntimeSettings.safeParse({ secret_marker: "leak-marker-Zq41" });
+  const leak = RuntimeSettings.safeParse({ unknown_knob: "leak-marker-Zq41" });
   assert.equal(leak.success, false);
   assert.ok(!JSON.stringify(leak.error?.issues.map((i) => i.message)).includes("leak-marker-Zq41"));
 });
