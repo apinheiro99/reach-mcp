@@ -210,3 +210,14 @@ test("first run: an unreadable native machine identifier fails closed, writes no
   }
   assert.equal(readFileSync(f, "utf8"), text);
 });
+
+test("loadBootstrap reports the Machine UUID of this machine for correlation, keeps a legacy client_id untouched, and still loads when the native id is unreadable", () => {
+  const f = path.join(mkdtempSync(path.join(tmpdir(), "reach-legacy-")), "bootstrap.env");
+  writeFileSync(f, `REACH_SERVER_URL=wss://server.example/ws\nREACH_CLIENT_ID=laptop-1\nREACH_CLIENT_IDENTITY_KEY=${CRED}\nREACH_ROOTS=${JSON.stringify([anchor])}\n`, { mode: 0o600 });
+  const withId = loadBootstrap(f, { readNativeMachineId: () => NATIVE_ID });
+  assert.equal(withId.clientId, "laptop-1", "an existing client_id is never rewritten");
+  assert.equal(withId.machineUuid, machineUuid(NATIVE_ID));
+  const unreadable = loadBootstrap(f, { readNativeMachineId: () => { throw new Error("denied"); } });
+  assert.equal(unreadable.machineUuid, undefined);
+  assert.equal(unreadable.clientId, "laptop-1");
+});

@@ -11,6 +11,8 @@ const hasControlCharacter = (value: string): boolean => [...value].some((c) => c
 const printable = (max: number) => z.string().min(1).max(max).refine((v) => !hasControlCharacter(v), { message: "must not contain control characters" });
 
 export const ClientId = printable(128);
+/** The non-secret, application-neutral Machine UUID of an OS machine (8-4-4-4-12 lowercase hex). Correlation only, never authentication. */
+export const MachineUuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, "must be a Machine UUID");
 export const ProjectId = printable(128);
 export const RequestId = printable(128);
 /** The actual build identifier or tag of one side, compared for equality of compatibility by the Server, never parsed. */

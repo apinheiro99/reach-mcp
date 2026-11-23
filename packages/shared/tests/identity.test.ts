@@ -42,6 +42,7 @@ test("machineUuid: deterministic, 8-4-4-4-12, equal across native id spellings, 
   const linux = "0123456789abcdef0123456789abcdef";
   const id = machineUuid(linux);
   assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.equal(id, "3eb1bd43-9947-eb76-2998-e566ccc2e099", "published test vector of the application-neutral algorithm: SHA-256 of the canonical 32 ASCII hex digits, first 16 bytes");
   assert.equal(machineUuid(linux), id);
   assert.equal(machineUuid(`${linux.toUpperCase()}\n`), id, "case and trailing newline do not fork the identity");
   assert.equal(machineUuid("01234567-89AB-CDEF-0123-456789ABCDEF"), id, "a Windows SMBIOS spelling of the same bytes");

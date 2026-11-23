@@ -23,7 +23,7 @@ import {
   type WireError,
 } from "@reach-mcp/shared/wire";
 import { NO_AUDIT, type Audit } from "./audit.ts";
-import type { ClientStatus, ServerConfigStore } from "./config.ts";
+import type { ClientAdmission, ServerConfigStore } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
 
 export type ConnectionOptions = {
@@ -300,13 +300,14 @@ export class ClientConnectionRegistry {
     }
     const hello = parseWire(ClientHello, frame);
     if (!hello.ok) return this.#reject(socket, hello.error);
-    const { client_id: clientId, client_build: build, public_key: publicKey, signature, display_name: displayName } = hello.data;
+    const { client_id: clientId, client_build: build, public_key: publicKey, signature, display_name: displayName, machine_uuid: machineUuid } = hello.data;
     // A registered Client must present a stored key (current or staged) whatever its status; an unknown one proves possession of the key it offers.
     const known = this.#admissionOf(clientId);
     const key = known ? [known.publicKey, known.nextPublicKey].find((k) => k !== null && k === publicKey) : publicKey;
     if (key === undefined || key === null || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
     if (!this.#options.isBuildCompatible(build)) return this.#reject(socket, incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
-    if (!known) return this.#reject(socket, this.#register(clientId, publicKey, displayName) ? PENDING_APPROVAL : AUTH_FAILED);
+    if (!known) return this.#reject(socket, this.#register(clientId, publicKey, displayName, machineUuid) ? PENDING_APPROVAL : AUTH_FAILED);
+    if (!this.#reconcileMachine(clientId, known.machineUuid, machineUuid)) return this.#reject(socket, AUTH_FAILED);
     if (known.status !== "enabled") return this.#reject(socket, known.status === "pending" ? PENDING_APPROVAL : CLIENT_DISABLED);
     if (known.nextPublicKey === publicKey) this.#promoteKey(clientId);
     const existing = this.#sessions.get(clientId);
@@ -326,11 +327,11 @@ export class ClientConnectionRegistry {
   }
 
   /** The registered Client's status and stored key; with no active configuration it reads as registered and keyless, so nobody is registered or admitted. */
-  #admissionOf(clientId: string): { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null } | null {
+  #admissionOf(clientId: string): ClientAdmission {
     try {
       return this.#options.config.admissionOf(clientId);
     } catch {
-      return { status: "disabled", publicKey: null, nextPublicKey: null };
+      return { status: "disabled", publicKey: null, nextPublicKey: null, machineUuid: null };
     }
   }
 
@@ -345,10 +346,32 @@ export class ClientConnectionRegistry {
     this.#audit.record({ actor: "client", action: "key_promoted", client_id: clientId, result: "ok" });
   }
 
-  /** The one registration write: an unknown Client becomes Pending; logged and audited without any key material. */
-  #register(clientId: string, publicKey: string, displayName: string | undefined): boolean {
+  /**
+   * An authenticated Client reports the Machine UUID of its machine. A record without one (a legacy random client_id) binds it once; a
+   * record that has one must see the same value, otherwise the identity was copied to another machine and is refused. The Machine UUID is
+   * correlation only: it never replaces a key, so it is checked only after the Ed25519 proof, and a Client that reports none is unchanged.
+   */
+  #reconcileMachine(clientId: string, stored: string | null, reported: string | undefined): boolean {
+    if (reported === undefined || reported === stored) return true;
+    if (stored !== null) {
+      this.#logger.log("WARNING", "connections", `machine_uuid mismatch client_id=${clientId}`);
+      return false;
+    }
     try {
-      this.#options.config.registerPendingClient(clientId, publicKey, displayName);
+      this.#options.config.bindMachineUuid(clientId, reported);
+    } catch {
+      this.#logger.log("WARNING", "connections", `machine_uuid not bound client_id=${clientId}`);
+      return false;
+    }
+    this.#logger.log("INFO", "connections", `machine_uuid bound client_id=${clientId}`);
+    this.#audit.record({ actor: "client", action: "machine_uuid_bound", client_id: clientId, result: "ok" });
+    return true;
+  }
+
+  /** The one registration write: an unknown Client becomes Pending; logged and audited without any key material. */
+  #register(clientId: string, publicKey: string, displayName: string | undefined, machineUuid: string | undefined): boolean {
+    try {
+      this.#options.config.registerPendingClient(clientId, publicKey, displayName, machineUuid);
     } catch {
       return false;
     }

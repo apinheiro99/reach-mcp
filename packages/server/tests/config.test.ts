@@ -232,7 +232,7 @@ test("registerPendingClient: one atomic write of a new Pending Client with its p
   store.loadInitial();
   const fresh = newIdentity();
   store.registerPendingClient("newbox", fresh.publicKey, "New box");
-  assert.deepEqual(store.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null }, "the key is known in every status");
+  assert.deepEqual(store.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null, machineUuid: null }, "the key is known in every status");
   assert.equal(store.effectivePoliciesFor("newbox"), null, "Pending has no operational access");
   const stored = readFileSync(file, "utf8");
   assert.ok(stored.includes(fresh.publicKey) && !stored.includes(fresh.privateKey));
@@ -343,4 +343,22 @@ test("friendly names: a colliding hostname becomes name-1, name-2 deterministica
   store.registerPendingClient("m2", newIdentity().publicKey, "studio");
   store.registerPendingClient("m3", newIdentity().publicKey, "studio");
   assert.deepEqual(store.snapshot().clients.filter((c) => c.client_id.startsWith("m")).map((c) => [c.client_id, c.display_name]), [["m1", "studio"], ["m2", "studio-1"], ["m3", "studio-2"]]);
+});
+
+test("machine_uuid is server-owned: unique across Clients, kept through a human edit, absent from the editable view, and bound only once to a known Client", () => {
+  const store = new ServerConfigStore(write(valid()));
+  store.loadInitial();
+  const m = "3eb1bd43-9947-eb76-2998-e566ccc2e099";
+  store.registerPendingClient("m1", newIdentity().publicKey, "box", m);
+  assert.throws(() => store.registerPendingClient("m2", newIdentity().publicKey, "box", m), ConfigError, "one logical Client per machine");
+  assert.equal(store.admissionOf("m2"), null);
+  store.registerPendingClient("legacy", newIdentity().publicKey, "old");
+  assert.throws(() => store.bindMachineUuid("legacy", m), ConfigError, "a machine already bound to another Client");
+  store.bindMachineUuid("legacy", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+  assert.equal(store.admissionOf("legacy")!.machineUuid, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+  const view = JSON.stringify(store.editableView());
+  assert.ok(!view.includes(m), "the editable view does not carry it");
+  store.applyEdit({ clients: store.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.equal(store.admissionOf("m1")!.machineUuid, m, "a human edit keeps the binding");
+  assert.throws(() => store.bindMachineUuid("ghost", m), ConfigError);
 });

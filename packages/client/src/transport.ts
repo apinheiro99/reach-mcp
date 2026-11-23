@@ -184,7 +184,7 @@ export class ClientTransport {
     this.#answered = true;
     const display = suggestClientDisplayName();
     const suggestedName = display ? { display_name: display } : {};
-    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce), ...suggestedName });
+    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce), ...suggestedName, ...(this.#bootstrap.machineUuid ? { machine_uuid: this.#bootstrap.machineUuid } : {}) });
     socket.send(JSON.stringify(hello));
   }
 

@@ -42,6 +42,8 @@ export class Bootstrap {
   readonly endpoint: string;
   readonly clientId: string;
   readonly anchors: readonly string[];
+  /** The Machine UUID of this OS machine, sent in the hello for correlation only; undefined when the native id cannot be read (a legacy Client still connects). */
+  machineUuid: string | undefined;
   #identityKey: KeyObject;
   readonly #file: string | undefined;
 
@@ -177,7 +179,17 @@ export function loadBootstrap(file: string, options: BootstrapOptions = {}): Boo
     throw new BootstrapError(["bootstrap file is missing or unreadable"]);
   }
   if (options.createIdentity && !permissionProblem && !IDENTITY_KEYS.some((key) => new RegExp(`^\\s*${key}\\s*=`, "m").test(text))) text = writeNewIdentity(file, text, options);
-  return parseBootstrap(text, options, permissionProblem, file);
+  const bootstrap = parseBootstrap(text, options, permissionProblem, file);
+  bootstrap.machineUuid = tryMachineUuid(options);
+  return bootstrap;
+}
+
+function tryMachineUuid(options: BootstrapOptions): string | undefined {
+  try {
+    return currentMachineUuid(options.readNativeMachineId);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Writes this Client's id (the Machine UUID of this OS machine) and a new key pair into the bootstrap file. Returns the new text. */
