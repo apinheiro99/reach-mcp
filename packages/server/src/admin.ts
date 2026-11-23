@@ -74,7 +74,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   const change = async (res: ServerResponse, action: string, target: string | undefined, apply: () => unknown): Promise<void> => {
     const note = (result: string) => {
       audit.record({ actor: "admin", action, ...(target === undefined ? {} : { target }), result });
-      logger.log(result === "ok" ? "INFO" : "WARNING", "admin", `${action} ${result}`);
+      logger.log(result === "ok" ? "RUNNING" : "WARNING", "admin", `${action} ${result}`);
     };
     try {
       const result = apply();

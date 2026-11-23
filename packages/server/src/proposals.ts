@@ -216,7 +216,7 @@ export class ProposalStore {
 
   /** One log line and one audit record per proposal event; ids and outcomes only, never the edit. */
   #note(actor: string, action: string, result: string, proposalId: string): void {
-    (this.#deps.logger ?? NO_LOGGER).log(result === "stale" || result === "invalid" ? "WARNING" : "INFO", "proposals", `${action} ${result} proposal_id=${proposalId}`);
+    (this.#deps.logger ?? NO_LOGGER).log(result === "stale" || result === "invalid" ? "WARNING" : "RUNNING", "proposals", `${action} ${result} proposal_id=${proposalId}`);
     (this.#deps.audit ?? NO_AUDIT).record({ actor, action, target: proposalId, result });
   }
 

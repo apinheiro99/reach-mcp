@@ -1,6 +1,7 @@
-// The audit trail: one compact line per security- or configuration-relevant action, separate from the operational log and
+// The audit trail: one compact line per security- or configuration-relevant action, separate from the operational log (and never filtered by its level) and
 // written through its own RotatingTextWriter. It records who did what, where, when and with what result; never a
-// credential, digest, request payload, file content or configuration body.
+// credential (every value is redacted before it is written), digest, request payload, file content or configuration body.
+import { redact } from "./redact.ts";
 import { oneLine, type RotatingTextWriter } from "./rotating-text.ts";
 
 export type AuditEvent = {
@@ -31,7 +32,7 @@ export class AuditWriter implements Audit {
   }
 
   record(event: AuditEvent): void {
-    const pairs = FIELDS.flatMap((key) => (event[key] === undefined ? [] : [`${key}=${oneLine(event[key], 300)}`]));
+    const pairs = FIELDS.flatMap((key) => (event[key] === undefined ? [] : [`${key}=${oneLine(redact(event[key]), 300)}`]));
     this.#writer.write([this.#now().toISOString(), ...pairs].join("\t"));
   }
 }

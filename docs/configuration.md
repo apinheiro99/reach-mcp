@@ -107,3 +107,11 @@ Effective semantics are intentionally small:
 - delete of an allowed target is trash semantics, not immediate unlink.
 
 The Admin Projects view exposes this same object through the approved Project Access drawer (`docs/screens/REACH 08_MCP Project Access Dashboard.png`). The drawer opens over the Projects page and uses explicit Save changes/Cancel actions so an operator can review a complete policy change before it is applied (the scoped exception to autosave; inline fields on the table still autosave, and Save changes is then persisted by that same autosave). It has three tabs: Access & Permissions, Configuration (JSON) (the canonical object, read-only) and Details. Its visual hierarchy, layout and REACH dark/yellow design follow the approved reference rather than introducing a separate visual pattern.
+
+## Logging
+
+The `logging` section of the Server config (the one owner; editable in the Admin API `PUT /admin/api/config`, any single field at a time) holds `level` (`DEBUG`, `INFO`, `RUNNING`, `WARNING`, `ERROR`, `CRITICAL`; default `RUNNING`), `max_bytes` (default 10 MiB) and `retention_days` (default 5). All three apply to the next line written, with no restart. A line below `level` is not written to the operational log; the audit trail ignores `level` and always records governance and security events.
+
+Files are `reach-YYYY-MM-DD.log` and `audit-YYYY-MM-DD.log`. When a line would pass `max_bytes`, the same-day segment `...log.1`, then `.2`, is used (a restart continues in the highest segment). A line larger than `max_bytes` is refused whole. After `retention_days`, every segment of an expired date is deleted together, never only some.
+
+Redaction: every operational and audit text is passed through one function immediately before it is written, at every level including DEBUG. Passwords, `Bearer`/`Basic` credentials, credentials inside URLs, API keys, any `name=value` or `name: value` whose name contains password, secret, token, api key, private key or credential (so `.env` style assignments too), known key shapes and private-key blocks become `[REDACTED]`; the surrounding text stays visible. Files are plain text, one line per event, with no control or ANSI characters.

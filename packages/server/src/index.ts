@@ -10,5 +10,6 @@ export { createReleaseHandler } from "./release.ts";
 export { createInstallHandler, installerFacts } from "./install-discovery.ts";
 export { ProposalStore, type DecisionResult, type DiffEntry, type ProposalDeps, type ProposalSummary, type ProposeResult } from "./proposals.ts";
 export { RotatingTextWriter, oneLine, type LogSettings, type RotatingTextDeps } from "./rotating-text.ts";
-export { NO_LOGGER, OperationalLogger, type Level, type Logger } from "./logging.ts";
+export { redact, REDACTED } from "./redact.ts";
+export { LOG_LEVELS, NO_LOGGER, OperationalLogger, type Level, type Logger } from "./logging.ts";
 export { AuditWriter, NO_AUDIT, type Audit, type AuditEvent } from "./audit.ts";

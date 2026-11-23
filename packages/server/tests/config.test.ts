@@ -281,20 +281,20 @@ test("lifecycle: Enable authorizes the same identity, Disable keeps identity, ke
 test("logging settings: defaults when omitted, bounded, editable through the one owner and persisted", () => {
   const file = write(valid());
   const store = new ServerConfigStore(file);
-  assert.deepEqual(store.loggingSettings(), { max_bytes: 10 * 1024 * 1024, retention_days: 5 }, "defaults while inactive");
+  assert.deepEqual(store.loggingSettings(), { max_bytes: 10 * 1024 * 1024, retention_days: 5, level: "RUNNING" }, "defaults while inactive");
   store.loadInitial();
-  assert.deepEqual(store.loggingSettings(), { max_bytes: 10 * 1024 * 1024, retention_days: 5 }, "defaults when the file omits them");
+  assert.deepEqual(store.loggingSettings(), { max_bytes: 10 * 1024 * 1024, retention_days: 5, level: "RUNNING" }, "defaults when the file omits them");
   for (const bad of [{ max_bytes: 10, retention_days: 5 }, { max_bytes: 2048, retention_days: 0 }, { max_bytes: 2048, retention_days: 366 }, { max_bytes: 2048.5, retention_days: 5 }, { max_bytes: 2048, retention_days: 5, extra: 1 }]) {
     assert.throws(() => store.applyEdit({ logging: bad, clients: store.snapshot().clients }), ConfigError);
   }
   store.applyEdit({ logging: { max_bytes: 4096, retention_days: 9 }, clients: store.snapshot().clients });
-  assert.deepEqual(store.loggingSettings(), { max_bytes: 4096, retention_days: 9 });
-  assert.deepEqual(store.editableView().logging, { max_bytes: 4096, retention_days: 9 });
+  assert.deepEqual(store.loggingSettings(), { max_bytes: 4096, retention_days: 9, level: "RUNNING" });
+  assert.deepEqual(store.editableView().logging, { max_bytes: 4096, retention_days: 9, level: "RUNNING" });
   const fresh = new ServerConfigStore(file);
   fresh.loadInitial();
-  assert.deepEqual(fresh.loggingSettings(), { max_bytes: 4096, retention_days: 9 }, "persisted");
+  assert.deepEqual(fresh.loggingSettings(), { max_bytes: 4096, retention_days: 9, level: "RUNNING" }, "persisted");
   store.applyEdit({ clients: store.snapshot().clients });
-  assert.deepEqual(store.loggingSettings(), { max_bytes: 4096, retention_days: 9 }, "an edit without logging keeps it");
+  assert.deepEqual(store.loggingSettings(), { max_bytes: 4096, retention_days: 9, level: "RUNNING" }, "an edit without logging keeps it");
   assert.equal("logging" in store.validateEdit({ clients: store.snapshot().clients }), false, "an AI proposal carries no logging settings");
   assert.throws(() => store.validateEdit({ logging: { max_bytes: 4096, retention_days: 9 }, clients: [] }), ConfigError);
 });
