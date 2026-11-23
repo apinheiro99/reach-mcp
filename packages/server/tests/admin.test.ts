@@ -132,9 +132,9 @@ test("admin autosave changes the log size and retention through the config owner
   const clients = rt.config.editableView().clients.map(({ client_id, enabled, projects }) => ({ client_id, enabled, projects }));
   assert.equal((await rt.put({ logging: { max_bytes: 8192, retention_days: 3 }, clients })).status, 200);
   const view = (await (await fetch(`${rt.a}/admin/api/config`)).json()) as { logging: unknown };
-  assert.deepEqual(view.logging, { max_bytes: 8192, retention_days: 3 });
+  assert.deepEqual(view.logging, { max_bytes: 8192, retention_days: 3, level: "RUNNING" });
   assert.equal((await rt.put({ logging: { max_bytes: 1, retention_days: 3 }, clients })).status, 422);
-  assert.deepEqual(rt.config.loggingSettings(), { max_bytes: 8192, retention_days: 3 });
+  assert.deepEqual(rt.config.loggingSettings(), { max_bytes: 8192, retention_days: 3, level: "RUNNING" });
   await rt.close();
 });
 

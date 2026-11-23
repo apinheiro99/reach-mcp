@@ -10,10 +10,10 @@ export type LogEvent = { time: string; source: LogSource; severity: LogSeverity;
 export type LogLimits = { files: number; bytesPerFile: number; events: number };
 export const DEFAULT_LOG_LIMITS: LogLimits = { files: 6, bytesPerFile: 256 * 1024, events: 500 };
 
-const CANONICAL = /^(reach|audit)(?:-\d{4}-\d{2}-\d{2}(?:-\d+)?)?\.log$/;
+const CANONICAL = /^(reach|audit)(?:-\d{4}-\d{2}-\d{2}(?:-\d+\.log|\.log(?:\.\d+)?))$|^(reach|audit)\.log$/;
 const FIELD = 300;
-const OPERATIONAL = /^(\S+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (\S+)(?: request_id=(\S+))? ?(.*)$/;
-const SEVERITY: Record<string, LogSeverity> = { DEBUG: "info", INFO: "info", WARNING: "warning", ERROR: "error", CRITICAL: "error" };
+const OPERATIONAL = /^(\S+) (DEBUG|INFO|RUNNING|WARNING|ERROR|CRITICAL) (\S+)(?: request_id=(\S+))? ?(.*)$/;
+const SEVERITY: Record<string, LogSeverity> = { DEBUG: "info", INFO: "info", RUNNING: "info", WARNING: "warning", ERROR: "error", CRITICAL: "error" };
 
 const clip = (value: string): string => value.slice(0, FIELD);
 const valueOf = (message: string, key: string): string | null => new RegExp(`(?:^| )${key}=(\\S+)`).exec(message)?.[1] ?? null;

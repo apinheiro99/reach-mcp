@@ -7,6 +7,7 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { hashCredential } from "./auth.ts";
 import { publicKeyFingerprint } from "@reach-mcp/shared/identity";
+import { LOG_LEVELS } from "./logging.ts";
 import { RUNTIME_DEFAULTS, RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
 import { ClientId, EffectiveProjectPolicy, MachineUuid, PublicKey } from "@reach-mcp/shared/wire";
 
@@ -37,10 +38,12 @@ const ClientEntry = z.strictObject({
   projects: z.array(EffectiveProjectPolicy).max(200),
 });
 
-/** Size and retention of the operational log and the audit trail; their one owner is this config. */
-export const LoggingSettings = z.strictObject({ max_bytes: z.int().min(1024).max(1_073_741_824), retention_days: z.int().min(1).max(365) });
+/** Size, retention and the operational threshold of the logs; their one owner is this config. The audit trail ignores the level. */
+export const LoggingSettings = z.strictObject({ max_bytes: z.int().min(1024).max(1_073_741_824), retention_days: z.int().min(1).max(365), level: z.enum(LOG_LEVELS).default("RUNNING") });
 export type LoggingSettings = z.infer<typeof LoggingSettings>;
-export const DEFAULT_LOGGING: LoggingSettings = { max_bytes: 10 * 1024 * 1024, retention_days: 5 };
+/** An edit may change any one logging field; the others keep their current value (the level has a schema default, so it is spelled out). */
+const LoggingEdit = LoggingSettings.omit({ level: true }).partial().extend({ level: z.enum(LOG_LEVELS).optional() });
+export const DEFAULT_LOGGING: LoggingSettings = { max_bytes: 10 * 1024 * 1024, retention_days: 5, level: "RUNNING" };
 
 export const ServerConfig = z
   .strictObject({
@@ -83,7 +86,7 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 /** What a human edits through the admin UI: the Clients without public keys, and a plaintext MCP bearer only when it changes. */
 const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
-  logging: LoggingSettings.optional(),
+  logging: LoggingEdit.optional(),
   runtime: RuntimeSettings.optional(),
   clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, pending: true, machine_uuid: true })).max(500),
 });
@@ -184,7 +187,7 @@ export class ServerConfigStore {
     if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
     const mcp = parsed.data.mcp_bearer ? hashCredential(parsed.data.mcp_bearer) : this.#active?.mcp_bearer_sha256;
     if (!mcp) throw new ConfigError(["mcp_bearer: required for the first configuration"]);
-    this.activateCandidate(this.#editCandidate(parsed.data.clients, mcp, parsed.data.logging ?? this.#active?.logging, parsed.data.runtime ?? this.#active?.runtime));
+    this.activateCandidate(this.#editCandidate(parsed.data.clients, mcp, parsed.data.logging === undefined ? this.#active?.logging : { ...(this.#active?.logging ?? DEFAULT_LOGGING), ...parsed.data.logging }, parsed.data.runtime ?? this.#active?.runtime));
   }
 
   /** Dry run of an AI proposal against the active configuration: the normalized secret-free edit, or ConfigError. Nothing changes. */
