@@ -181,7 +181,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     }
     if (pathname === "/admin/api/proposal") {
       if (method !== "GET") return send(res, 405);
-      return send(res, 200, { proposal: proposals.pending() });
+      return send(res, 200, { proposal: proposals.pending(), unusable: proposals.unusable() });
     }
     const decision = DECISION_ROUTE.exec(pathname);
     if (decision) {

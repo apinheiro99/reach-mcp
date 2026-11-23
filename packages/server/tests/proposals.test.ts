@@ -119,7 +119,9 @@ test("a pending proposal survives a restart; a malformed file is no proposal and
   assert.equal(restarted.pending(), null);
   assert.equal(restarted.approve("x").status, "not_found");
   assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_only");
-  assert.equal(restarted.propose(edit(rt)).status, "pending", "a new proposal replaces the unusable file");
+  assert.equal(restarted.unusable(), true, "an unreadable file is a visible state, not absence");
+  assert.equal(restarted.propose(edit(rt)).status, "invalid", "the slot stays closed: the unusable file is never overwritten");
+  assert.equal(readFileSync(proposalFile(rt), "utf8"), '{"proposal_id": "x", "edit": ');
   const elsewhere = new ProposalStore({ path: path.join(mkdtempSync(path.join(tmpdir(), "reach-prop-")), "none.json"), config: rt.config, connections: rt.connections });
   assert.equal(elsewhere.pending(), null);
   await rt.close();
@@ -170,8 +172,10 @@ test("a tampered proposal file fails closed: unknown or secret fields anywhere m
   assert.equal(sync.n, 0);
   assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_only", "config untouched");
   assert.equal(rt.config.mcpBearerDigest(), hashCredential(MCP_MARKER));
-  assert.equal(rt.proposals.propose(edit(rt)).status, "pending", "a valid proposal replaces the unusable file");
+  assert.equal(rt.proposals.unusable(), true);
+  assert.equal(rt.proposals.propose(edit(rt)).status, "invalid", "the unusable file keeps the slot closed");
   writeFileSync(proposalFile(rt), original);
+  assert.equal(rt.proposals.unusable(), false);
   assert.equal(rt.proposals.pending()?.proposal_id, id, "the untampered file still loads");
   await rt.close();
 });
@@ -283,6 +287,73 @@ test("a proposal that changes nothing is refused instead of creating an undecida
   const rt = await startRuntime();
   const same = { clients: rt.config.editableView().clients.map(plain) };
   assert.deepEqual(rt.proposals.propose(same), { status: "invalid", problems: ["the proposal changes nothing"] });
+  assert.equal(rt.proposals.pending(), null);
+  await rt.close();
+});
+
+/** The previous on-disk format: the whole proposed edit next to the base, no items. */
+const legacyFile = (rt: Rt, extra: Record<string, unknown> = {}) => ({ proposal_id: "legacy-1", created_at: "2026-11-20T10:00:00.000Z", base: rt.config.editableView(), edit: edit(rt), ...extra });
+
+test("legacy proposal: a valid previous-format file migrates once, keeps its id and time, derives pending items and applies nothing", async () => {
+  const rt = await startRuntime();
+  const sync = spySync(rt);
+  const config = readFileSync(rt.file, "utf8");
+  writeFileSync(proposalFile(rt), JSON.stringify(legacyFile(rt)));
+  const first = rt.proposals.pending();
+  assert.equal(first?.proposal_id, "legacy-1");
+  assert.equal(first?.created_at, "2026-11-20T10:00:00.000Z");
+  assert.deepEqual(first?.items.map((i) => [i.item_id, i.status]), [["i1", "pending"]]);
+  assert.deepEqual(first?.diff, [{ path: "clients[laptop].projects[api].mode", before: '"read_only"', after: '"read_write"' }]);
+  const migrated = JSON.parse(readFileSync(proposalFile(rt), "utf8"));
+  assert.deepEqual(Object.keys(migrated).sort(), ["base", "created_at", "items", "proposal_id"], "the file is now the itemized format");
+  assert.deepEqual(rt.proposals.pending(), first, "a second read is idempotent");
+  assert.equal(readFileSync(rt.file, "utf8"), config, "the active config is byte-for-byte unchanged");
+  assert.equal(sync.n, 0, "migration syncs nothing");
+  assert.equal(rt.proposals.unusable(), false);
+  await rt.close();
+});
+
+test("legacy proposal: after migration the slot stays closed and the item is decided like any other", async () => {
+  const rt = await startRuntime();
+  writeFileSync(proposalFile(rt), JSON.stringify(legacyFile(rt)));
+  assert.deepEqual(rt.proposals.propose(edit(rt, "read_only")), { status: "already_pending", proposal_id: "legacy-1" });
+  assert.equal(rt.proposals.approveItem("legacy-1", "i1").status, "approved");
+  assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_write");
+  await rt.close();
+});
+
+test("legacy proposal: a stale legacy base is still stale after migration", async () => {
+  const rt = await startRuntime();
+  writeFileSync(proposalFile(rt), JSON.stringify(legacyFile(rt)));
+  rt.config.applyEdit({ clients: rt.config.editableView().clients.map(plain).map((c) => ({ ...c, display_name: "edited by a human" })) });
+  assert.equal(rt.proposals.approve("legacy-1").status, "stale");
+  assert.equal(rt.proposals.pending()?.proposal_id, "legacy-1", "still pending, not lost");
+  await rt.close();
+});
+
+test("legacy proposal: a malformed or unmigratable previous-format file is an explicit unusable state that keeps the slot closed and is never rewritten", async () => {
+  const rt = await startRuntime();
+  const cases: [string, Record<string, unknown>][] = [
+    ["secret in the edit", legacyFile(rt, { edit: { ...edit(rt), mcp_bearer: "attacker-bearer-0123456789" } })],
+    ["unknown top-level field", legacyFile(rt, { surprise: 1 })],
+    ["edit changes nothing", legacyFile(rt, { edit: { clients: rt.config.editableView().clients.map(plain) } })],
+    ["bad time", legacyFile(rt, { created_at: "yesterday" })],
+  ];
+  for (const [name, file] of cases) {
+    const text = JSON.stringify(file);
+    writeFileSync(proposalFile(rt), text);
+    assert.equal(rt.proposals.pending(), null, name);
+    assert.equal(rt.proposals.unusable(), true, name);
+    assert.equal(rt.proposals.propose(edit(rt)).status, "invalid", name);
+    assert.equal(readFileSync(proposalFile(rt), "utf8"), text, `${name}: the file is left as found`);
+  }
+  assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_only");
+  await rt.close();
+});
+
+test("no proposal file at all is plain absence, not an unusable state", async () => {
+  const rt = await startRuntime();
+  assert.equal(rt.proposals.unusable(), false);
   assert.equal(rt.proposals.pending(), null);
   await rt.close();
 });

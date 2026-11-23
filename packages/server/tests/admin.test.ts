@@ -106,7 +106,7 @@ test("admin proposal endpoints: diff, approve once, stale conflict, reject, unkn
   const rt = await start(true);
   const body = (path: string, method = "GET") => fetch(`${rt.a}${path}`, { method }).then(async (r) => ({ status: r.status, json: JSON.parse((await r.text()) || "{}") as Record<string, unknown> }));
   const edit = (mode: string) => ({ clients: [{ client_id: "laptop", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode }] }] });
-  assert.deepEqual((await body("/admin/api/proposal")).json, { proposal: null });
+  assert.deepEqual((await body("/admin/api/proposal")).json, { proposal: null, unusable: false });
   const first = rt.proposals.propose(edit("read_write")) as { proposal_id: string };
   const shown = (await body("/admin/api/proposal")).json.proposal as { proposal_id: string; diff: { path: string }[] };
   assert.equal(shown.proposal_id, first.proposal_id);

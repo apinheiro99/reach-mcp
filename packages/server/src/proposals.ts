@@ -5,10 +5,10 @@
 // or a credential. An item activates only when a human approves it, and only through ServerConfigStore.applyEdit; if the configuration
 // changed since the proposal (or since its last approved item) was made, the remaining items are stale and nothing is merged.
 import { randomUUID } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { z } from "zod";
-import { ConfigError, EditableView, type ProposedEdit, type ServerConfigStore } from "./config.ts";
+import { ConfigError, EditableView, ProposedEdit, type ServerConfigStore } from "./config.ts";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import type { ClientConnectionRegistry } from "./connections.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
@@ -33,6 +33,8 @@ type Item = z.infer<typeof Item>;
 /** The persisted file, strict at every level: an unknown or secret field anywhere makes the whole proposal unusable. */
 const StoredProposal = z.strictObject({ proposal_id: z.string().min(1).max(128), created_at: z.iso.datetime(), base: EditableView, items: z.array(Item).min(1).max(5000) });
 type StoredProposal = z.infer<typeof StoredProposal>;
+/** The previous on-disk format: the whole proposed edit next to the base and no items. Read only to migrate it once. */
+const LegacyProposal = z.strictObject({ proposal_id: z.string().min(1).max(128), created_at: z.iso.datetime(), base: EditableView, edit: ProposedEdit });
 export type DiffEntry = { path: string; before: string | null; after: string | null };
 export type ItemSummary = DiffEntry & { item_id: string; status: Item["status"] };
 export type ProposalSummary = { proposal_id: string; created_at: string; items: ItemSummary[]; diff: DiffEntry[] };
@@ -135,10 +137,16 @@ export class ProposalStore {
     return { proposal_id: stored.proposal_id, created_at: stored.created_at, items, diff: items.filter((i) => i.status === "pending").map(({ path, before, after }) => ({ path, before, after })) };
   }
 
+  /** True when a proposal file exists but cannot be read or migrated: a visible state that keeps the slot closed, never absence. */
+  unusable(): boolean {
+    return existsSync(this.#deps.path) && this.#read() === null;
+  }
+
   /** Stores an inactive proposal. Nothing about the active configuration, the file or the Clients changes. */
   propose(input: unknown): ProposeResult {
     const existing = this.#read();
     if (existing) return { status: "already_pending", proposal_id: existing.proposal_id };
+    if (this.unusable()) return { status: "invalid", problems: ["a stored proposal file exists but cannot be read; it must be resolved by a human before a new proposal"] };
     let edit: ProposedEdit;
     try {
       edit = this.#deps.config.validateEdit(input);
@@ -212,10 +220,20 @@ export class ProposalStore {
     (this.#deps.audit ?? NO_AUDIT).record({ actor, action, target: proposalId, result });
   }
 
+  /** The stored proposal; a valid previous-format file is migrated first (same id, time and base, items derived, nothing applied). */
   #read(): StoredProposal | null {
     try {
-      const parsed = StoredProposal.safeParse(JSON.parse(readFileSync(this.#deps.path, "utf8")));
-      return parsed.success ? parsed.data : null;
+      const raw: unknown = JSON.parse(readFileSync(this.#deps.path, "utf8"));
+      const current = StoredProposal.safeParse(raw);
+      if (current.success) return current.data;
+      const legacy = LegacyProposal.safeParse(raw);
+      if (!legacy.success) return null;
+      const { proposal_id, created_at, base, edit } = legacy.data;
+      const items = itemsOf(base.clients, edit.clients);
+      if (items.length === 0) return null;
+      const migrated = StoredProposal.parse({ proposal_id, created_at, base, items });
+      this.#write(migrated);
+      return migrated;
     } catch {
       return null;
     }
