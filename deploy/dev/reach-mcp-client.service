@@ -12,6 +12,7 @@ User=dev
 ExecStart=/usr/local/bin/node /opt/reach-mcp-client/reach-client.mjs --bootstrap /reach/reach-private/runtime/client/bootstrap.env --build dev --allow-insecure-ws
 Restart=on-failure
 RestartSec=2
+RestartPreventExitStatus=3
 
 [Install]
 WantedBy=multi-user.target
