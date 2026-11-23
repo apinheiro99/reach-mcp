@@ -6,6 +6,7 @@ import path from "node:path";
 import { ConfigError, hashCredential, ServerConfigStore, uniqueDisplayName } from "../src/index.ts";
 import { newIdentity } from "./identity-fixture.ts";
 import { PolicySync } from "@reach-mcp/shared/wire";
+import { RUNTIME_DEFAULTS } from "@reach-mcp/shared/runtime-settings";
 
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-config-"));
 const KEY_A = newIdentity();
@@ -361,4 +362,36 @@ test("machine_uuid is server-owned: unique across Clients, kept through a human 
   store.applyEdit({ clients: store.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
   assert.equal(store.admissionOf("m1")!.machineUuid, m, "a human edit keeps the binding");
   assert.throws(() => store.bindMachineUuid("ghost", m), ConfigError);
+});
+
+test("runtime knobs: absent config yields the canonical defaults; applyEdit persists an override and a fresh store reloads it; the view exposes it and keeps server-owned fields out", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  assert.deepEqual(store.runtimeSettings(), RUNTIME_DEFAULTS, "before any config is active");
+  store.loadInitial();
+  assert.deepEqual(store.runtimeSettings(), RUNTIME_DEFAULTS, "a config without a runtime section");
+  store.registerPendingClient("m1", newIdentity().publicKey, "box", "3eb1bd43-9947-eb76-2998-e566ccc2e099");
+  const override = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 20_000, stale_ms: 70_000, admin_autosave_debounce_ms: 800 };
+  const view = store.editableView();
+  store.applyEdit({ runtime: override, clients: view.clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.deepEqual(store.runtimeSettings(), override);
+  assert.deepEqual(store.editableView().runtime, override);
+  const reloaded = new ServerConfigStore(file);
+  reloaded.loadInitial();
+  assert.deepEqual(reloaded.runtimeSettings(), override, "persisted across restart");
+  assert.equal(reloaded.admissionOf("m1")!.machineUuid, "3eb1bd43-9947-eb76-2998-e566ccc2e099", "server-owned fields survive a runtime edit");
+  assert.ok(!JSON.stringify(store.editableView()).includes("3eb1bd43"));
+  store.applyEdit({ clients: store.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.deepEqual(store.runtimeSettings(), override, "an edit without a runtime section keeps the current one");
+});
+
+test("runtime knobs: invalid ranges and unknown fields fail validation and change nothing; an AI proposal can never carry them", () => {
+  const store = new ServerConfigStore(write(valid()));
+  store.loadInitial();
+  const clients = store.editableView().clients.map(({ has_public_key, pending, ...c }) => c);
+  for (const runtime of [{ heartbeat_interval_ms: 5 }, { stale_ms: 1 }, { nope: 1 }, { heartbeat_interval_ms: 60_000, stale_ms: 60_000 }]) {
+    assert.throws(() => store.applyEdit({ runtime, clients }), ConfigError);
+  }
+  assert.deepEqual(store.runtimeSettings(), RUNTIME_DEFAULTS);
+  assert.throws(() => store.validateEdit({ runtime: { ...RUNTIME_DEFAULTS, stale_ms: 100_000 }, clients }), ConfigError, "proposals are strict: no runtime field");
 });

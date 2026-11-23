@@ -23,6 +23,7 @@ import {
   type WireError,
 } from "@reach-mcp/shared/wire";
 import { NO_AUDIT, type Audit } from "./audit.ts";
+import { clientRuntimeOf, type RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
 import type { ClientAdmission, ServerConfigStore } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
 
@@ -32,7 +33,9 @@ export type ConnectionOptions = {
   serverBuild: string;
   /** The whole compatibility rule: true or false for a Client's opaque build identifier. */
   isBuildCompatible: (clientBuild: string) => boolean;
-  /** Time a new socket has to deliver its hello. */
+  /** The live runtime knobs; default: the Server config's. Read at the moment each value is needed, so a config change applies without a restart. */
+  settings?: () => RuntimeSettings;
+  /** Time a new socket has to deliver its hello. Overrides the setting (tests). */
   handshakeTimeoutMs?: number;
   /** A session silent for this long is stale. */
   staleMs?: number;
@@ -67,9 +70,7 @@ export class ClientConnectionRegistry {
   /** The Client build of each Client's latest session, kept after the session ends so the version stays observable offline. */
   readonly #lastBuild = new Map<string, string>();
   readonly #options: ConnectionOptions;
-  readonly #handshakeTimeoutMs: number;
-  readonly #staleMs: number;
-  readonly #requestTimeoutMs: number;
+  readonly #settings: () => RuntimeSettings;
   readonly #maxPending: number;
   readonly #now: () => number;
   readonly #schedule: Schedule;
@@ -83,11 +84,9 @@ export class ClientConnectionRegistry {
 
   constructor(options: ConnectionOptions) {
     this.#options = options;
-    this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? 10_000;
-    this.#staleMs = options.staleMs ?? 45_000;
-    this.#requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.#settings = options.settings ?? (() => options.config.runtimeSettings());
     this.#maxPending = options.maxPendingRequests ?? 1000;
-    for (const value of [this.#handshakeTimeoutMs, this.#staleMs, this.#requestTimeoutMs, this.#maxPending]) {
+    for (const value of [options.handshakeTimeoutMs ?? 1, options.staleMs ?? 1, options.requestTimeoutMs ?? 1, this.#maxPending]) {
       if (!Number.isFinite(value) || value <= 0) throw new RangeError("invalid connection options");
     }
     this.#now = options.now ?? Date.now;
@@ -96,6 +95,10 @@ export class ClientConnectionRegistry {
     this.#audit = options.audit ?? NO_AUDIT;
   }
 
+  #handshakeTimeoutMs = (): number => this.#options.handshakeTimeoutMs ?? this.#settings().handshake_timeout_ms;
+  #staleMs = (): number => this.#options.staleMs ?? this.#settings().stale_ms;
+  #requestTimeoutMs = (): number => this.#options.requestTimeoutMs ?? this.#settings().request_timeout_ms;
+
   /** Starts the periodic stale check; stop() ends it. */
   start(): void {
     if (this.#cancelSweep) return;
@@ -103,7 +106,7 @@ export class ClientConnectionRegistry {
       this.#cancelSweep = this.#schedule(() => {
         this.sweep();
         arm();
-      }, Math.max(1, Math.floor(this.#staleMs / 3)));
+      }, Math.max(1, Math.floor(this.#staleMs() / 3)));
     };
     arm();
   }
@@ -119,7 +122,7 @@ export class ClientConnectionRegistry {
     let session: Session | null = null;
     const cancelHandshake = this.#schedule(() => {
       if (!session) socket.terminate();
-    }, this.#handshakeTimeoutMs);
+    }, this.#handshakeTimeoutMs());
     socket.on("error", () => undefined);
     socket.on("close", () => {
       cancelHandshake();
@@ -143,7 +146,7 @@ export class ClientConnectionRegistry {
     const session = this.#sessions.get(clientId);
     const policies = this.#options.config.effectivePoliciesFor(clientId);
     if (!session || !policies) return false;
-    return this.#send(session, { kind: "policy_sync", policies });
+    return this.#send(session, { kind: "policy_sync", policies, runtime: clientRuntimeOf(this.#settings()) });
   }
 
   /** Call after a known config reload. */
@@ -189,7 +192,7 @@ export class ClientConnectionRegistry {
         this.#audit.record({ actor: "admin", action: "rotate_key", client_id: clientId, result });
         resolve(result);
       };
-      const cancel = this.#schedule(() => settle("timeout"), this.#requestTimeoutMs);
+      const cancel = this.#schedule(() => settle("timeout"), this.#requestTimeoutMs());
       this.#rotations.set(clientId, { id, session, settle, cancel });
       if (!this.#send(session, { kind: "rotate_key", rotation_id: id })) settle("offline");
     });
@@ -244,7 +247,7 @@ export class ClientConnectionRegistry {
       const cancel = this.#schedule(() => {
         timedOut = true;
         settle(failureResponse(requestId, this.#lost(mutation, "request timed out")));
-      }, this.#requestTimeoutMs);
+      }, this.#requestTimeoutMs());
       this.#pending.set(requestId, { session, mutation, settle, cancel });
       if (!this.#send(session, envelope.data)) settle(failureResponse(requestId, this.#lost(mutation, "client is offline")));
     });
@@ -273,7 +276,7 @@ export class ClientConnectionRegistry {
   }
 
   #isStale(session: Session): boolean {
-    return this.#now() - session.lastSeen >= this.#staleMs;
+    return this.#now() - session.lastSeen >= this.#staleMs();
   }
 
   #send(session: Session, frame: object): boolean {
@@ -321,7 +324,7 @@ export class ClientConnectionRegistry {
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
     this.#logger.log("INFO", "connections", `client connected client_id=${clientId}`);
-    this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true });
+    this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()) });
     this.syncPolicy(clientId);
     return session;
   }

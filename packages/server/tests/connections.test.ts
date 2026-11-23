@@ -1,3 +1,4 @@
+import { clientRuntimeOf, RUNTIME_DEFAULTS } from "@reach-mcp/shared/runtime-settings";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -30,6 +31,7 @@ function clock() {
       timers.set(id, { at: now + ms, fn });
       return () => void timers.delete(id);
     },
+    pending: () => timers.size,
     advance(ms: number) {
       const target = now + ms;
       for (;;) {
@@ -95,7 +97,7 @@ test("admission: challenge first, then welcome and the full policy snapshot; the
   const c = await t.connect();
   await until(() => c.frames.length === 3, "welcome and policy");
   assert.equal(c.frames[0]!.kind, "challenge");
-  assert.deepEqual(c.frames[1], { kind: "welcome", server_build: "srv-1", compatible: true });
+  assert.deepEqual(c.frames[1], { kind: "welcome", server_build: "srv-1", compatible: true, runtime: clientRuntimeOf(RUNTIME_DEFAULTS) });
   assert.equal(c.frames[2]!.kind, "policy_sync");
   assert.deepEqual(c.frames[2]!.policies!.map((p) => p.project_id), ["web", "api"]);
   assert.deepEqual(t.registry.status().map((s) => [s.client_id, s.client_build, s.online]), [["laptop", "ok-1", true]]);
@@ -314,7 +316,7 @@ test("stale sessions go offline, are swept, and are replaced by a fresh connecti
   const t = await setup();
   const first = await t.connect();
   await until(() => first.frames.length === 3, "admitted");
-  t.clock.advance(46_000);
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms + 1_000);
   assert.equal(t.registry.status()[0]!.online, false);
   const refused = await t.registry.route("laptop", "web", { op: "fs_list" });
   assert.ok(!refused.ok && refused.error.code === "NOT_FOUND" && /offline/.test(refused.error.message));
@@ -322,7 +324,7 @@ test("stale sessions go offline, are swept, and are replaced by a fresh connecti
   await until(() => second.frames.length === 3, "stale session replaced");
   await first.closed;
   assert.equal(t.registry.status().length, 1);
-  t.clock.advance(46_000);
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms + 1_000);
   t.registry.sweep();
   await second.closed;
   await until(() => t.registry.status().length === 0, "swept");
@@ -525,5 +527,40 @@ test("a new machine enrolls as a distinct Pending Client carrying its Machine UU
   t.config.stageClientPublicKey("laptop", fresh.publicKey === LAPTOP.publicKey ? DESKTOP.publicKey : newIdentity().publicKey);
   assert.equal(t.config.snapshot().clients.filter((x) => x.client_id === "laptop").length, 1);
   assert.equal(t.config.admissionOf("laptop")!.machineUuid, MACHINE, "rotation keeps the machine binding");
+  await t.done();
+});
+
+test("runtime knobs apply live: a config change moves the stale threshold and the pushed Client timing without a restart or a second sweep timer", async () => {
+  const t = await setup();
+  const first = await t.connect();
+  await until(() => first.frames.length === 3, "welcome and policy");
+  assert.deepEqual((first.frames[1] as { runtime?: unknown }).runtime, clientRuntimeOf(RUNTIME_DEFAULTS));
+  const idle = t.clock.pending();
+  t.registry.start();
+  const armed = t.clock.pending();
+  t.registry.start();
+  assert.equal(armed, idle + 1, "one sweep timer");
+  assert.equal(t.clock.pending(), armed, "a second start arms nothing");
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms - 10_000);
+  assert.equal(t.registry.status()[0]!.online, true, "inside the default stale window");
+  const settled = t.clock.pending();
+  const live = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 5_000, stale_ms: 20_000 };
+  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.equal(t.registry.status()[0]!.online, false, "the shorter stale window applies at once, no restart");
+  t.clock.advance(1);
+  assert.equal(t.clock.pending(), settled, "the change added no timer");
+  t.registry.stop();
+  await t.done();
+});
+
+test("policy snapshots carry the live Client timing so a connected Client can follow a config change", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "admitted");
+  const live = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 5_000, stale_ms: 20_000, reconnect_initial_ms: 200 };
+  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(({ has_public_key, pending, ...c2 }) => c2) });
+  t.registry.syncAllPolicies();
+  await until(() => c.frames.length === 4, "second policy snapshot");
+  assert.deepEqual((c.frames[3] as { runtime?: unknown }).runtime, clientRuntimeOf(live));
   await t.done();
 });

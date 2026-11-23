@@ -51,6 +51,27 @@ Protected local Client state owns only machine-local material:
 
 The Server stores only the matching public key and Server-owned logical configuration.
 
+## Runtime configuration
+
+Every mutable runtime value has ONE owner: the `runtime` section of the Server config (`ServerConfigStore`, `config.json` under `REACH_PRIVATE_PATH`). The names, canonical defaults, bounds and live-apply behavior are declared once in `packages/shared/src/runtime-settings.ts` (`RUNTIME_KNOBS`); no other file may carry a default, and `tests/runtime-guard.test.ts` fails CI when the default of a declared knob reappears as a raw number in production code. There is no second file, database, TOML or environment source for these values.
+
+| Knob | Default | Range | Applies live | Owner / behavior |
+|---|---|---|---|---|
+| `heartbeat_interval_ms` | 30000 ms | 1000..300000 | yes | Client ping interval; pushed to connected Clients and re-armed |
+| `stale_ms` | 90000 ms | 2000..900000 | yes | silence after which a session is stale (Server sweep and Client heartbeat) |
+| `handshake_timeout_ms` | 10000 ms | 1000..120000 | yes | time a new socket has to complete the handshake; read per connection |
+| `request_timeout_ms` | 30000 ms | 1000..600000 | yes | time a routed request or key rotation waits for the Client; read per request |
+| `reconnect_initial_ms` | 1000 ms | 100..60000 | yes | first reconnect delay; read at every retry, pushed to connected Clients |
+| `reconnect_max_ms` | 60000 ms | 1000..3600000 | yes | longest reconnect delay; read at every retry, pushed to connected Clients |
+| `reconnect_jitter` | 0.2  | 0..1 | yes | fraction a reconnect delay may shrink or grow; read at every retry |
+| `admin_autosave_debounce_ms` | 500 ms | 100..10000 | yes | Admin UI autosave delay; read by the UI from /admin/api/state |
+
+- An absent override means the canonical default, never a component-local fallback. `PUT /admin/api/config` accepts an optional `runtime` section (validated as a whole: bounds, `stale_ms` above `heartbeat_interval_ms`, `reconnect_max_ms` not below `reconnect_initial_ms`); an autosave edit without it keeps the current one. AI proposals can never carry it. The full section is in `GET /admin/api/config` and the debounce is in `GET /admin/api/state`.
+- Live application, no process restart: the Server registry reads `stale_ms`, `handshake_timeout_ms` and `request_timeout_ms` at the moment it needs them (one sweep timer, re-timed on every tick, never doubled). The five Client-side knobs travel with the `welcome` and with every `policy_sync` snapshot (an Admin change re-syncs every connected Client); the Client replaces its backoff and re-arms exactly one heartbeat timer. The Admin UI reads the autosave debounce from `/admin/api/state` before it draws a view.
+- Before the first welcome a Client runs on the canonical defaults (its handshake timeout always does, since it is needed before the Server can answer).
+- No knob is restart-only today; `restart_required` in the table is the place a structural value must be declared so it is never cached silently.
+- Logging size and retention stay in the existing `logging` section of the same owner and already apply live through the writer's settings callback; an operational log level is not part of this change.
+
 ## Persistence and logs
 
 Runtime configuration, proposal state and logs live under the deployment-provided persistent root (`REACH_PRIVATE_PATH`, mounted at `/reach-private` as `config.json`, `proposal.json` and `logs/`). Secrets never belong in the public repository, logs or CI output.

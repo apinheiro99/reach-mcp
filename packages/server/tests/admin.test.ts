@@ -1,3 +1,4 @@
+import { RUNTIME_DEFAULTS } from "@reach-mcp/shared/runtime-settings";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -225,5 +226,25 @@ test("Client display name API: PUT renames through the audited change path; wron
   assert.equal((await put({ display_name: "q".repeat(100) })).status, 200, "100 is valid");
   await put({ display_name: "Final" });
   assert.equal(name(), "Final");
+  await rt.close();
+});
+
+test("runtime knobs over the Admin API: the state serves the autosave debounce, a PUT with a runtime section persists and applies it live, and an edit without one keeps it", async () => {
+  const rt = await start(true);
+  const debounce = async () => ((await (await fetch(`${rt.a}/admin/api/state`)).json()) as { runtime: { admin_autosave_debounce_ms: number } }).runtime.admin_autosave_debounce_ms;
+  assert.equal(await debounce(), RUNTIME_DEFAULTS.admin_autosave_debounce_ms, "the canonical default before any override");
+  const clients = [{ client_id: "laptop", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode: "read_only" }] }];
+  const syncs = rt.syncs();
+  assert.equal((await rt.put({ runtime: { ...RUNTIME_DEFAULTS, admin_autosave_debounce_ms: 900 }, clients })).status, 200);
+  assert.equal(await debounce(), 900, "applied live, no restart");
+  assert.equal(rt.syncs(), syncs + 1, "Clients are re-synced so they receive the live timing");
+  assert.equal((await rt.put({ clients })).status, 200);
+  assert.equal(await debounce(), 900, "an autosave edit without a runtime section keeps the override");
+  const bad = await rt.put({ runtime: { ...RUNTIME_DEFAULTS, admin_autosave_debounce_ms: 1 }, clients });
+  assert.equal(bad.status, 422);
+  assert.equal(await debounce(), 900, "an invalid value changes nothing");
+  const view = (await (await fetch(`${rt.a}/admin/api/config`)).json()) as { runtime: { admin_autosave_debounce_ms: number } };
+  assert.equal(view.runtime.admin_autosave_debounce_ms, 900);
+  assert.equal(readFileSync(rt.file, "utf8").includes('"admin_autosave_debounce_ms": 900'), true, "persisted in the one config file");
   await rt.close();
 });

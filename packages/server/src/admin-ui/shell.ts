@@ -86,9 +86,11 @@ function buildHeader(item) {
     UI.el("div", { className: "header-end" }, autosave.el, UI.el("div", { className: "admin-user" }, UI.icon("user"), ADMIN_USER)));
 }
 function currentItem() { const id = location.hash.replace("#/", ""); return NAV.find((n) => n.id === id) || NAV[0]; }
+let autosaveDebounceMs;
 async function refreshVersion() {
   const r = await api("GET", "/admin/api/state");
   if (!r.ok) return;
+  autosaveDebounceMs = r.json.runtime.admin_autosave_debounce_ms;
   const h = r.json.health;
   document.getElementById("version-text").textContent = h.server_build;
   document.getElementById("version").dataset.state = h.status === "ok" ? "ok" : "";
@@ -100,6 +102,7 @@ async function route() {
   const item = currentItem();
   for (const a of document.querySelectorAll("#nav a")) { if (a.id === "nav-" + item.id) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }
   buildHeader(item);
+  await refreshVersion();
   const view = document.getElementById("view");
   view.replaceChildren();
   await VIEWS[item.id](view, item);

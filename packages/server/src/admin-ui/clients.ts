@@ -51,7 +51,7 @@ async function renderClients(view) {
     ui.editing = true;
     say("editing", "Editing…");
     clearTimeout(ui.timer);
-    ui.timer = setTimeout(() => saveDisplayName(clientId, displayName), 500);
+    ui.timer = setTimeout(() => saveDisplayName(clientId, displayName), autosaveDebounceMs);
   }
 
   const row = (c) => {

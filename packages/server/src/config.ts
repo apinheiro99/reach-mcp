@@ -7,6 +7,7 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { hashCredential } from "./auth.ts";
 import { publicKeyFingerprint } from "@reach-mcp/shared/identity";
+import { RUNTIME_DEFAULTS, RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
 import { ClientId, EffectiveProjectPolicy, MachineUuid, PublicKey } from "@reach-mcp/shared/wire";
 
 const ClientDisplayNameUpdate = z.strictObject({ display_name: z.string() });
@@ -47,6 +48,8 @@ export const ServerConfig = z
     mcp_bearer_sha256: Digest,
     clients: z.array(ClientEntry).max(500),
     logging: LoggingSettings.default(DEFAULT_LOGGING),
+    /** Every mutable runtime knob; the canonical defaults and bounds live in shared/runtime-settings.ts. */
+    runtime: RuntimeSettings.default(RUNTIME_DEFAULTS),
   })
   .superRefine((config, ctx) => {
     const seen = new Set<string>();
@@ -76,18 +79,20 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
   logging: LoggingSettings.optional(),
+  runtime: RuntimeSettings.optional(),
   clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, pending: true, machine_uuid: true })).max(500),
 });
 /** The shape of editableView(): Clients with their policies and an enrollment flag, never the key. Strict, for readers of stored copies. */
 export const EditableView = z.strictObject({
   configured: z.boolean(),
   logging: LoggingSettings,
+  runtime: RuntimeSettings.default(RUNTIME_DEFAULTS),
   clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, machine_uuid: true }).extend({ has_public_key: z.boolean() })).max(500),
 });
 export type EditableView = z.infer<typeof EditableView>;
 
 /** What an AI proposal may carry: the human edit without any secret field. */
-export const ProposedEdit = AdminEdit.omit({ mcp_bearer: true, logging: true });
+export const ProposedEdit = AdminEdit.omit({ mcp_bearer: true, logging: true, runtime: true });
 export type ProposedEdit = z.infer<typeof ProposedEdit>;
 
 /** What a caller may read of one Client: never its key. */
@@ -174,14 +179,14 @@ export class ServerConfigStore {
     if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
     const mcp = parsed.data.mcp_bearer ? hashCredential(parsed.data.mcp_bearer) : this.#active?.mcp_bearer_sha256;
     if (!mcp) throw new ConfigError(["mcp_bearer: required for the first configuration"]);
-    this.activateCandidate(this.#editCandidate(parsed.data.clients, mcp, parsed.data.logging ?? this.#active?.logging));
+    this.activateCandidate(this.#editCandidate(parsed.data.clients, mcp, parsed.data.logging ?? this.#active?.logging, parsed.data.runtime ?? this.#active?.runtime));
   }
 
   /** Dry run of an AI proposal against the active configuration: the normalized secret-free edit, or ConfigError. Nothing changes. */
   validateEdit(input: unknown): ProposedEdit {
     const parsed = ProposedEdit.safeParse(input);
     if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
-    const candidate = ServerConfig.safeParse(this.#editCandidate(parsed.data.clients, this.#requireActive().mcp_bearer_sha256, this.#requireActive().logging));
+    const candidate = ServerConfig.safeParse(this.#editCandidate(parsed.data.clients, this.#requireActive().mcp_bearer_sha256, this.#requireActive().logging, this.#requireActive().runtime));
     if (!candidate.success) throw new ConfigError(problemsOf(candidate.error));
     return parsed.data;
   }
@@ -227,11 +232,16 @@ export class ServerConfigStore {
 
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
   editableView(): EditableView {
-    if (!this.#active) return { configured: false, logging: { ...DEFAULT_LOGGING }, clients: [] };
-    return structuredClone({ configured: true, logging: this.#active.logging, clients: this.#active.clients.map(({ public_key, ...client }) => { delete client.next_public_key; delete client.machine_uuid; return { ...client, has_public_key: public_key !== undefined }; }) });
+    if (!this.#active) return { configured: false, logging: { ...DEFAULT_LOGGING }, runtime: { ...RUNTIME_DEFAULTS }, clients: [] };
+    return structuredClone({ configured: true, logging: this.#active.logging, runtime: this.#active.runtime, clients: this.#active.clients.map(({ public_key, ...client }) => { delete client.next_public_key; delete client.machine_uuid; return { ...client, has_public_key: public_key !== undefined }; }) });
   }
 
   /** The log size and retention in force; the defaults while no configuration is active. */
+  /** The current runtime knobs, read by every consumer at the moment it needs them; the canonical defaults before a config is active. */
+  runtimeSettings(): RuntimeSettings {
+    return this.#active ? { ...this.#active.runtime } : { ...RUNTIME_DEFAULTS };
+  }
+
   loggingSettings(): LoggingSettings {
     return this.#active ? { ...this.#active.logging } : { ...DEFAULT_LOGGING };
   }
@@ -263,10 +273,10 @@ export class ServerConfigStore {
     return client ? { status: statusOf(client), publicKey: client.public_key ?? null, nextPublicKey: client.next_public_key ?? null, machineUuid: client.machine_uuid ?? null } : null;
   }
 
-  #editCandidate(clients: ProposedEdit["clients"], mcp_bearer_sha256: string, logging: LoggingSettings | undefined) {
+  #editCandidate(clients: ProposedEdit["clients"], mcp_bearer_sha256: string, logging: LoggingSettings | undefined, runtime: RuntimeSettings | undefined) {
     const keys = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, { public_key: c.public_key, next_public_key: c.next_public_key, machine_uuid: c.machine_uuid }]));
     const pending = new Set((this.#active?.clients ?? []).filter((c) => c.pending).map((c) => c.client_id));
-    return { mcp_bearer_sha256, logging, clients: clients.map((c) => ({ ...c, ...keys.get(c.client_id), ...(pending.has(c.client_id) && !c.enabled ? { pending: true } : {}) })) };
+    return { mcp_bearer_sha256, logging, runtime, clients: clients.map((c) => ({ ...c, ...keys.get(c.client_id), ...(pending.has(c.client_id) && !c.enabled ? { pending: true } : {}) })) };
   }
 
   #changeClient(clientId: string, change: (client: ServerConfig["clients"][number]) => ServerConfig["clients"][number]): void {

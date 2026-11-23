@@ -1,5 +1,6 @@
 // The effective project policy the Server sends to a Client. It is Server-owned data, never local configuration:
 // the Client only checks that its physical root stays inside the local root anchors, then enforces it.
+import { ClientRuntime } from "../runtime-settings.ts";
 import { z } from "zod";
 import { ProjectId, WirePath } from "./ids.ts";
 
@@ -47,5 +48,5 @@ export type EffectiveProjectPolicy = z.infer<typeof EffectiveProjectPolicy>;
 export const POLICY_SYNC_MAX_PROJECTS = 200;
 
 /** Server -> Client: the complete set of effective project policies. A full snapshot, so a removed project simply disappears. */
-export const PolicySync = z.strictObject({ kind: z.literal("policy_sync"), policies: z.array(EffectiveProjectPolicy).max(POLICY_SYNC_MAX_PROJECTS) });
+export const PolicySync = z.strictObject({ kind: z.literal("policy_sync"), policies: z.array(EffectiveProjectPolicy).max(POLICY_SYNC_MAX_PROJECTS), runtime: ClientRuntime.optional() });
 export type PolicySync = z.infer<typeof PolicySync>;

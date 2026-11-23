@@ -54,7 +54,7 @@ async function renderProjects(view) {
     ui.dirty = true; ui.rev++;
     say("editing", "Editing…");
     clearTimeout(ui.timer);
-    ui.timer = setTimeout(save, 500);
+    ui.timer = setTimeout(save, autosaveDebounceMs);
   }
 
   async function save() {
