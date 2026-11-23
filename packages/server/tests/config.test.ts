@@ -395,3 +395,18 @@ test("runtime knobs: invalid ranges and unknown fields fail validation and chang
   assert.deepEqual(store.runtimeSettings(), RUNTIME_DEFAULTS);
   assert.throws(() => store.validateEdit({ runtime: { ...RUNTIME_DEFAULTS, stale_ms: 100_000 }, clients }), ConfigError, "proposals are strict: no runtime field");
 });
+
+test("explicit Access Rules: the same glob allowed and denied in one project is refused, distinct rules and old configs without allow_globs load", () => {
+  const conflict = valid() as { clients: { projects: Record<string, unknown>[] }[] };
+  conflict.clients[0]!.projects[0] = { ...conflict.clients[0]!.projects[0]!, deny_globs: ["a/**"], allow_globs: ["a/**"] };
+  const refused = new ServerConfigStore(write(conflict));
+  assert.throws(() => refused.loadInitial(), (e: unknown) => e instanceof ConfigError && /conflicting explicit rules/.test(e.problems.join(" ")));
+  const fine = valid() as { clients: { projects: Record<string, unknown>[] }[] };
+  fine.clients[0]!.projects[0] = { ...fine.clients[0]!.projects[0]!, deny_globs: ["a/**"], allow_globs: ["b/**", ".env"] };
+  const ok = new ServerConfigStore(write(fine));
+  ok.loadInitial();
+  assert.deepEqual(ok.effectivePoliciesFor(ok.snapshot().clients[0]!.client_id)?.[0]?.allow_globs, ["b/**", ".env"], "the effective policy carries the explicit allow rules to the Client");
+  const old = new ServerConfigStore(write(valid()));
+  old.loadInitial();
+  assert.equal(old.effectivePoliciesFor(old.snapshot().clients[0]!.client_id)?.[0]?.allow_globs, undefined);
+});

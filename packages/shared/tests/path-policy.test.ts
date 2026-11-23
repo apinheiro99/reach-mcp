@@ -87,3 +87,24 @@ test("containment on windows is case-insensitive and drive aware", () => {
   assert.equal(isInsideRoot("C:\\Repo", "D:\\Repo\\a.ts", "win32"), false);
   assert.equal(isInsideRoot("C:\\Repo", "\\\\server\\share\\Repo", "win32"), false);
 });
+
+test("precedence: immutable safety deny > explicit deny > explicit allow > inherited sensitive deny > inherited allow", () => {
+  const none = buildPathPolicy();
+  assert.equal(none.isDenied(".env"), true, "inherited sensitive default");
+  assert.equal(none.isDenied("src/app.ts"), false, "inherited allow is the default");
+  const allowEnv = buildPathPolicy([], [".env", "config/**"]);
+  assert.equal(allowEnv.isDenied(".env"), false, "an explicit allow beats the inherited deny");
+  assert.equal(allowEnv.isDenied("config/server.pem"), false, "...for keys and other sensitive defaults too");
+  assert.equal(allowEnv.isDenied("other/.env"), true, "...but only the exact paths it names");
+  assert.equal(allowEnv.isDenied(".env.production"), true, "a neighbouring sensitive default stays denied");
+  const both = buildPathPolicy(["config/private/**"], ["config/**"]);
+  assert.equal(both.isDenied("config/private/a.txt"), true, "an explicit deny beats an explicit allow");
+  assert.equal(both.isDenied("config/public/a.txt"), false);
+  const everything = buildPathPolicy([], ["**"]);
+  for (const immutable of [".git", ".git/config", "x/.git/hooks/pre-commit"]) assert.equal(everything.isDenied(immutable), true, `${immutable} is never opened by an Access Rule`);
+  assert.equal(everything.isDenied(".env"), false);
+  const dirAllow = buildPathPolicy([], ["secrets/**"]);
+  assert.equal(dirAllow.isDenied("secrets"), false, "the directory entry follows its allowed contents");
+  assert.equal(dirAllow.isDenied("secrets/token.json"), false);
+  assert.equal(buildPathPolicy([], [".env"]).denyGlobs.includes("**/.env"), true, "the listed deny globs stay conservative");
+});

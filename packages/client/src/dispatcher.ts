@@ -47,10 +47,10 @@ const DEFAULT_MUTATION_TIMEOUT_MS = 30_000;
 
 /** The real primitives for one accepted policy. A read_only project never gets a writer. */
 export function buildRuntime(policy: EffectiveProjectPolicy): ProjectRuntime {
-  const common = { root: policy.physical_root, limits: policy.limits, extraDenyGlobs: policy.deny_globs };
+  const common = { root: policy.physical_root, limits: policy.limits, extraDenyGlobs: policy.deny_globs, extraAllowGlobs: policy.allow_globs };
   const reader = new FilesystemReader(common);
   const writer = policy.mode === "read_write" ? new FilesystemWriter({ ...common, allowGlobs: policy.writable_globs }) : null;
-  const git = existsSync(path.join(policy.physical_root, ".git")) ? createGitCompat({ enabled: true, root: policy.physical_root, extraDenyGlobs: policy.deny_globs }) : null;
+  const git = existsSync(path.join(policy.physical_root, ".git")) ? createGitCompat({ enabled: true, root: policy.physical_root, extraDenyGlobs: policy.deny_globs, extraAllowGlobs: policy.allow_globs }) : null;
   return { reader, writer, git, pdf: (input, options) => readPdf(reader, input, options) };
 }
 
