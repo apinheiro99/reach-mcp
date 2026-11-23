@@ -5,6 +5,7 @@
 // signed again after the welcome.
 import { z } from "zod";
 import { WireError } from "./errors.ts";
+import { ClientRuntime } from "../runtime-settings.ts";
 import { BuildId, ClientId, MachineUuid, Nonce, ProjectId, PublicKey, RequestId, Signature } from "./ids.ts";
 import { Operation, OperationResult } from "./operations.ts";
 import { PolicySync } from "./policy.ts";
@@ -17,7 +18,7 @@ export type ServerChallenge = z.infer<typeof ServerChallenge>;
 export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional() });
 export type ClientHello = z.infer<typeof ClientHello>;
 
-export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true) });
+export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true), runtime: ClientRuntime.optional() });
 export type ServerWelcome = z.infer<typeof ServerWelcome>;
 
 /** A refused handshake: authentication, duplicate identity or incompatible build, always as the compact error. */

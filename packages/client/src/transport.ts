@@ -2,6 +2,7 @@
 // build compatibility and one-active-identity, so a rejection is only ever obeyed, never second-guessed or worked around.
 // Liveness uses ws ping/pong control frames. The Server opens every connection with a fresh challenge; the Client answers
 // once with its public key and an Ed25519 signature, and nothing built here (state, error, log) ever holds the private key.
+import { RUNTIME_DEFAULTS, type ClientRuntime } from "@reach-mcp/shared/runtime-settings";
 import WebSocket from "ws";
 import type { RawData } from "ws";
 import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "@reach-mcp/shared/wire";
@@ -42,9 +43,10 @@ export type TransportOptions = {
   createSocket?: (url: string) => WebSocket;
 };
 
-const DEFAULT_BACKOFF = { initialMs: 1000, maxMs: 60_000, jitter: 0.2 };
-const DEFAULT_HEARTBEAT = { intervalMs: 15_000, staleMs: 45_000 };
-const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+// Until the Server's welcome pushes its live values, the Client runs on the canonical defaults (the one owner: shared runtime-settings).
+const DEFAULT_BACKOFF = { initialMs: RUNTIME_DEFAULTS.reconnect_initial_ms, maxMs: RUNTIME_DEFAULTS.reconnect_max_ms, jitter: RUNTIME_DEFAULTS.reconnect_jitter };
+const DEFAULT_HEARTBEAT = { intervalMs: RUNTIME_DEFAULTS.heartbeat_interval_ms, staleMs: RUNTIME_DEFAULTS.stale_ms };
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = RUNTIME_DEFAULTS.handshake_timeout_ms;
 
 const positive = (value: number): boolean => Number.isFinite(value) && value > 0;
 
@@ -70,8 +72,8 @@ export class ClientTransport {
   #cancelHandshake: (() => void) | null = null;
   readonly #bootstrap: Bootstrap;
   readonly #build: string;
-  readonly #backoff: { initialMs: number; maxMs: number; jitter: number };
-  readonly #heartbeat: { intervalMs: number; staleMs: number };
+  #backoff: { initialMs: number; maxMs: number; jitter: number };
+  #heartbeat: { intervalMs: number; staleMs: number };
   readonly #handshakeTimeoutMs: number;
   readonly #handler: FrameHandler | undefined;
   readonly #onTerminal: ((error: WireError) => void) | undefined;
@@ -164,6 +166,7 @@ export class ClientTransport {
       this.#attempts = 0;
       this.#lastError = null;
       this.#lastHealthyAt = this.#now();
+      if (reply.data.runtime) this.#applyRuntime(socket, reply.data.runtime);
       return;
     }
     this.#lastError = reply.data.error;
@@ -195,6 +198,7 @@ export class ClientTransport {
     if (message.data.kind === "rotate_key") return this.#rotateKey(socket, message.data.rotation_id);
     if (message.data.kind === "rotate_committed") return this.#commitRotation(socket, message.data.rotation_id);
     if (message.data.kind === "policy_sync") {
+      if (message.data.runtime) this.#applyRuntime(socket, message.data.runtime);
       try {
         this.#handler.applyPolicy(message.data);
       } catch {
@@ -267,6 +271,17 @@ export class ClientTransport {
       this.#cancelRetry = null;
       this.#connect();
     }, delay);
+  }
+
+  /** Takes the Server's live timing: the next retry uses the new backoff and the heartbeat is re-armed once, never doubled. */
+  #applyRuntime(socket: WebSocket, runtime: ClientRuntime): void {
+    const backoff = { initialMs: runtime.reconnect_initial_ms, maxMs: runtime.reconnect_max_ms, jitter: runtime.reconnect_jitter };
+    const heartbeat = { intervalMs: runtime.heartbeat_interval_ms, staleMs: runtime.stale_ms };
+    validateTiming(backoff, heartbeat, this.#handshakeTimeoutMs);
+    this.#backoff = backoff;
+    this.#heartbeat = heartbeat;
+    this.#stopHeartbeat();
+    this.#armHeartbeat(socket);
   }
 
   #armHeartbeat(socket: WebSocket): void {

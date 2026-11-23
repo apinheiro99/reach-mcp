@@ -92,7 +92,7 @@ test("Projects view: six counters, one search, one Client filter, the six refere
   assert.equal(src.match(/UI\.select\(\[\["all", "All clients"\]/g)?.length, 1, "one Client filter");
   assert.ok(src.includes('"Client", "Project", "Root Path", "Policy", "Access", "Actions"'));
   assert.ok(/className: "pj-root"/.test(src) && /UI\.icon\("folder"\)/.test(src) && /kind: "path"/.test(src), "the stronger boxed root-path treatment");
-  assert.ok(/setTimeout\(save, 500\)/.test(src) && /api\("PUT", "\/admin\/api\/config"/.test(src), "~500 ms autosave through the config owner");
+  assert.ok(/setTimeout\(save, autosaveDebounceMs\)/.test(src) && /api\("PUT", "\/admin\/api\/config"/.test(src), "autosave with the configured debounce through the config owner");
   assert.ok(!/Save["']|"Save/.test(src.replace(/Autosaved|Saving…|Not saved|Save changes/g, "")), "no Save button");
   assert.ok(!/rotate-key/.test(src), "no project-scoped rotation: Rotate Key stays on the Clients screen");
   assert.ok(!/public_key|has_public_key/.test(src), "the view never touches key material");
