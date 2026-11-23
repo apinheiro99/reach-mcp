@@ -16,6 +16,23 @@ const ROOT = path.join(import.meta.dirname, "..", "..", "..");
 const BEARER = "mcp-bearer-" + "Rk52Yd90";
 const SECRET = "secret-" + "arg-Bn18";
 
+/** Owns what a scenario starts: each resource is stopped exactly once, even when an assertion or Client bootstrap throws, so no listener keeps Node alive. */
+const scope = () => {
+  const open: { stop(): void | Promise<void> }[] = [];
+  return {
+    own<T extends { stop(): void | Promise<void> }>(resource: T): T {
+      const stop = resource.stop.bind(resource);
+      let called = false;
+      const once = () => (called ? undefined : ((called = true), stop()));
+      open.push({ stop: once });
+      return Object.assign(resource, { stop: once });
+    },
+    async closeAll() {
+      for (const r of open.splice(0).reverse()) await r.stop();
+    },
+  };
+};
+
 const dirs = () => {
   const base = mkdtempSync(path.join(tmpdir(), "reach-runtime-"));
   return { base, config: path.join(base, "private", "config.json"), proposal: path.join(base, "private", "proposal.json"), logs: path.join(base, "logs") };
@@ -48,9 +65,11 @@ test("admin exposure: loopback and no live reload by default; leaving loopback n
   assert.equal(parseServerArgs(argv(d, ["--admin-host", "::1"])).adminHost, "::1", "loopback needs no peer list");
 });
 
-test("setup mode: with no config the admin works and the data plane fails closed; the first config opens it without a restart", async () => {
+test("setup mode: with no config the admin works and the data plane fails closed; the first config opens it without a restart", async (t) => {
   const d = dirs();
-  const server = await startServer(parseServerArgs(argv(d)));
+  const s = scope();
+  t.after(() => s.closeAll());
+  const server = s.own(await startServer(parseServerArgs(argv(d))));
   const data = `http://127.0.0.1:${server.port}`;
   const admin = `http://127.0.0.1:${server.adminPort}`;
   assert.equal(((await (await fetch(`${admin}/admin/api/state`)).json()) as { setup_mode: boolean }).setup_mode, true);
@@ -69,26 +88,30 @@ test("setup mode: with no config the admin works and the data plane fails closed
   assert.ok(!logs.includes(BEARER));
 });
 
-test("--artifacts wires the public release routes on the service listener of the real Server: manifest and artifact bytes with no credential, 404 without the flag", async () => {
+test("--artifacts wires the public release routes on the service listener of the real Server: manifest and artifact bytes with no credential, 404 without the flag", async (t) => {
   const d = dirs();
+  const s = scope();
+  t.after(() => s.closeAll());
   const artifacts = path.join(d.base, "release");
   mkdirSync(artifacts);
   writeFileSync(path.join(artifacts, "manifest.json"), '{"release":"r-1"}');
   writeFileSync(path.join(artifacts, "reach-client-linux-x64.tar.gz"), "client-bytes");
-  const withFlag = await startServer(parseServerArgs(argv(d, ["--artifacts", artifacts])));
+  const withFlag = s.own(await startServer(parseServerArgs(argv(d, ["--artifacts", artifacts]))));
   const service = `http://127.0.0.1:${withFlag.port}`;
   assert.equal(await (await fetch(`${service}/release/manifest`)).text(), '{"release":"r-1"}', "setup mode, no credential");
   assert.equal(await (await fetch(`${service}/release/artifacts/reach-client-linux-x64.tar.gz`)).text(), "client-bytes");
   assert.equal((await fetch(`http://127.0.0.1:${withFlag.adminPort}/release/manifest`)).status, 404, "never on the admin listener");
   await withFlag.stop();
-  const withoutFlag = await startServer(parseServerArgs(argv(d)));
+  const withoutFlag = s.own(await startServer(parseServerArgs(argv(d))));
   assert.equal((await fetch(`http://127.0.0.1:${withoutFlag.port}/release/manifest`)).status, 404, "no artifacts source");
   await withoutFlag.stop();
 });
 
-test("Server and Client runtimes: unknown Client waits Pending, Enable admits it, Disable closes and refuses it, Rotate Key swaps the key and the old one is refused", async () => {
+test("Server and Client runtimes: unknown Client waits Pending, Enable admits it, Disable closes and refuses it, Rotate Key swaps the key and the old one is refused", async (t) => {
   const d = dirs();
-  const server: RunningServer = await startServer(parseServerArgs(argv(d)));
+  const s = scope();
+  t.after(() => s.closeAll());
+  const server: RunningServer = s.own(await startServer(parseServerArgs(argv(d))));
   const data = `http://127.0.0.1:${server.port}`;
   const admin = `http://127.0.0.1:${server.adminPort}`;
   const root = mkdtempSync(path.join(tmpdir(), "reach-anchor-"));
@@ -103,7 +126,7 @@ test("Server and Client runtimes: unknown Client waits Pending, Enable admits it
   const connected = async () => ((await (await fetch(`${data}/health`, { headers: { Authorization: `Bearer ${BEARER}` } })).json()) as { clients: { connected: number } }).clients.connected;
   const list = async () => (await (await fetch(`${admin}/admin/api/clients`)).json()) as { clients: { client_id: string; status: string; online: boolean; fingerprint: string | null }[]; counts: Record<string, number> };
   const post = (suffix: string) => fetch(`${admin}/admin/api/clients/${encodeURIComponent(clientId)}/${suffix}`, { method: "POST" });
-  const client = startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true });
+  const client = s.own(startClient({ bootstrap: file, build: "dev-1", allowInsecureWs: true }));
   const stored = readFileSync(file, "utf8");
   const oldKey = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(stored)![1]!;
   const clientId = /REACH_CLIENT_ID=(\S+)/.exec(stored)![1]!;
@@ -162,6 +185,33 @@ test("Server and Client runtimes: unknown Client waits Pending, Enable admits it
   assert.match(logs, /action=rotate_key/);
   assert.match(logs, /action=client_disable/);
   assert.ok(![oldKey, newKey, BEARER].some((x) => logs.includes(x)));
+});
+
+test("a scenario whose Client bootstrap fails early still stops the Server it started, promptly", async () => {
+  const d = dirs();
+  const s = scope();
+  const server = s.own(await startServer(parseServerArgs(argv(d))));
+  const data = `http://127.0.0.1:${server.port}`;
+  assert.equal((await fetch(`${data}/health`)).status, 503, "the Server is listening before the failure");
+  await assert.rejects(async () => {
+    try {
+      s.own(startClient({ bootstrap: path.join(d.base, "missing-bootstrap.env"), build: "dev-1", allowInsecureWs: true }));
+    } finally {
+      await s.closeAll();
+    }
+  });
+  await assert.rejects(fetch(`${data}/health`), "the listener is closed, so nothing keeps the process alive");
+  await s.closeAll();
+});
+
+test("scope() stops a resource exactly once even when the scenario also stopped it itself", async () => {
+  let stops = 0;
+  const s = scope();
+  const resource = s.own({ stop: () => void stops++ });
+  resource.stop();
+  await s.closeAll();
+  await s.closeAll();
+  assert.equal(stops, 1);
 });
 
 test("the real Server process starts in setup mode and exits cleanly on SIGTERM", async () => {

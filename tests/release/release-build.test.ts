@@ -254,12 +254,12 @@ test("the production entrypoint contract: the Admin listener is non-loopback by 
 // ---- Task #90: the public Linux one-line installer, against the real build and a real Server and Client ----
 const INSTALL_SH = path.join(import.meta.dirname, "..", "..", "deploy", "client", "install.sh");
 const hex = (s: string | Uint8Array) => createHash("sha256").update(s).digest("hex");
-const waitFor = async <T,>(fn: () => Promise<T> | T, ms = 8000): Promise<T> => {
+const waitFor = async <T,>(fn: () => Promise<T> | T, ms = 8000, detail: () => string = () => ""): Promise<T> => {
   const end = Date.now() + ms;
   for (;;) {
     const value = await fn();
     if (value) return value;
-    if (Date.now() > end) throw new Error("condition not reached");
+    if (Date.now() > end) throw new Error(`condition not reached${detail() ? `:\n${detail()}` : ""}`);
     await new Promise((r) => setTimeout(r, 100));
   }
 };
@@ -362,7 +362,7 @@ test("the real one-line install: the Server's own install.sh and manifest-select
     const pending = await waitFor(async () => {
       const view = (await (await fetch(`http://127.0.0.1:${port[2]}/admin/api/clients`)).json()) as Untrusted;
       return view.clients.find((c: Untrusted) => c.status === "pending" || c.enabled === false) ?? null;
-    });
+    }, 8000, () => `client output:\n${clientOutput}\nserver output:\n${output}`);
     assert.equal(((await (await fetch(`http://127.0.0.1:${port[2]}/admin/api/clients`)).json()) as Untrusted).clients.length, 1, "exactly one unknown Client");
     const text = readFileSync(bootstrap, "utf8");
     const id = /^REACH_CLIENT_ID=(.+)$/m.exec(text)?.[1];
