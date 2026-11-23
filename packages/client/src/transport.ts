@@ -27,6 +27,8 @@ export type TransportOptions = {
   handler?: FrameHandler;
   /** Opaque build identifier of this Client, sent as-is in the hello. */
   build: string;
+  /** Called once when the Server's admission answer is terminal (see TERMINAL_REJECTS), so the process owner can surface it; never for transient loss. */
+  onTerminal?: (error: WireError) => void;
   /** Delays in ms; `jitter` is the fraction (0..1) a delay may shrink or grow. */
   backoff?: { initialMs: number; maxMs: number; jitter: number };
   /** Ping every `intervalMs`; the connection is stale when nothing came back for `staleMs`. */
@@ -72,6 +74,7 @@ export class ClientTransport {
   readonly #heartbeat: { intervalMs: number; staleMs: number };
   readonly #handshakeTimeoutMs: number;
   readonly #handler: FrameHandler | undefined;
+  readonly #onTerminal: ((error: WireError) => void) | undefined;
   readonly #now: () => number;
   readonly #schedule: Schedule;
   readonly #random: () => number;
@@ -83,6 +86,7 @@ export class ClientTransport {
     this.#backoff = options.backoff ?? DEFAULT_BACKOFF;
     this.#heartbeat = options.heartbeat ?? DEFAULT_HEARTBEAT;
     this.#handler = options.handler;
+    this.#onTerminal = options.onTerminal;
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     validateTiming(this.#backoff, this.#heartbeat, this.#handshakeTimeoutMs);
     this.#now = options.now ?? Date.now;
@@ -168,6 +172,7 @@ export class ClientTransport {
       this.#state = "terminal_error";
       this.#socket = null;
       socket.terminate();
+      this.#onTerminal?.(reply.data.error);
     } else {
       socket.terminate();
     }

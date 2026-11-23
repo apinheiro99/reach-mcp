@@ -117,6 +117,8 @@ test("reconnect answers a new challenge: the earlier signature is not reusable",
   const [first, second] = srv.seen.map((x) => ClientHello.parse(x.frames[0]));
   assert.notEqual(srv.seen[0]!.nonce, srv.seen[1]!.nonce);
   assert.notEqual(first!.signature, second!.signature);
+  assert.equal(second!.client_id, first!.client_id, "the same Client identity reconnects, nothing is re-enrolled");
+  assert.equal(second!.public_key, first!.public_key, "the same public key is presented again");
   assert.equal(verifyChallenge(second!.public_key, srv.seen[1]!.nonce, "laptop-1", first!.signature), false, "the old signature fails on the new challenge");
   t.stop();
   await srv.close();
@@ -165,15 +167,18 @@ for (const code of ["AUTH_FAILED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD"]) {
   test(`${code} reject is terminal: no reconnect, safe error kept`, async () => {
     const srv = await server((s) => s.once("message", () => reject(code)(s)));
     const c = clock();
-    const t = new ClientTransport(boot(srv.port), opts(c));
+    const terminal: unknown[] = [];
+    const t = new ClientTransport(boot(srv.port), opts(c, { onTerminal: (error) => terminal.push(error) }));
     t.start();
     await until(() => t.snapshot().state === "terminal_error", "terminal");
     assert.equal(t.snapshot().lastError?.code, code);
+    assert.deepEqual(terminal, [{ code, message: "refused" }], "the owner is told exactly once, with the safe error");
     assert.deepEqual(c.pending(), [], "no heartbeat or retry timer");
     c.advance(60_000);
     assert.equal(srv.seen.length, 1);
     t.start();
     assert.equal(srv.seen.length, 1, "start does not leave terminal_error");
+    assert.equal(terminal.length, 1, "start does not tell the owner again");
     t.stop();
     await srv.close();
   });
@@ -573,4 +578,27 @@ test("rotate_key without a writable bootstrap fails closed without echoing anyth
   assert.ok(!srv.seen[0]!.frames.some((f) => (f as { kind: string }).kind === "rotated"));
   t.stop();
   await srv.close();
+});
+
+test("transient loss and Pending/Disabled refusals never tell the owner of a terminal error", async () => {
+  const terminal: unknown[] = [];
+  for (const code of ["PENDING_APPROVAL", "CLIENT_DISABLED"]) {
+    const srv = await server((s) => s.once("message", () => reject(code)(s)));
+    const c = clock();
+    const t = new ClientTransport(boot(srv.port), opts(c, { onTerminal: (error) => terminal.push(error) }));
+    t.start();
+    await until(() => t.snapshot().state === "backoff", `${code} backs off`);
+    t.stop();
+    await srv.close();
+  }
+  const srv = await server((s) => s.once("message", () => welcome(s)));
+  const c = clock();
+  const t = new ClientTransport(boot(srv.port), opts(c, { onTerminal: (error) => terminal.push(error) }));
+  t.start();
+  await until(() => t.snapshot().state === "connected", "connected");
+  srv.sockets[0]!.terminate();
+  await until(() => t.snapshot().state === "backoff", "lost connection backs off");
+  t.stop();
+  await srv.close();
+  assert.deepEqual(terminal, []);
 });
