@@ -116,7 +116,8 @@ test("the tag must exist on origin and point at the tested SHA; nothing is pushe
 test("credentials come only from the private root and a missing key or config fails without echoing values", () => {
   const s = scene();
   writeFileSync(path.join(s.priv, "config", "github.env"), "REACH_GITHUB_OWNER=secretowner\n");
-  assert.throws(() => publish(s.env, s.git), (e: Error) => /REACH_GITHUB_REPO/.test(e.message) && !/secretowner/.test(e.message));
+  // the repository name defaults to reach-mcp; the remote then cannot be reached, and the failure never echoes the owner
+  assert.throws(() => publish(s.env, s.git), (e: Error) => !/secretowner/.test(e.message));
   const t = scene();
   writeFileSync(path.join(t.priv, "config", "github.env"), "");
   assert.throws(() => publish(t.env, t.git), /REACH_GITHUB_OWNER/);

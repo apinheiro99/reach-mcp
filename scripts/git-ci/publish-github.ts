@@ -49,7 +49,7 @@ function githubRepository(privateRoot: string): { key: string; repository: strin
     return value;
   };
   const owner = need("REACH_GITHUB_OWNER");
-  const repo = need("REACH_GITHUB_REPO");
+  const repo = values["REACH_GITHUB_REPO"] || "reach-mcp";
   return { key, repository: values["REACH_GITHUB_REPOSITORY"] || `git@github.com:${owner}/${repo}.git` };
 }
 
