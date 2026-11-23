@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { AuditWriter, OperationalLogger, RotatingTextWriter, redact, LOG_LEVELS, type Level } from "../src/index.ts";
+import { AuditWriter, OperationalLogger, RotatingTextWriter, redact, REDACTED, LOG_LEVELS, type Level } from "../src/index.ts";
 
 const fresh = () => mkdtempSync(path.join(tmpdir(), "reach-log-"));
 const NOW = new Date("2026-03-04T10:00:00");
@@ -70,7 +70,7 @@ test("redaction: secrets never reach the operational or the audit file at DEBUG;
 
 test("redact(): idempotent, keeps non-secret text, and a request id or component cannot smuggle a secret", () => {
   assert.equal(redact("plain text, no secret"), "plain text, no secret");
-  assert.equal(redact(redact(`password=${PW}`)), "password=[REDACTED]");
+  assert.equal(redact(redact(`password=${PW}`)), `password=${REDACTED}`);
   const w = setup(() => "DEBUG");
   w.logger.log("INFO", `comp password=${PW}`, "m", `id token=${TOKEN}`);
   const out = files(w.dir, "reach");

@@ -2,10 +2,9 @@
   "version": 1,
   "integration_branch": "main",
   "remote": "origin",
-  "mirror_remotes": ["github"],
+  "publish_on": [],
   "levels": ["sprint", "story", "task"],
   "branch_prefix": { "sprint": "feature/sprint-", "story": "feature/story-", "task": "feature/task-" },
-  "publish_on": ["story-done"],
   "ci_gate": { "enabled": true },
   "templates": { "commit": "2.0.0", "merge": "1.0.0", "init": "1.0.0" },
   "free_branch_types": ["docs", "chore", "ci"]

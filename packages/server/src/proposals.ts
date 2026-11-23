@@ -45,8 +45,12 @@ export type ProposalDeps = { path: string; config: ServerConfigStore; connection
 
 /** Stable text for comparing two views regardless of key order. */
 const canon = (value: unknown): string => JSON.stringify(value, (_k, v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v));
-const stripView = ({ has_public_key: _k, pending: _p, ...client }: EditableView["clients"][number]): Entry => client;
-const without = (entry: Entry, ...keys: string[]): Entry => Object.fromEntries(Object.entries(entry).filter(([k, v]) => !keys.includes(k) && v !== undefined));
+const stripView = (view: EditableView["clients"][number]): Entry => {
+  const client: Entry = { ...view };
+  delete client["has_public_key"];
+  delete client["pending"];
+  return client;
+};
 const globsOf = (project: Entry, list: string): string[] => (Array.isArray(project[list]) ? (project[list] as string[]) : []);
 
 /** The id is assigned once, in `itemsOf`, and stored with the item: it never depends on a position that can shift. */
