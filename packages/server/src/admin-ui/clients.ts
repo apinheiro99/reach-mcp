@@ -60,10 +60,10 @@ async function renderClients(view) {
     const nameInput = UI.input({ value: c.display_name || "", placeholder: c.client_id, onInput: (v) => scheduleDisplayNameSave(c.client_id, v) });
     nameInput.classList.add("cl-name");
     nameInput.setAttribute("aria-label", "Client name");
-    const name = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: nameInput, subtitle: c.client_id });
+    const name = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: nameInput, subtitle: c.machine_uuid && c.machine_uuid !== c.client_id ? c.client_id + " · UUID " + c.machine_uuid : c.client_id });
     const dot = UI.el("span", { className: "cl-dot" });
     dot.dataset.online = String(c.online);
-    const conn = UI.el("div", { className: "cl-conn" }, UI.el("div", { className: "cl-conn-state" }, dot, c.online ? "Online" : "Offline"), UI.el("div", { className: "cl-seen", textContent: c.last_seen ? ago(c.last_seen) : "—" }));
+    const conn = UI.el("div", { className: "cl-conn" }, UI.el("div", { className: "cl-conn-state" }, dot, c.online ? "Online" : "Offline"), UI.el("div", { className: "cl-seen", textContent: c.last_seen ? ago(c.last_seen) : "—" }), UI.el("div", { className: "cl-seen", textContent: c.client_build ? "build " + c.client_build : "" }));
     const fp = UI.el("div", { className: "cl-fp" }, UI.el("span", { textContent: shortFingerprint(c.fingerprint), title: c.fingerprint || "" }),
       c.fingerprint ? UI.iconButton("copy", "Copy fingerprint", () => navigator.clipboard.writeText(c.fingerprint).then(() => say("saved", "Fingerprint copied · " + clock()))) : "");
     const toggle = UI.toggle("", c.status === "enabled", (on) => act(base + (on ? "/enable" : "/disable"), on ? "Enabled" : "Disabled"));

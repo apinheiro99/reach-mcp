@@ -14,13 +14,55 @@ export const SYSTEM_CSS = `
 @container (max-width:60rem){.sy-top,.sy-grid{grid-template-columns:minmax(0,1fr)}}
 `;
 
+import { RUNTIME_KNOBS } from "@reach-mcp/shared/runtime-settings";
+import { LOG_LEVELS } from "../logging.ts";
+
+/** The knob names, bounds and units the settings card renders; the values themselves come from the Server config at load. */
+const KNOB_FACTS = Object.fromEntries(Object.entries(RUNTIME_KNOBS).map(([name, k]) => [name, { min: k.min, max: k.max, unit: k.unit, applies: k.applies }]));
+
 export const SYSTEM_JS = `
+const KNOBS = ${JSON.stringify(KNOB_FACTS)};
+const LOG_LEVELS = ${JSON.stringify(LOG_LEVELS)};
 const formatBytes = (n) => { const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return n.toFixed(i > 1 ? 1 : 0) + " " + u[i]; };
 const formatUptime = (s) => { const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60); return (d ? d + "d " : "") + (d || h ? h + "h " : "") + m + "m"; };
 
+// Logging and runtime settings: ordinary fields that autosave through the one config endpoint. The Server validates and applies them live;
+// a refusal is shown as it is. The browser sends the Clients it just read back unchanged, so nothing else in the configuration moves.
+async function renderSettings(host) {
+  const st = { logging: null, runtime: null, timer: 0 };
+  async function saveSettings() {
+    say("saving", "Saving…");
+    const cur = await api("GET", "/admin/api/config");
+    if (!cur.ok) { say("error", "The Server did not answer"); return; }
+    const clients = cur.json.clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), enabled: c.enabled, projects: c.projects }));
+    const r = await api("PUT", "/admin/api/config", { logging: st.logging, runtime: st.runtime, clients });
+    if (!r.ok) { say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; ")); return; }
+    say("saved", "Autosaved · " + clock());
+  }
+  function edited() {
+    say("editing", "Editing…");
+    clearTimeout(st.timer);
+    st.timer = setTimeout(saveSettings, autosaveDebounceMs);
+  }
+  const numberField = (target, key, label, hint) => UI.field(label, UI.el("div", {}, UI.input({ type: "number", value: String(target[key]), onInput: (v) => { target[key] = v === "" ? 0 : Number(v); edited(); } }), UI.el("div", { className: "hint", textContent: hint })));
+  const r = await api("GET", "/admin/api/config");
+  if (!r.ok) { host.replaceChildren(UI.unavailable("The Server did not answer")); return; }
+  st.logging = { ...r.json.logging };
+  st.runtime = { ...r.json.runtime };
+  const logging = UI.card({ icon: "file", title: "Logging", subtitle: "Applies to the next line written, no restart. The audit trail ignores the log level.", children: [UI.el("div", { className: "form-grid" },
+    UI.field("Log level", UI.select(LOG_LEVELS.map((l) => [l, l]), st.logging.level, (v) => { st.logging.level = v; edited(); })),
+    numberField(st.logging, "max_bytes", "Maximum file size (bytes)", "A file that would pass this size continues in the next numbered segment of the day."),
+    numberField(st.logging, "retention_days", "Retention (days)", "Every segment of an older date is deleted together."))] });
+  const runtime = UI.card({ icon: "cog", title: "Runtime", subtitle: "Timing knobs the Server and the Clients use; changes apply live.", children: [UI.el("div", { className: "form-grid" },
+    ...Object.entries(KNOBS).map(([name, k]) => numberField(st.runtime, name, name + " (" + k.unit + ")", k.applies + " · " + k.min + " to " + k.max)))] });
+  host.replaceChildren(logging, runtime);
+}
+
 async function renderSystem(view) {
   const body = UI.el("div", { className: "stack" });
-  view.replaceChildren(body);
+  const settings = UI.el("div", { className: "stack" });
+  view.replaceChildren(body, settings);
+  renderSettings(settings);
 
   function draw(d) {
     const s = d.server;
