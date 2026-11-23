@@ -179,7 +179,7 @@ test("the publish script: exact SHA and tag, lease-protected main, private-root 
 
 test("GitGate is governance-only for REACH: no mirror or publication, branch and CI governance kept", () => {
   assert.equal("mirror_remotes" in gitgateConfig, false);
-  assert.deepEqual(gitgateConfig["publish_on"], [], "GitGate requires the key; empty means it publishes nothing");
+  assert.deepEqual(gitgateConfig["publish_on"], ["story-done"], "GitGate still publishes the Sprint branch to GitLab on story-done; with no mirror_remotes it never touches GitHub");
   assert.equal(gitgateConfig["integration_branch"], "main");
   assert.deepEqual(gitgateConfig["levels"], ["sprint", "story", "task"]);
   assert.deepEqual(gitgateConfig["ci_gate"], { enabled: true });

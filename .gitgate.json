@@ -2,7 +2,7 @@
   "version": 1,
   "integration_branch": "main",
   "remote": "origin",
-  "publish_on": [],
+  "publish_on": ["story-done"],
   "levels": ["sprint", "story", "task"],
   "branch_prefix": { "sprint": "feature/sprint-", "story": "feature/story-", "task": "feature/task-" },
   "ci_gate": { "enabled": true },
