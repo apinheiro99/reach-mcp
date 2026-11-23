@@ -172,6 +172,7 @@ ci-tag-red:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
+    - export REACH_PRIVATE_PATH="${REACH_PUBLICATION_PATH:-$HOME/reach-prod/reach-private}"
     - node scripts/git-ci/publish-github.ts
 
 .deploy-job:
