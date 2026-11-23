@@ -2,3 +2,4 @@ export { Bootstrap, BOOTSTRAP_KEYS, BootstrapError, loadBootstrap, parseBootstra
 export { acceptEffectivePolicy } from "./root-anchors.ts";
 export { buildRuntime, ClientDispatcher, type DispatcherOptions, type ProjectRuntime } from "./dispatcher.ts";
 export { ClientTransport, type FrameHandler, type TransportOptions, type TransportState } from "./transport.ts";
+export { currentMachineUuid, readNativeMachineId } from "./machine-identity.ts";

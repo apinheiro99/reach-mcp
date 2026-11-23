@@ -1,3 +1,4 @@
+import { clientRuntimeOf, RUNTIME_DEFAULTS } from "@reach-mcp/shared/runtime-settings";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -30,6 +31,7 @@ function clock() {
       timers.set(id, { at: now + ms, fn });
       return () => void timers.delete(id);
     },
+    pending: () => timers.size,
     advance(ms: number) {
       const target = now + ms;
       for (;;) {
@@ -95,7 +97,7 @@ test("admission: challenge first, then welcome and the full policy snapshot; the
   const c = await t.connect();
   await until(() => c.frames.length === 3, "welcome and policy");
   assert.equal(c.frames[0]!.kind, "challenge");
-  assert.deepEqual(c.frames[1], { kind: "welcome", server_build: "srv-1", compatible: true });
+  assert.deepEqual(c.frames[1], { kind: "welcome", server_build: "srv-1", compatible: true, runtime: clientRuntimeOf(RUNTIME_DEFAULTS) });
   assert.equal(c.frames[2]!.kind, "policy_sync");
   assert.deepEqual(c.frames[2]!.policies!.map((p) => p.project_id), ["web", "api"]);
   assert.deepEqual(t.registry.status().map((s) => [s.client_id, s.client_build, s.online]), [["laptop", "ok-1", true]]);
@@ -148,7 +150,7 @@ test("Pending: an unknown client_id proving its key is registered with the publi
   await c.closed;
   assert.equal(code(c.frames), "PENDING_APPROVAL");
   assert.equal(c.frames.some((f) => f.kind === "welcome" || f.kind === "policy_sync"), false, "no welcome and no policy before a human Enable");
-  assert.deepEqual(t.config.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null });
+  assert.deepEqual(t.config.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null, machineUuid: null });
   assert.equal(t.config.effectivePoliciesFor("newbox"), null);
   assert.deepEqual(t.registry.status(), [], "a Pending registration never becomes a session");
   const stored = readFileSync(configFile, "utf8");
@@ -314,7 +316,7 @@ test("stale sessions go offline, are swept, and are replaced by a fresh connecti
   const t = await setup();
   const first = await t.connect();
   await until(() => first.frames.length === 3, "admitted");
-  t.clock.advance(46_000);
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms + 1_000);
   assert.equal(t.registry.status()[0]!.online, false);
   const refused = await t.registry.route("laptop", "web", { op: "fs_list" });
   assert.ok(!refused.ok && refused.error.code === "NOT_FOUND" && /offline/.test(refused.error.message));
@@ -322,7 +324,7 @@ test("stale sessions go offline, are swept, and are replaced by a fresh connecti
   await until(() => second.frames.length === 3, "stale session replaced");
   await first.closed;
   assert.equal(t.registry.status().length, 1);
-  t.clock.advance(46_000);
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms + 1_000);
   t.registry.sweep();
   await second.closed;
   await until(() => t.registry.status().length === 0, "swept");
@@ -455,5 +457,110 @@ test("display name: a known Client reconnecting with another suggestion never ov
   t.config.setClientDisplayName("namebox", "Operator choice");
   await (await t.connect({ id: "namebox", identity: fresh, extra: { display_name: "Another suggestion" } })).closed;
   assert.equal(t.config.clientSummaries().find((c) => c.client_id === "namebox")?.display_name, "Operator choice");
+  await t.done();
+});
+
+test("the Client build is retained after its session ends and the same client_id with a new key never creates a second Client", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "welcome and policy");
+  assert.equal(t.registry.lastBuild("laptop"), "ok-1");
+  assert.equal(t.registry.lastBuild("never-seen"), null);
+  c.ws.close();
+  await until(() => t.registry.status().length === 0, "session gone");
+  assert.equal(t.registry.lastBuild("laptop"), "ok-1", "the version stays observable offline");
+  await t.done();
+});
+
+const MACHINE = "3eb1bd43-9947-eb76-2998-e566ccc2e099";
+const OTHER_MACHINE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+test("legacy Client: the first authenticated hello with a Machine UUID binds it once, keeps status and projects, and never changes a key", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { machine_uuid: MACHINE } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.deepEqual(t.config.admissionOf("laptop"), { status: "enabled", publicKey: LAPTOP.publicKey, nextPublicKey: null, machineUuid: MACHINE });
+  assert.equal(t.config.effectivePoliciesFor("laptop")!.length, 2, "projects are kept");
+  c.ws.close();
+  await until(() => t.registry.status().length === 0, "session gone");
+  const again = await t.connect({ extra: { machine_uuid: MACHINE } });
+  await until(() => again.frames.length === 3, "admitted again with the same machine");
+  assert.equal(t.config.snapshot().clients.length, 3);
+  await t.done();
+});
+
+test("a Client whose record is bound to a machine is refused from another machine, and a Client without a Machine UUID is unchanged", async () => {
+  const t = await setup();
+  t.config.bindMachineUuid("laptop", MACHINE);
+  const copied = await t.connect({ extra: { machine_uuid: OTHER_MACHINE } });
+  await copied.closed;
+  assert.equal(code(copied.frames), "AUTH_FAILED", "identity copied to another machine");
+  const legacy = await t.connect({});
+  await until(() => legacy.frames.length === 3, "a Client that reports no Machine UUID still connects");
+  assert.equal(t.config.admissionOf("laptop")!.machineUuid, MACHINE);
+  await t.done();
+});
+
+test("reinstall of a known machine never creates a second Client and the Machine UUID alone never takes over a record", async () => {
+  const t = await setup();
+  t.config.bindMachineUuid("laptop", MACHINE);
+  const reinstalled = await t.connect({ id: MACHINE, identity: newIdentity(), extra: { machine_uuid: MACHINE } });
+  await reinstalled.closed;
+  assert.equal(code(reinstalled.frames), "AUTH_FAILED", "same machine, new id and fresh key: no second record");
+  assert.equal(t.config.admissionOf(MACHINE), null);
+  const takeover = await t.connect({ id: "laptop", identity: newIdentity(), extra: { machine_uuid: MACHINE } });
+  await takeover.closed;
+  assert.equal(code(takeover.frames), "AUTH_FAILED", "the non-secret Machine UUID is not a credential");
+  assert.equal(t.config.admissionOf("laptop")!.publicKey, LAPTOP.publicKey, "the trusted key is unchanged");
+  assert.equal(t.config.snapshot().clients.length, 3);
+  await t.done();
+});
+
+test("a new machine enrolls as a distinct Pending Client carrying its Machine UUID; the governed Rotate Key keeps the one record", async () => {
+  const t = await setup();
+  const fresh = newIdentity();
+  const c = await t.connect({ id: OTHER_MACHINE, identity: fresh, extra: { machine_uuid: OTHER_MACHINE } });
+  await c.closed;
+  assert.equal(code(c.frames), "PENDING_APPROVAL");
+  assert.deepEqual(t.config.admissionOf(OTHER_MACHINE), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null, machineUuid: OTHER_MACHINE });
+  t.config.bindMachineUuid("laptop", MACHINE);
+  t.config.stageClientPublicKey("laptop", fresh.publicKey === LAPTOP.publicKey ? DESKTOP.publicKey : newIdentity().publicKey);
+  assert.equal(t.config.snapshot().clients.filter((x) => x.client_id === "laptop").length, 1);
+  assert.equal(t.config.admissionOf("laptop")!.machineUuid, MACHINE, "rotation keeps the machine binding");
+  await t.done();
+});
+
+test("runtime knobs apply live: a config change moves the stale threshold and the pushed Client timing without a restart or a second sweep timer", async () => {
+  const t = await setup();
+  const first = await t.connect();
+  await until(() => first.frames.length === 3, "welcome and policy");
+  assert.deepEqual((first.frames[1] as { runtime?: unknown }).runtime, clientRuntimeOf(RUNTIME_DEFAULTS));
+  const idle = t.clock.pending();
+  t.registry.start();
+  const armed = t.clock.pending();
+  t.registry.start();
+  assert.equal(armed, idle + 1, "one sweep timer");
+  assert.equal(t.clock.pending(), armed, "a second start arms nothing");
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms - 10_000);
+  assert.equal(t.registry.status()[0]!.online, true, "inside the default stale window");
+  const settled = t.clock.pending();
+  const live = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 5_000, stale_ms: 20_000 };
+  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.equal(t.registry.status()[0]!.online, false, "the shorter stale window applies at once, no restart");
+  t.clock.advance(1);
+  assert.equal(t.clock.pending(), settled, "the change added no timer");
+  t.registry.stop();
+  await t.done();
+});
+
+test("policy snapshots carry the live Client timing so a connected Client can follow a config change", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "admitted");
+  const live = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 5_000, stale_ms: 20_000, reconnect_initial_ms: 200 };
+  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(({ has_public_key, pending, ...c2 }) => c2) });
+  t.registry.syncAllPolicies();
+  await until(() => c.frames.length === 4, "second policy snapshot");
+  assert.deepEqual((c.frames[3] as { runtime?: unknown }).runtime, clientRuntimeOf(live));
   await t.done();
 });

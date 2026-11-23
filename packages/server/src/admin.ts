@@ -120,7 +120,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     if (devReload && pathname === DEV_RELOAD_PATH) return method === "GET" ? devReload(res) : send(res, 405);
     if (pathname === "/admin/api/state") {
       if (method !== "GET") return send(res, 405);
-      return send(res, 200, { setup_mode: !config.isActive(), health: buildHealth({ ...deps, uptimeSeconds }) });
+      return send(res, 200, { setup_mode: !config.isActive(), health: buildHealth({ ...deps, uptimeSeconds }), runtime: { admin_autosave_debounce_ms: config.runtimeSettings().admin_autosave_debounce_ms } });
     }
     if (pathname === "/admin/api/system" || pathname === "/admin/api/endpoints" || pathname === "/admin/api/logs") {
       if (method !== "GET") return send(res, 405);

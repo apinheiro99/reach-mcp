@@ -1,14 +1,15 @@
 // The Client's only local configuration: one private KEY=VALUE file with endpoint, client_id, Ed25519 private key and the
-// physical root anchors. On first run the Client generates its own client_id and key pair and writes them back into this
+// physical root anchors. On first run the Client takes its client_id from the Machine UUID of this OS machine and generates its key pair and writes them back into this
 // file; the private key never leaves it and the Server only ever learns the public key. The file is data, not shell: no interpolation, includes, multiline values or env fallback.
 // Operational project policy (modes, allowlists, deny rules, limits) is owned by the Server and never read here.
 // POSIX: a file readable or writable by group/others is refused, never auto-fixed. Windows: mode bits do not apply, so
 // that check is skipped and the operator must protect the file with an ACL.
-import { randomUUID, type KeyObject } from "node:crypto";
+import type { KeyObject } from "node:crypto";
 import { readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { generateIdentityKey, importPrivateKey, publicKeyFromPrivate, signChallenge } from "@reach-mcp/shared/identity";
 import { ClientId } from "@reach-mcp/shared/wire";
+import { currentMachineUuid } from "./machine-identity.ts";
 
 export const BOOTSTRAP_KEYS = ["REACH_SERVER_URL", "REACH_CLIENT_ID", "REACH_CLIENT_IDENTITY_KEY", "REACH_ROOTS"] as const;
 const IDENTITY_KEYS = ["REACH_CLIENT_ID", "REACH_CLIENT_IDENTITY_KEY"] as const;
@@ -20,6 +21,8 @@ export type BootstrapOptions = {
   createIdentity?: boolean;
   /** Overridable so the Windows branch is testable on any host. */
   platform?: NodeJS.Platform;
+  /** The native OS machine identifier the first-run client_id is derived from; tests inject one so they never depend on the host. */
+  readNativeMachineId?: () => string;
 };
 
 /** Every problem names a key or a line, never a value, so no message can carry the private key. */
@@ -39,6 +42,8 @@ export class Bootstrap {
   readonly endpoint: string;
   readonly clientId: string;
   readonly anchors: readonly string[];
+  /** The Machine UUID of this OS machine, sent in the hello for correlation only; undefined when the native id cannot be read (a legacy Client still connects). */
+  machineUuid: string | undefined;
   #identityKey: KeyObject;
   readonly #file: string | undefined;
 
@@ -173,14 +178,30 @@ export function loadBootstrap(file: string, options: BootstrapOptions = {}): Boo
   } catch {
     throw new BootstrapError(["bootstrap file is missing or unreadable"]);
   }
-  if (options.createIdentity && !permissionProblem && !IDENTITY_KEYS.some((key) => new RegExp(`^\\s*${key}\\s*=`, "m").test(text))) text = writeNewIdentity(file, text);
-  return parseBootstrap(text, options, permissionProblem, file);
+  if (options.createIdentity && !permissionProblem && !IDENTITY_KEYS.some((key) => new RegExp(`^\\s*${key}\\s*=`, "m").test(text))) text = writeNewIdentity(file, text, options);
+  const bootstrap = parseBootstrap(text, options, permissionProblem, file);
+  bootstrap.machineUuid = tryMachineUuid(options);
+  return bootstrap;
 }
 
-/** Generates this Client's id and key pair and appends them to the bootstrap file. Returns the new text. */
-function writeNewIdentity(file: string, text: string): string {
+function tryMachineUuid(options: BootstrapOptions): string | undefined {
+  try {
+    return currentMachineUuid(options.readNativeMachineId);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes this Client's id (the Machine UUID of this OS machine) and a new key pair into the bootstrap file. Returns the new text. */
+function writeNewIdentity(file: string, text: string, options: BootstrapOptions): string {
+  let machineId: string;
+  try {
+    machineId = currentMachineUuid(options.readNativeMachineId);
+  } catch {
+    throw new BootstrapError(["could not derive the Machine UUID from the native machine identifier"]);
+  }
   const generated = generateIdentityKey();
-  return writeBootstrapText(file, `${text.endsWith("\n") || text === "" ? text : `${text}\n`}REACH_CLIENT_ID=${randomUUID()}\nREACH_CLIENT_IDENTITY_KEY=${generated.privateKey}\n`);
+  return writeBootstrapText(file, `${text.endsWith("\n") || text === "" ? text : `${text}\n`}REACH_CLIENT_ID=${machineId}\nREACH_CLIENT_IDENTITY_KEY=${generated.privateKey}\n`);
 }
 
 /** The one writer of the bootstrap file: temporary file with mode 0600, then rename. Returns the text it wrote. */

@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ConfigError, hashCredential, ServerConfigStore } from "../src/index.ts";
+import { ConfigError, hashCredential, ServerConfigStore, uniqueDisplayName } from "../src/index.ts";
 import { newIdentity } from "./identity-fixture.ts";
 import { PolicySync } from "@reach-mcp/shared/wire";
+import { RUNTIME_DEFAULTS } from "@reach-mcp/shared/runtime-settings";
 
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-config-"));
 const KEY_A = newIdentity();
@@ -232,7 +233,7 @@ test("registerPendingClient: one atomic write of a new Pending Client with its p
   store.loadInitial();
   const fresh = newIdentity();
   store.registerPendingClient("newbox", fresh.publicKey, "New box");
-  assert.deepEqual(store.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null }, "the key is known in every status");
+  assert.deepEqual(store.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null, machineUuid: null }, "the key is known in every status");
   assert.equal(store.effectivePoliciesFor("newbox"), null, "Pending has no operational access");
   const stored = readFileSync(file, "utf8");
   assert.ok(stored.includes(fresh.publicKey) && !stored.includes(fresh.privateKey));
@@ -329,4 +330,68 @@ test("a config without display_name stays valid and its summary has no name", ()
   const store = new ServerConfigStore(write(valid()));
   store.loadInitial();
   assert.ok(store.clientSummaries().some((c) => c.display_name === undefined), "UUID is the fallback shown by the UI");
+});
+
+test("friendly names: a colliding hostname becomes name-1, name-2 deterministically and a free one is kept; the name is never identity", () => {
+  assert.equal(uniqueDisplayName("studio", []), "studio");
+  assert.equal(uniqueDisplayName("studio", ["studio", undefined]), "studio-1");
+  assert.equal(uniqueDisplayName("studio", ["studio", "studio-1"]), "studio-2");
+  assert.equal(uniqueDisplayName("studio", ["studio-1"]), "studio", "the base is used while it is free");
+  assert.ok(uniqueDisplayName("h".repeat(100), ["h".repeat(100)]).length <= 100);
+  const store = new ServerConfigStore(write(valid()));
+  store.loadInitial();
+  store.registerPendingClient("m1", newIdentity().publicKey, "studio");
+  store.registerPendingClient("m2", newIdentity().publicKey, "studio");
+  store.registerPendingClient("m3", newIdentity().publicKey, "studio");
+  assert.deepEqual(store.snapshot().clients.filter((c) => c.client_id.startsWith("m")).map((c) => [c.client_id, c.display_name]), [["m1", "studio"], ["m2", "studio-1"], ["m3", "studio-2"]]);
+});
+
+test("machine_uuid is server-owned: unique across Clients, kept through a human edit, absent from the editable view, and bound only once to a known Client", () => {
+  const store = new ServerConfigStore(write(valid()));
+  store.loadInitial();
+  const m = "3eb1bd43-9947-eb76-2998-e566ccc2e099";
+  store.registerPendingClient("m1", newIdentity().publicKey, "box", m);
+  assert.throws(() => store.registerPendingClient("m2", newIdentity().publicKey, "box", m), ConfigError, "one logical Client per machine");
+  assert.equal(store.admissionOf("m2"), null);
+  store.registerPendingClient("legacy", newIdentity().publicKey, "old");
+  assert.throws(() => store.bindMachineUuid("legacy", m), ConfigError, "a machine already bound to another Client");
+  store.bindMachineUuid("legacy", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+  assert.equal(store.admissionOf("legacy")!.machineUuid, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+  const view = JSON.stringify(store.editableView());
+  assert.ok(!view.includes(m), "the editable view does not carry it");
+  store.applyEdit({ clients: store.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.equal(store.admissionOf("m1")!.machineUuid, m, "a human edit keeps the binding");
+  assert.throws(() => store.bindMachineUuid("ghost", m), ConfigError);
+});
+
+test("runtime knobs: absent config yields the canonical defaults; applyEdit persists an override and a fresh store reloads it; the view exposes it and keeps server-owned fields out", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  assert.deepEqual(store.runtimeSettings(), RUNTIME_DEFAULTS, "before any config is active");
+  store.loadInitial();
+  assert.deepEqual(store.runtimeSettings(), RUNTIME_DEFAULTS, "a config without a runtime section");
+  store.registerPendingClient("m1", newIdentity().publicKey, "box", "3eb1bd43-9947-eb76-2998-e566ccc2e099");
+  const override = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 20_000, stale_ms: 70_000, admin_autosave_debounce_ms: 800 };
+  const view = store.editableView();
+  store.applyEdit({ runtime: override, clients: view.clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.deepEqual(store.runtimeSettings(), override);
+  assert.deepEqual(store.editableView().runtime, override);
+  const reloaded = new ServerConfigStore(file);
+  reloaded.loadInitial();
+  assert.deepEqual(reloaded.runtimeSettings(), override, "persisted across restart");
+  assert.equal(reloaded.admissionOf("m1")!.machineUuid, "3eb1bd43-9947-eb76-2998-e566ccc2e099", "server-owned fields survive a runtime edit");
+  assert.ok(!JSON.stringify(store.editableView()).includes("3eb1bd43"));
+  store.applyEdit({ clients: store.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  assert.deepEqual(store.runtimeSettings(), override, "an edit without a runtime section keeps the current one");
+});
+
+test("runtime knobs: invalid ranges and unknown fields fail validation and change nothing; an AI proposal can never carry them", () => {
+  const store = new ServerConfigStore(write(valid()));
+  store.loadInitial();
+  const clients = store.editableView().clients.map(({ has_public_key, pending, ...c }) => c);
+  for (const runtime of [{ heartbeat_interval_ms: 5 }, { stale_ms: 1 }, { nope: 1 }, { heartbeat_interval_ms: 60_000, stale_ms: 60_000 }]) {
+    assert.throws(() => store.applyEdit({ runtime, clients }), ConfigError);
+  }
+  assert.deepEqual(store.runtimeSettings(), RUNTIME_DEFAULTS);
+  assert.throws(() => store.validateEdit({ runtime: { ...RUNTIME_DEFAULTS, stale_ms: 100_000 }, clients }), ConfigError, "proposals are strict: no runtime field");
 });

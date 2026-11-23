@@ -602,3 +602,22 @@ test("transient loss and Pending/Disabled refusals never tell the owner of a ter
   await srv.close();
   assert.deepEqual(terminal, []);
 });
+
+test("live runtime from the Server: the welcome and a later policy snapshot replace the heartbeat and backoff, re-arming one heartbeat and never two", async () => {
+  const live = { heartbeat_interval_ms: 7_000, stale_ms: 20_000, reconnect_initial_ms: 250, reconnect_max_ms: 5_000, reconnect_jitter: 0 };
+  const later = { ...live, heartbeat_interval_ms: 9_000 };
+  const srv = await server((s) => s.once("message", () => { s.send(JSON.stringify({ kind: "welcome", server_build: "srv-1", compatible: true, runtime: live })); s.send(JSON.stringify({ ...policyFrame(), runtime: later })); }));
+  const c = clock();
+  const t = new ClientTransport(boot(srv.port), opts(c, { handler: new ClientDispatcher({ anchors: [root] }) }));
+  try {
+    t.start();
+    await until(() => t.snapshot().state === "connected" && c.pending().length === 1 && c.pending()[0] === 9_000, "the later heartbeat interval replaced the first");
+    assert.deepEqual(c.pending(), [9_000], "exactly one heartbeat timer");
+    for (const s of srv.sockets) s.terminate();
+    await until(() => t.snapshot().state === "backoff", "backoff after loss");
+    assert.deepEqual(c.pending(), [250], "the next retry uses the Server's reconnect_initial_ms with no jitter");
+  } finally {
+    t.stop();
+    await srv.close();
+  }
+});

@@ -29,7 +29,7 @@ export function buildHealth({ config, connections, serverBuild, repositoryCommit
   const sessions = active
     ? config.snapshot().clients.map(({ client_id, enabled }) => {
         const s = live.get(client_id);
-        return { client_id, enabled, online: s?.online ?? false, client_build: s?.client_build ?? null, last_seen: s?.last_seen ?? null };
+        return { client_id, enabled, online: s?.online ?? false, client_build: s?.client_build ?? connections.lastBuild(client_id), last_seen: s?.last_seen ?? null };
       })
     : [];
   return {

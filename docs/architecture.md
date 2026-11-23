@@ -684,17 +684,38 @@ Targeted `edit_file`-style mutation remains the preferred mechanism when safe ma
 
 Each Client has:
 
-- a unique `client_id`;
+- a unique `client_id`, which on first run is the **Machine UUID** of its OS machine (below);
 - one Ed25519 keypair generated locally by that Client;
 - one private key that never leaves the Client machine;
 - one public key stored by the Server as the Client authentication identity.
+
+### Runtime configuration ownership
+
+Mutable runtime behavior (heartbeat, stale, handshake and request timeouts, reconnect backoff, Admin autosave debounce) is owned by the `runtime` section of the Server config, with its defaults, bounds and live-apply behavior declared once in `packages/shared/src/runtime-settings.ts`. The Server reads it at the moment of use, pushes the Client-side values with the welcome and every policy snapshot, and the Admin UI reads the debounce from the state API. A repository guard (`tests/runtime-guard.test.ts`) fails when a declared default is written as a literal elsewhere. Details and the knob table: `docs/configuration.md`.
+
+### Machine UUID, identity versus authentication
+
+The Machine UUID is one stable, **non-secret, application-neutral** identifier of an OS machine, so REACH, GitGate, RAG, Bridge and any future orchestrator derive the same value for the same machine. The specification carries no application label or salt:
+
+1. native id: Linux `/etc/machine-id`, or Windows SMBIOS `Win32_ComputerSystemProduct.UUID`;
+2. canonical form: the id trimmed, surrounding `{ }` and every `-` removed, lowercased; it must be exactly 32 hex digits, otherwise the derivation fails closed;
+3. digest: SHA-256 of the 32 ASCII bytes of the canonical form; keep the first 16 bytes;
+4. representation: those 16 bytes as lowercase hex in `8-4-4-4-12` groups; no UUID version or variant bits are set.
+
+Test vector: `0123456789abcdef0123456789abcdef` (also `01234567-89AB-CDEF-0123-456789ABCDEF` and `{01234567-89ab-cdef-0123-456789abcdef}`) gives `3eb1bd43-9947-eb76-2998-e566ccc2e099`. The owner is `machineUuid` in `packages/shared/src/identity.ts`; only `packages/client/src/machine-identity.ts` touches the OS, with no hostname, MAC or random fallback.
+
+It identifies and never authenticates: Ed25519 challenge-response stays the only proof, on every connection. The Client sends `machine_uuid` in the hello (unsigned, correlation only). A first-run Client takes its `client_id` from it, so a reinstall of a registered machine cannot create a second logical Client: the Server refuses a new `client_id` that reports an already registered Machine UUID (`AUTH_FAILED`, no record written). The Server stores `machine_uuid` on the Client record as a server-owned field, unique across Clients, never part of the human edit.
+
+Compatibility for Clients registered before this change (random `client_id`, no `machine_uuid`): the record keeps its `client_id`, status and projects. The first connection that proves its existing key and reports a Machine UUID binds it once to that record; from then on a reinstall of that machine is reconciled to the same logical Client, and the same `client_id` reported from another machine is refused. Because the Machine UUID is not secret it never replaces a key: a fresh key under a known `client_id`, or under a registered Machine UUID, is refused until the governed Rotate Key flow (proven with the current key) changes it, and rotation preserves Pending/Enabled. A different Machine UUID is a different Client and follows normal Pending admission. Known limit: a legacy record that has never reconnected since this change has no bound Machine UUID, so a reinstall before its first reconnect enrolls as a second Pending Client; recovery of a machine whose key was lost is an operator action (Story #110 lifecycle).
+
+The hostname is only the suggested friendly name: the Server keeps the first free of `name`, `name-1`, `name-2`, ...; it is never identity. The Client build from the hello is retained by the Server after the session ends and shown in health.
 
 ### Zero-touch enrollment
 
 Normal enrollment is zero-touch up to registration when an authorized agent can access the target machine and the machine can reach the Server service plane:
 
 1. the agent downloads the correct platform Client artifact from the Server and verifies the release manifest/hash;
-2. the Client generates its `client_id` and Ed25519 keypair locally;
+2. the Client derives its `client_id` (the Machine UUID) from the native OS machine identifier and generates its Ed25519 keypair locally;
 3. the Client keeps the private key in protected local state and sends only its public key plus non-secret enrollment metadata and proof of private-key possession to the Server;
 4. the Server stores the Client identity/public key as **Pending**; Pending Clients have no operational access;
 5. a human explicitly selects **Enable** in the Admin UI/API;
