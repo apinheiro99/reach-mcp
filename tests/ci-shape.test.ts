@@ -129,3 +129,69 @@ test("production delivery: jobs run on the docker-prod runner, call the controll
   assert.doesNotMatch(ci, /DEPLOY_[A-Z_]+|remote-deploy|SSH_KEY|known_hosts/, "no SSH transport or DEPLOY_* target variable in the production path");
   assert.doesNotMatch(ci, /docker (build|compose|push|run)|ssh |scp /, "no deployment logic in the YAML");
 });
+
+const gitgateConfig = JSON.parse(readFileSync(new URL("../.gitgate.json", import.meta.url), "utf8")) as Record<string, unknown>;
+const publishScript = readFileSync(new URL("../scripts/git-ci/publish-github.ts", import.meta.url), "utf8");
+
+test("GitHub publication is CI-owned: a publish stage between release and deploy, default-branch push only", () => {
+  const stages = ci.slice(ci.indexOf("stages:"), ci.indexOf("default:"));
+  assert.deepEqual([...stages.matchAll(/^ {2}- (\w+)$/gm)].map((m) => m[1]), ["validate", "tag", "release", "publish", "deploy"]);
+  const b = block("Publish GitHub");
+  assert.match(b, /stage: publish/);
+  assert.match(b, /\$CI_COMMIT_TAG'\n\s+when: never/, "never for a tag pipeline");
+  assert.match(b, /\$CI_PIPELINE_SOURCE == "push" && \$CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH'\n/);
+  assert.doesNotMatch(b, /feature\/|when: manual|allow_failure/, "no Task branch, no button, always blocking");
+  assert.match(b, /tags:\n\s+- docker-prod/, "runs on the private production runner that holds the host-local credentials");
+  assert.match(b, /GIT_DEPTH: "0"/, "a full clone so the whole history can be pushed");
+  assert.match(b, /node scripts\/git-ci\/publish-github\.ts/, "one repository-owned implementation");
+  assert.match(b, /before_script: \[\]/);
+});
+
+test("publication consumes the exact validated identity: green tag job plus the same-pipeline release, no artifacts", () => {
+  const b = block("Publish GitHub");
+  assert.match(b, /- "ci-tag-green"/);
+  assert.match(b, /- job: "Build Release"\n\s+artifacts: false/);
+  assert.doesNotMatch(b, /ci-tag-red/, "a red result never publishes");
+});
+
+test("a failed publication blocks Deploy Production; Deploy Candidate stays independent of GitHub", () => {
+  const production = block("Deploy Production");
+  assert.match(production, /needs:\n\s+- job: "Build Release"\n\s+artifacts: true\n\s+- job: "Publish GitHub"\n\s+artifacts: false/);
+  assert.doesNotMatch(block(".deploy-release"), /Publish GitHub/, "the shared template must not reference a job Task branches do not have");
+  assert.doesNotMatch(block("Deploy Candidate"), /Publish GitHub/);
+  assert.doesNotMatch(block("Rollback Production"), /Publish GitHub/);
+});
+
+test("the publish script: exact SHA and tag, lease-protected main, private-root credentials, nothing hardcoded", () => {
+  assert.match(publishScript, /--force-with-lease=\$\{lease\}/);
+  assert.doesNotMatch(publishScript, /"--force"|"-f"|--force(?!-with-lease)/, "never a plain force");
+  assert.match(publishScript, /\$\{sha\}:\$\{MAIN\}/, "the tested commit goes to main");
+  assert.match(publishScript, /refs\/tags\/\$\{tag\}:refs\/tags\/\$\{tag\}/, "the green tag goes to the same tag ref");
+  assert.match(publishScript, /GREEN_TAG = \/\^v\\d\{4\}\\\.\\d\{2\}\\\.\\d\{6\}\$\//, "only the green grammar, never -fail");
+  assert.match(publishScript, /REACH_PRIVATE_PATH/);
+  assert.match(publishScript, /IdentitiesOnly=yes/);
+  assert.doesNotMatch(publishScript, /StrictHostKeyChecking=no|UserKnownHostsFile|sslVerify|GIT_SSL_NO_VERIFY|--insecure/i, "verification is never turned off");
+  assert.doesNotMatch(publishScript, /github\.com[:/][A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.git/, "no owner/repository literal");
+  assert.doesNotMatch(publishScript, new RegExp(["192", "168"].join("\\.") + "\\.|-----BEGIN"), "no private network literal or key material");
+  assert.doesNotMatch(publishScript, /console\.(log|error)\([^)]*(key|repository)/i, "key and remote coordinates are never printed");
+  assert.doesNotMatch(ci, /github\.com|REACH_GITHUB_|credentials\/github/i, "the YAML carries no GitHub coordinate");
+});
+
+test("GitGate is governance-only for REACH: no mirror or publication, branch and CI governance kept", () => {
+  assert.equal("mirror_remotes" in gitgateConfig, false);
+  assert.deepEqual(gitgateConfig["publish_on"], [], "GitGate requires the key; empty means it publishes nothing");
+  assert.equal(gitgateConfig["integration_branch"], "main");
+  assert.deepEqual(gitgateConfig["levels"], ["sprint", "story", "task"]);
+  assert.deepEqual(gitgateConfig["ci_gate"], { enabled: true });
+  assert.ok(gitgateConfig["branch_prefix"]);
+});
+
+test("jobs that run a real Client get the CI-only machine id prerequisite from one shared template, and no other job does", () => {
+  const tpl = block(".real-client-tests");
+  assert.match(tpl, /- npm ci\n\s+- node scripts\/git-ci\/ensure-machine-id\.ts/);
+  for (const job of ["Automated Tests", "Release Check"]) assert.match(block(job), /- \.real-client-tests/, `${job} runs real Clients`);
+  for (const job of ["Public Release Check", "Lint", "Type Check", "Package Check"]) assert.doesNotMatch(block(job), /real-client-tests/);
+  assert.doesNotMatch(ci, /machine-id\.ts[\s\S]*machine-id\.ts/, "the prerequisite is wired once, not copied per job");
+  const prod = readFileSync(new URL("../packages/client/src/machine-identity.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(prod, /process\.env|hostname|randomUUID|CI_MACHINE_ID/, "production resolution has no environment, hostname or CI fallback");
+});

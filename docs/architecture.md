@@ -1090,6 +1090,8 @@ REACH CI/runtime/release must not require GitGate, Atlas, SCOPE or another exter
 
 Tag/release jobs are self-contained in the REACH repository and may use direct `git tag` + push through the GitLab CI job token or equivalent repository-native mechanism. SCOPE/GitGate governance may guide development process, but it is not a runtime/build/tagging dependency.
 
+Public GitHub publication is also CI-owned. After a green default-branch pipeline, the `Publish GitHub` job (stage `publish`, between `release` and `deploy`) pushes exactly `CI_COMMIT_SHA` to GitHub `main` and the same green pipeline tag, using credentials and GitHub coordinates read only from the host-local private root (`REACH_PRIVATE_PATH`). `main` is updated with `--force-with-lease` bound to the remote `main` observed just before the push (an empty expectation on first publication), so an unexpected remote advance fails the job instead of being overwritten. Tag, Task-branch and failed pipelines never publish, and a failed publication blocks `Deploy Production`. GitGate is governance-only for REACH (branches, commits, merges, CI gate): `.gitgate.json` declares no mirror or publication.
+
 Do not introduce cosmetic lint bureaucracy.
 
 CD should mature alongside deployable product slices rather than being postponed until the application is "finished".

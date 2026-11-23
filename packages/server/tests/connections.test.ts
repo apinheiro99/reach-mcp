@@ -8,6 +8,14 @@ import WebSocket, { WebSocketServer } from "ws";
 import { ClientConnectionRegistry, hashCredential, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
 import { DESKTOP, LAPTOP, newIdentity, signedHello, type TestIdentity } from "./identity-fixture.ts";
 
+/** An editable view's client without the two read-only facts the edit schema does not accept. */
+const editableClient = (view: object): Record<string, unknown> => {
+  const client: Record<string, unknown> = { ...view };
+  delete client["has_public_key"];
+  delete client["pending"];
+  return client;
+};
+
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-conn-"));
 const configFile = path.join(dir, "config.json");
 const baseConfig = () => ({
@@ -545,7 +553,7 @@ test("runtime knobs apply live: a config change moves the stale threshold and th
   assert.equal(t.registry.status()[0]!.online, true, "inside the default stale window");
   const settled = t.clock.pending();
   const live = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 5_000, stale_ms: 20_000 };
-  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(editableClient) });
   assert.equal(t.registry.status()[0]!.online, false, "the shorter stale window applies at once, no restart");
   t.clock.advance(1);
   assert.equal(t.clock.pending(), settled, "the change added no timer");
@@ -558,7 +566,7 @@ test("policy snapshots carry the live Client timing so a connected Client can fo
   const c = await t.connect();
   await until(() => c.frames.length === 3, "admitted");
   const live = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 5_000, stale_ms: 20_000, reconnect_initial_ms: 200 };
-  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(({ has_public_key, pending, ...c2 }) => c2) });
+  t.config.applyEdit({ runtime: live, clients: t.config.editableView().clients.map(editableClient) });
   t.registry.syncAllPolicies();
   await until(() => c.frames.length === 4, "second policy snapshot");
   assert.deepEqual((c.frames[3] as { runtime?: unknown }).runtime, clientRuntimeOf(live));

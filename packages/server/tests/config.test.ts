@@ -8,6 +8,14 @@ import { newIdentity } from "./identity-fixture.ts";
 import { PolicySync } from "@reach-mcp/shared/wire";
 import { RUNTIME_DEFAULTS } from "@reach-mcp/shared/runtime-settings";
 
+/** An editable view's client without the two read-only facts the edit schema does not accept. */
+const editableClient = (view: object): Record<string, unknown> => {
+  const client: Record<string, unknown> = { ...view };
+  delete client["has_public_key"];
+  delete client["pending"];
+  return client;
+};
+
 const dir = mkdtempSync(path.join(tmpdir(), "reach-server-config-"));
 const KEY_A = newIdentity();
 const KEY_B = newIdentity();
@@ -359,7 +367,7 @@ test("machine_uuid is server-owned: unique across Clients, kept through a human 
   assert.equal(store.admissionOf("legacy")!.machineUuid, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
   const view = JSON.stringify(store.editableView());
   assert.ok(!view.includes(m), "the editable view does not carry it");
-  store.applyEdit({ clients: store.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  store.applyEdit({ clients: store.editableView().clients.map(editableClient) });
   assert.equal(store.admissionOf("m1")!.machineUuid, m, "a human edit keeps the binding");
   assert.throws(() => store.bindMachineUuid("ghost", m), ConfigError);
 });
@@ -373,7 +381,7 @@ test("runtime knobs: absent config yields the canonical defaults; applyEdit pers
   store.registerPendingClient("m1", newIdentity().publicKey, "box", "3eb1bd43-9947-eb76-2998-e566ccc2e099");
   const override = { ...RUNTIME_DEFAULTS, heartbeat_interval_ms: 20_000, stale_ms: 70_000, admin_autosave_debounce_ms: 800 };
   const view = store.editableView();
-  store.applyEdit({ runtime: override, clients: view.clients.map(({ has_public_key, pending, ...c }) => c) });
+  store.applyEdit({ runtime: override, clients: view.clients.map(editableClient) });
   assert.deepEqual(store.runtimeSettings(), override);
   assert.deepEqual(store.editableView().runtime, override);
   const reloaded = new ServerConfigStore(file);
@@ -381,14 +389,14 @@ test("runtime knobs: absent config yields the canonical defaults; applyEdit pers
   assert.deepEqual(reloaded.runtimeSettings(), override, "persisted across restart");
   assert.equal(reloaded.admissionOf("m1")!.machineUuid, "3eb1bd43-9947-eb76-2998-e566ccc2e099", "server-owned fields survive a runtime edit");
   assert.ok(!JSON.stringify(store.editableView()).includes("3eb1bd43"));
-  store.applyEdit({ clients: store.editableView().clients.map(({ has_public_key, pending, ...c }) => c) });
+  store.applyEdit({ clients: store.editableView().clients.map(editableClient) });
   assert.deepEqual(store.runtimeSettings(), override, "an edit without a runtime section keeps the current one");
 });
 
 test("runtime knobs: invalid ranges and unknown fields fail validation and change nothing; an AI proposal can never carry them", () => {
   const store = new ServerConfigStore(write(valid()));
   store.loadInitial();
-  const clients = store.editableView().clients.map(({ has_public_key, pending, ...c }) => c);
+  const clients = store.editableView().clients.map(editableClient);
   for (const runtime of [{ heartbeat_interval_ms: 5 }, { stale_ms: 1 }, { nope: 1 }, { heartbeat_interval_ms: 60_000, stale_ms: 60_000 }]) {
     assert.throws(() => store.applyEdit({ runtime, clients }), ConfigError);
   }

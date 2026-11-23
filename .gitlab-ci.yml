@@ -3,6 +3,7 @@
 # The tag stage is self-contained and records the aggregate result directly in this repository.
 # Tag contract: vYYYY.MM.NNNNNN[-fail].
 # GitLab requirement: allow CI_JOB_TOKEN to push to this same repository.
+# GitHub publication: after a green default-branch pipeline, the "Publish GitHub" job pushes the exact tested commit and its green tag using host-local private credentials (REACH_PRIVATE_PATH); a publication failure blocks Deploy Production.
 # Production delivery: the release is built only from a passing default-branch or Task-branch pipeline. The default branch deploys automatically after it; a Task branch deploys by itself
 # as Deploy Candidate, for the exact pipeline SHA (live acceptance before merge); rollback stays manual; the logic lives in
 # deploy/prod/deploy.ts, run locally by the Instance Runner tagged docker-prod on the PROD host (no SSH, no target variables).
@@ -12,6 +13,7 @@ stages:
   - validate
   - tag
   - release
+  - publish
   - deploy
 
 default:
@@ -26,6 +28,12 @@ default:
     - if: '$CI_COMMIT_TAG'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push"'
+
+# Jobs that start a real Client need a native Linux machine id; the one CI-only helper provides it (production resolution is untouched).
+.real-client-tests:
+  before_script:
+    - npm ci
+    - node scripts/git-ci/ensure-machine-id.ts
 
 .validation-summary:
   artifacts:
@@ -61,6 +69,7 @@ default:
 "Automated Tests":
   extends:
     - .branch-push-only
+    - .real-client-tests
     - .validation-summary
   stage: validate
   script:
@@ -77,6 +86,7 @@ default:
 "Release Check":
   extends:
     - .branch-push-only
+    - .real-client-tests
     - .validation-summary
   stage: validate
   script:
@@ -144,6 +154,26 @@ ci-tag-red:
     paths:
       - release/
 
+# Publication of the exact tested commit and its green tag: default-branch push only, never a tag pipeline or a Task branch. Credentials live only under the host-local private root.
+"Publish GitHub":
+  stage: publish
+  tags:
+    - docker-prod
+  variables:
+    GIT_DEPTH: "0"
+  before_script: []
+  interruptible: false
+  needs:
+    - "ci-tag-green"
+    - job: "Build Release"
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - node scripts/git-ci/publish-github.ts
+
 .deploy-job:
   stage: deploy
   before_script: []
@@ -171,6 +201,12 @@ ci-tag-red:
 
 "Deploy Production":
   extends: .deploy-release
+  # Deployment follows a successful publication of the same pipeline.
+  needs:
+    - job: "Build Release"
+      artifacts: true
+    - job: "Publish GitHub"
+      artifacts: false
   rules:
     - if: '$CI_COMMIT_TAG'
       when: never
