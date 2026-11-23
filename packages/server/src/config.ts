@@ -7,6 +7,7 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { hashCredential } from "./auth.ts";
 import { publicKeyFingerprint } from "@reach-mcp/shared/identity";
+import { LOG_LEVELS } from "./logging.ts";
 import { RUNTIME_DEFAULTS, RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
 import { ClientId, EffectiveProjectPolicy, MachineUuid, PublicKey } from "@reach-mcp/shared/wire";
 
@@ -37,10 +38,12 @@ const ClientEntry = z.strictObject({
   projects: z.array(EffectiveProjectPolicy).max(200),
 });
 
-/** Size and retention of the operational log and the audit trail; their one owner is this config. */
-export const LoggingSettings = z.strictObject({ max_bytes: z.int().min(1024).max(1_073_741_824), retention_days: z.int().min(1).max(365) });
+/** Size, retention and the operational threshold of the logs; their one owner is this config. The audit trail ignores the level. */
+export const LoggingSettings = z.strictObject({ max_bytes: z.int().min(1024).max(1_073_741_824), retention_days: z.int().min(1).max(365), level: z.enum(LOG_LEVELS).default("RUNNING") });
 export type LoggingSettings = z.infer<typeof LoggingSettings>;
-export const DEFAULT_LOGGING: LoggingSettings = { max_bytes: 10 * 1024 * 1024, retention_days: 5 };
+/** An edit may change any one logging field; the others keep their current value (the level has a schema default, so it is spelled out). */
+const LoggingEdit = LoggingSettings.omit({ level: true }).partial().extend({ level: z.enum(LOG_LEVELS).optional() });
+export const DEFAULT_LOGGING: LoggingSettings = { max_bytes: 10 * 1024 * 1024, retention_days: 5, level: "RUNNING" };
 
 export const ServerConfig = z
   .strictObject({
@@ -70,6 +73,11 @@ export const ServerConfig = z
       client.projects.forEach((project, p) => {
         if (projects.has(project.project_id)) ctx.addIssue({ code: "custom", path: ["clients", c, "projects", p, "project_id"], message: "duplicate project_id within a client" });
         projects.add(project.project_id);
+        // One effective explicit rule per glob: the same glob allowed and denied would otherwise depend on evaluation order.
+        const denied = new Set(project.deny_globs ?? []);
+        (project.allow_globs ?? []).forEach((glob, g) => {
+          if (denied.has(glob)) ctx.addIssue({ code: "custom", path: ["clients", c, "projects", p, "allow_globs", g], message: "conflicting explicit rules: the same glob is allowed and denied" });
+        });
       });
     });
   });
@@ -78,7 +86,7 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 /** What a human edits through the admin UI: the Clients without public keys, and a plaintext MCP bearer only when it changes. */
 const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
-  logging: LoggingSettings.optional(),
+  logging: LoggingEdit.optional(),
   runtime: RuntimeSettings.optional(),
   clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, pending: true, machine_uuid: true })).max(500),
 });
@@ -107,7 +115,7 @@ export type PublicClient = { client_id: string; display_name?: string; enabled: 
 /** The one status of a Client: Pending (enrolled, never decided), Enabled or Disabled (a human decision). */
 export type ClientStatus = "pending" | "enabled" | "disabled";
 /** What the admin Clients screen reads of one Client: identity and authorization, never the key itself. */
-export type ClientSummary = { client_id: string; display_name?: string; status: ClientStatus; fingerprint: string | null; projects: number };
+export type ClientSummary = { client_id: string; display_name?: string; machine_uuid?: string; status: ClientStatus; fingerprint: string | null; projects: number };
 /** What admission needs: whether the id is registered, its authorization status and its stored public key, whatever the status. */
 export type ClientAdmission = { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null; machineUuid: string | null } | null;
 /** The editable view of one Client: whether it is enrolled (has a public key), never the key itself. */
@@ -179,7 +187,7 @@ export class ServerConfigStore {
     if (!parsed.success) throw new ConfigError(problemsOf(parsed.error));
     const mcp = parsed.data.mcp_bearer ? hashCredential(parsed.data.mcp_bearer) : this.#active?.mcp_bearer_sha256;
     if (!mcp) throw new ConfigError(["mcp_bearer: required for the first configuration"]);
-    this.activateCandidate(this.#editCandidate(parsed.data.clients, mcp, parsed.data.logging ?? this.#active?.logging, parsed.data.runtime ?? this.#active?.runtime));
+    this.activateCandidate(this.#editCandidate(parsed.data.clients, mcp, parsed.data.logging === undefined ? this.#active?.logging : { ...(this.#active?.logging ?? DEFAULT_LOGGING), ...parsed.data.logging }, parsed.data.runtime ?? this.#active?.runtime));
   }
 
   /** Dry run of an AI proposal against the active configuration: the normalized secret-free edit, or ConfigError. Nothing changes. */
@@ -227,7 +235,7 @@ export class ServerConfigStore {
 
   /** Every Client as the Clients screen shows it: status and fingerprint, never the key. */
   clientSummaries(): ClientSummary[] {
-    return this.#requireActive().clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), status: statusOf(c), fingerprint: c.public_key ? publicKeyFingerprint(c.public_key) : null, projects: c.projects.length }));
+    return this.#requireActive().clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), ...(c.machine_uuid ? { machine_uuid: c.machine_uuid } : {}), status: statusOf(c), fingerprint: c.public_key ? publicKeyFingerprint(c.public_key) : null, projects: c.projects.length }));
   }
 
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */

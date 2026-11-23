@@ -1,5 +1,8 @@
 // Path policy: lexical normalisation (Linux and Windows forms), the deny list and root containment. Pure functions,
-// so the Windows rules are testable on any host. The built-in deny rules are a floor: extra globs only add to them.
+// so the Windows rules are testable on any host. Precedence (the PO's ACL model, evaluated here and nowhere else):
+//   immutable safety deny > explicit deny > explicit allow > inherited sensitive deny > inherited allow (the default).
+// Explicit rules are the project's own `deny_globs` / `allow_globs`; the sensitive defaults (secrets, keys, databases, `.env`) are
+// inherited denies a human may override with an explicit allow; only the internal `.git` store is an immutable safety deny.
 import path from "node:path";
 import { FsError } from "./errors.ts";
 
@@ -9,9 +12,11 @@ export const HOST_PLATFORM: PathPlatform = process.platform === "win32" ? "win32
 /** Directories never entered by recursive tools (noise, not secrets). Still readable when asked for by path. */
 export const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "__pycache__", ".cache", "dist", "build", "coverage"]);
 
-const BUILTIN_DENY_GLOBS = [
-  ".git/**",
-  "**/.git/**",
+/** Internal protected paths: no Access Rule can open them. */
+const IMMUTABLE_DENY_GLOBS = [".git/**", "**/.git/**"];
+
+/** Sensitive defaults: inherited denies, overridable only by an explicit allow rule. */
+const INHERITED_DENY_GLOBS = [
   "**/*.pem",
   "**/*.key",
   "**/*.p12",
@@ -85,16 +90,25 @@ export function globToRegExp(glob: string): RegExp {
 
 export type PathPolicy = { isDenied(relPath: string): boolean; denyGlobs: string[] };
 
-export function buildPathPolicy(extraDenyGlobs: string[] = []): PathPolicy {
-  const base = [...BUILTIN_DENY_GLOBS, ...extraDenyGlobs].map(globToRegExp);
+/**
+ * `extraDenyGlobs` are the explicit deny rules and `allowGlobs` the explicit allow rules of the project. `denyGlobs` lists every deny
+ * pattern that can apply (it ignores allow rules), so listings built from it stay conservative.
+ */
+export function buildPathPolicy(extraDenyGlobs: string[] = [], allowGlobs: string[] = []): PathPolicy {
+  const immutable = IMMUTABLE_DENY_GLOBS.map(globToRegExp);
+  const explicitDeny = extraDenyGlobs.map(globToRegExp);
+  const explicitAllow = allowGlobs.map(globToRegExp);
+  const inherited = INHERITED_DENY_GLOBS.map(globToRegExp);
   const env = ENV_GLOBS.map(globToRegExp);
+  // `dir/` is tested too so a `**/.ssh/**` rule also denies the directory entry itself, not only its children.
+  const matches = (patterns: RegExp[], relPath: string): boolean => patterns.some((re) => re.test(relPath) || re.test(`${relPath}/`));
   return {
-    denyGlobs: [...BUILTIN_DENY_GLOBS, ...ENV_GLOBS, ...extraDenyGlobs],
+    denyGlobs: [...IMMUTABLE_DENY_GLOBS, ...INHERITED_DENY_GLOBS, ...ENV_GLOBS, ...extraDenyGlobs],
     isDenied(relPath: string): boolean {
+      if (matches(immutable, relPath) || matches(explicitDeny, relPath)) return true;
+      if (matches(explicitAllow, relPath)) return false;
       const basename = relPath.slice(relPath.lastIndexOf("/") + 1);
-      const patterns = ENV_TEMPLATE_BASENAME.test(basename) ? base : [...base, ...env];
-      // `dir/` is tested too so a `**/.ssh/**` rule also denies the directory entry itself, not only its children.
-      return patterns.some((re) => re.test(relPath) || re.test(`${relPath}/`));
+      return matches(ENV_TEMPLATE_BASENAME.test(basename) ? inherited : [...inherited, ...env], relPath);
     },
   };
 }

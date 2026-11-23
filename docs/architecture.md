@@ -689,6 +689,10 @@ Each Client has:
 - one private key that never leaves the Client machine;
 - one public key stored by the Server as the Client authentication identity.
 
+### Access Rules and granular approval
+
+The path evaluator is the one owner of Access Rule precedence (immutable safety deny, explicit deny, explicit allow, inherited sensitive deny, inherited allow); sensitive defaults such as `.env` are inherited denies a human can override with an explicit allow, only the internal `.git` store is immutable. MCP-proposed changes are reviewed item by item through the Server (`ProposalStore`); direct Admin edits are already human-authorized. See `docs/configuration.md`.
+
 ### Runtime configuration ownership
 
 Mutable runtime behavior (heartbeat, stale, handshake and request timeouts, reconnect backoff, Admin autosave debounce) is owned by the `runtime` section of the Server config, with its defaults, bounds and live-apply behavior declared once in `packages/shared/src/runtime-settings.ts`. The Server reads it at the moment of use, pushes the Client-side values with the welcome and every policy snapshot, and the Admin UI reads the debounce from the state API. A repository guard (`tests/runtime-guard.test.ts`) fails when a declared default is written as a literal elsewhere. Details and the knob table: `docs/configuration.md`.
@@ -937,6 +941,8 @@ Operational logs use one rotation mechanism with two triggers:
 Default retention: **5 days**.
 
 Retention/size settings are configurable in Web UI.
+
+Implemented (Task #138): the six levels are DEBUG, INFO, RUNNING, WARNING, ERROR, CRITICAL, in that order, with RUNNING the default threshold; the threshold lives in the `logging` section of the Server config with the size and retention, and a change applies to the next line without a restart. Lifecycle events (server started, Client connected/disconnected, key promoted, configuration and proposal decisions) are RUNNING; per-request completions are INFO. Files are named by date, `reach-YYYY-MM-DD.log` and `audit-YYYY-MM-DD.log`; a line that would pass the size limit goes to the next same-day segment (`.1`, `.2`, ...), and all segments of a date older than the retention are deleted together. Every operational and audit text passes one redaction function (`packages/server/src/redact.ts`) immediately before it is written, at every level, which replaces passwords, bearer/basic credentials, URL credentials, API keys, token and secret assignments (including `.env` style) and private-key blocks with `[REDACTED]` and keeps the rest of the text. The audit trail is never filtered by the operational level. Connection lines carry `machine_uuid`, `display_name` and `client_build` when known.
 
 ---
 

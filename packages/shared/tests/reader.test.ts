@@ -172,3 +172,18 @@ test("the reader rejects a root that is not a directory and invalid limits", () 
   assert.throws(() => new FilesystemReader({ root: path.join(root, "README.md") }));
   assert.throws(() => new FilesystemReader({ root, limits: { maxFileBytes: 0 } }));
 });
+
+test("an explicit allow rule opens a sensitive default for the reader, while root escapes and .git stay refused", () => {
+  const { root: dir } = makeFixture();
+  writeFileSync(path.join(dir, ".env"), "PORT=3000\n");
+  writeFileSync(path.join(dir, ".env.production"), "PORT=4000\n");
+  const closed = new FilesystemReader({ root: dir, limits: LIMITS });
+  const open = new FilesystemReader({ root: dir, limits: LIMITS, extraAllowGlobs: [".env", ".git/**"] });
+  assert.equal(code(() => closed.read(".env")), "DENIED");
+  assert.match(open.read(".env").content, /PORT=3000/);
+  assert.equal(code(() => open.read(".env.production")), "DENIED", "only the allowed path opens");
+  assert.equal(code(() => open.read(".git/config")), "DENIED", "the internal .git store is not an Access Rule matter");
+  assert.equal(code(() => open.read("../outside.txt")), "OUTSIDE_ROOT", "root confinement is not an Access Rule matter");
+  const denied = new FilesystemReader({ root: dir, limits: LIMITS, extraAllowGlobs: [".env"], extraDenyGlobs: [".env"] });
+  assert.equal(code(() => denied.read(".env")), "DENIED", "an explicit deny beats an explicit allow");
+});

@@ -40,6 +40,8 @@ export const EffectiveProjectPolicy = z.strictObject({
   mode: z.enum(["read_only", "read_write"]),
   writable_globs: globs.optional(),
   deny_globs: globs.optional(),
+  /** Explicit allow rules: they open a path the inherited sensitive defaults would deny; an explicit deny and the immutable safety denies still win. */
+  allow_globs: globs.optional(),
   limits: EffectiveLimits.optional(),
 });
 export type EffectiveProjectPolicy = z.infer<typeof EffectiveProjectPolicy>;

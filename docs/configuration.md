@@ -72,6 +72,20 @@ Every mutable runtime value has ONE owner: the `runtime` section of the Server c
 - No knob is restart-only today; `restart_required` in the table is the place a structural value must be declared so it is never cached silently.
 - Logging size and retention stay in the existing `logging` section of the same owner and already apply live through the writer's settings callback; an operational log level is not part of this change.
 
+## Access Rules: precedence, sensitive defaults and approval
+
+A project's Access Rules are its explicit rules: `deny_globs`, `allow_globs` and the write rules (`writable_globs`, `mode`). One evaluator (`buildPathPolicy` in `packages/shared/src/filesystem/path-policy.ts`) decides every path, in this order:
+
+1. **immutable safety deny**: the internal `.git` store. No Access Rule opens it. Root confinement, traversal and symlink refusal are outside this ACL layer and never overridable either;
+2. **explicit deny** (`deny_globs`);
+3. **explicit allow** (`allow_globs`);
+4. **inherited sensitive deny**: the built-in defaults (private keys, credentials, secrets, tokens, databases, `.env` family; `.env.example`-style templates are not denied);
+5. **inherited allow**: everything else inside the root.
+
+So `.env` is denied with no rule, and a human can open exactly `.env` with an explicit allow while `.env.production` stays denied; an explicit deny still beats an explicit allow. One effective explicit rule per glob: the same glob in `allow_globs` and `deny_globs` of one project is refused at validation, never resolved by list order. Writing additionally needs `mode`/`writable_globs`; an allow rule only lifts a read/write denial, it does not make a project writable. The Git compatibility listing stays conservative (it still excludes the inherited defaults).
+
+**Who approves what.** Direct edits in the Admin UI go through `PUT /admin/api/config` and are already human-authorized. Everything proposed through MCP (`reach_config_propose`, proposal only, no MCP tool approves or rejects) is split into independent review items (one per Access Rule glob added or removed, per project added or removed, per changed field), each with a stable id (`i1`, `i2`, ...) and a status. `GET /admin/api/proposal` lists them; `POST /admin/api/proposal/<id>/items/<item>/approve|reject` decides one; `POST /admin/api/proposal/<id>/approve|reject` is only a convenience over the items still pending. Rejecting one item changes nothing and leaves the rest reviewable. An approval is applied to the CURRENT configuration (never to the old edit) through the one config owner, then Clients are synced once. It is stale-safe: if the configuration changed after the proposal (or after its last approved item), the remaining items answer 409 stale and nothing is applied; rejecting never needs a fresh base. The proposal closes when every item is decided. **Stored format and migration.** The pending proposal is one file. A file in the previous format (the whole proposed edit next to the base, no items) is migrated on first read: the same `proposal_id`, `created_at` and base are kept, the items are derived deterministically from the edit versus the base (all `pending`), and the itemized file is written atomically; nothing is approved or applied, no policy is synced, the active configuration is untouched, and a second read changes nothing. A file that cannot be read or migrated (malformed, an unknown or secret field, or an edit that changes nothing) is an explicit unusable state: `GET /admin/api/proposal` answers `unusable: true`, a new proposal is refused, the file is never rewritten or deleted, and a human resolves it. It is never treated as no proposal.
+
 ## Persistence and logs
 
 Runtime configuration, proposal state and logs live under the deployment-provided persistent root (`REACH_PRIVATE_PATH`, mounted at `/reach-private` as `config.json`, `proposal.json` and `logs/`). Secrets never belong in the public repository, logs or CI output.
@@ -93,3 +107,20 @@ Effective semantics are intentionally small:
 - delete of an allowed target is trash semantics, not immediate unlink.
 
 The Admin Projects view exposes this same object through the approved Project Access drawer (`docs/screens/REACH 08_MCP Project Access Dashboard.png`). The drawer opens over the Projects page and uses explicit Save changes/Cancel actions so an operator can review a complete policy change before it is applied (the scoped exception to autosave; inline fields on the table still autosave, and Save changes is then persisted by that same autosave). It has three tabs: Access & Permissions, Configuration (JSON) (the canonical object, read-only) and Details. Its visual hierarchy, layout and REACH dark/yellow design follow the approved reference rather than introducing a separate visual pattern.
+
+## Logging
+
+The `logging` section of the Server config (the one owner; editable in the Admin API `PUT /admin/api/config`, any single field at a time) holds `level` (`DEBUG`, `INFO`, `RUNNING`, `WARNING`, `ERROR`, `CRITICAL`; default `RUNNING`), `max_bytes` (default 10 MiB) and `retention_days` (default 5). All three apply to the next line written, with no restart. A line below `level` is not written to the operational log; the audit trail ignores `level` and always records governance and security events.
+
+Files are `reach-YYYY-MM-DD.log` and `audit-YYYY-MM-DD.log`. When a line would pass `max_bytes`, the same-day segment `...log.1`, then `.2`, is used (a restart continues in the highest segment). A line larger than `max_bytes` is refused whole. After `retention_days`, every segment of an expired date is deleted together, never only some.
+
+Redaction: every operational and audit text is passed through one function immediately before it is written, at every level including DEBUG. Passwords, `Bearer`/`Basic` credentials, credentials inside URLs, API keys, any `name=value` or `name: value` whose name contains password, secret, token, api key, private key or credential (so `.env` style assignments too), known key shapes and private-key blocks become `[REDACTED]`; the surrounding text stays visible. Files are plain text, one line per event, with no control or ANSI characters.
+
+## Admin UI
+
+Ordinary edits autosave: the page waits `admin_autosave_debounce_ms` (from `/admin/api/state`, never a page constant) after the last change, then sends one edit; the header shows Editing, Saving, Autosaved or the Server's refusal as it is. There is no Save or Cancel for ordinary edits, and closing the Access drawer or leaving the page after Autosaved never reverts the Server state.
+
+- **Projects**: the drawer lists the project's rules as Read / Write, Allow and Deny and writes `writable_globs`, `allow_globs` and `deny_globs` back losslessly; the browser never decides which rule wins (the Server does, see Access Rules). A root of `/` or a Windows drive root (`C:\`, `C:/`) asks for a confirmation before the request is sent; cancelling reloads the Server state and sends nothing. This is a warning only, and the Server still validates every root.
+- **Proposals**: a proposal from MCP appears on the Projects screen with one row per item, each approved or rejected on its own; Approve all pending and Reject all pending act only on items still pending. A stored proposal that cannot be read is shown as unusable and blocks new proposals.
+- **Clients**: each row shows the friendly name, the Machine UUID, the build the Client last connected with, Online or Offline, and the relative last seen, all from `/admin/api/clients`. Client delete and uninstall are not part of this screen.
+- **System**: Logging (level, maximum size, retention) and Runtime (every knob, with its bounds) are fields that autosave through `PUT /admin/api/config`; the Server validates and applies them live.

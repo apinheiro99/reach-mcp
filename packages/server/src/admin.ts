@@ -17,7 +17,7 @@ import type { ProposalStore } from "./proposals.ts";
 import type { SourcePolicy } from "./trusted-network.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
-const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
+const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(?:items\/([^/]+)\/)?(approve|reject)$/;
 const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|rotate-key)$/;
 const DISPLAY_NAME_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/display-name$/;
 const ROTATION_HTTP = { rotated: 200, offline: 409, busy: 409, timeout: 504, refused: 422 } as const;
@@ -74,7 +74,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   const change = async (res: ServerResponse, action: string, target: string | undefined, apply: () => unknown): Promise<void> => {
     const note = (result: string) => {
       audit.record({ actor: "admin", action, ...(target === undefined ? {} : { target }), result });
-      logger.log(result === "ok" ? "INFO" : "WARNING", "admin", `${action} ${result}`);
+      logger.log(result === "ok" ? "RUNNING" : "WARNING", "admin", `${action} ${result}`);
     };
     try {
       const result = apply();
@@ -91,7 +91,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   /** Every Client as the Clients screen reads it: config facts and live session facts joined, plus the counts that always add up. */
   const clientsView = () => {
     const sessions = connections.status();
-    const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), last_seen: connections.lastSeen(c.client_id) }));
+    const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), last_seen: connections.lastSeen(c.client_id), client_build: connections.lastBuild(c.client_id) ?? null }));
     const count = (status: string) => clients.filter((c) => c.status === status).length;
     const online = clients.filter((c) => c.online).length;
     return { clients, counts: { total: clients.length, enabled: count("enabled"), pending: count("pending"), disabled: count("disabled"), online, offline: clients.length - online } };
@@ -181,13 +181,15 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     }
     if (pathname === "/admin/api/proposal") {
       if (method !== "GET") return send(res, 405);
-      return send(res, 200, { proposal: proposals.pending() });
+      return send(res, 200, { proposal: proposals.pending(), unusable: proposals.unusable() });
     }
     const decision = DECISION_ROUTE.exec(pathname);
     if (decision) {
       if (method !== "POST") return send(res, 405);
       const id = decodeURIComponent(decision[1] as string);
-      const result = decision[2] === "approve" ? proposals.approve(id) : proposals.reject(id);
+      const itemId = decision[2] === undefined ? undefined : decodeURIComponent(decision[2]);
+      const approve = decision[3] === "approve";
+      const result = itemId === undefined ? (approve ? proposals.approve(id) : proposals.reject(id)) : approve ? proposals.approveItem(id, itemId) : proposals.rejectItem(id, itemId);
       return send(res, DECISION_HTTP[result.status], { ok: result.status === "approved" || result.status === "rejected", ...result, config: config.editableView() });
     }
     send(res, 404);

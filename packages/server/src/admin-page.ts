@@ -11,6 +11,7 @@ import { DEV_RELOAD_SCRIPT } from "./admin-ui/dev-reload.ts";
 import { LOGS_CSS, LOGS_JS } from "./admin-ui/logs.ts";
 import { OVERVIEW_CSS, OVERVIEW_JS } from "./admin-ui/overview.ts";
 import { PROJECTS_CSS, PROJECTS_JS } from "./admin-ui/projects.ts";
+import { PROPOSALS_JS } from "./admin-ui/proposals.ts";
 import { SHELL_BACKGROUND_HTML, SHELL_CSS, SHELL_HTML, shellJs } from "./admin-ui/shell.ts";
 import { SYSTEM_CSS, SYSTEM_JS } from "./admin-ui/system.ts";
 import { THEME_CSS } from "./admin-ui/theme.ts";
@@ -29,7 +30,7 @@ refreshVersion();
 `;
 
 export function renderAdminPage(options: { devLiveReload?: boolean; adminUser?: string } = {}): string {
-  const script = ['"use strict";', COMPONENT_JS, API_JS, shellJs(options.adminUser), OVERVIEW_JS, CLIENTS_JS, PROJECTS_JS, SYSTEM_JS, API_VIEW_JS, LOGS_JS, BOOT_JS, options.devLiveReload ? DEV_RELOAD_SCRIPT : ""].join("\n");
+  const script = ['"use strict";', COMPONENT_JS, API_JS, shellJs(options.adminUser), OVERVIEW_JS, CLIENTS_JS, PROPOSALS_JS, PROJECTS_JS, SYSTEM_JS, API_VIEW_JS, LOGS_JS, BOOT_JS, options.devLiveReload ? DEV_RELOAD_SCRIPT : ""].join("\n");
   return `<!doctype html>
 <html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>REACH Server</title>

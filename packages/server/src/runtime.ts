@@ -101,7 +101,7 @@ const close = (server: Server) =>
 export async function startServer(args: ServerArgs): Promise<RunningServer> {
   const config = new ServerConfigStore(args.config);
   const settings = () => config.loggingSettings();
-  const logger = new OperationalLogger(new RotatingTextWriter({ dir: args.logs, base: "reach", settings }));
+  const logger = new OperationalLogger(new RotatingTextWriter({ dir: args.logs, base: "reach", settings }), undefined, () => config.loggingSettings().level);
   const audit = new AuditWriter(new RotatingTextWriter({ dir: args.logs, base: "audit", settings }));
   try {
     config.loadInitial();
@@ -125,7 +125,7 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
     const [port, adminPort] = await Promise.all([listen(server, args.port, args.host), listen(admin, args.adminPort, args.adminHost)]);
     connections.start();
     if (args.devLiveReload) watchSources([import.meta.dirname, path.join(import.meta.dirname, "..", "..", "shared", "src")], () => process.kill(process.pid, "SIGTERM"));
-    logger.log("INFO", "runtime", `server started build=${args.build} port=${port} admin_port=${adminPort} active=${config.isActive()}`);
+    logger.log("RUNNING", "runtime", `server started build=${args.build} port=${port} admin_port=${adminPort} active=${config.isActive()}`);
     return { port, adminPort, stop };
   } catch (error) {
     await stop();

@@ -28,6 +28,7 @@ export type GitInspectorOptions = {
   limits?: Partial<GitLimits>;
   /** Additive to the shared built-in deny list. */
   extraDenyGlobs?: string[];
+  extraAllowGlobs?: string[];
   platform?: PathPlatform;
 };
 
@@ -53,7 +54,7 @@ export class GitInspector {
     for (const [key, value] of Object.entries(this.limits)) {
       if (!Number.isInteger(value) || value < 1) throw new FsError("INVALID_ARGUMENT", `git limit ${key} must be a positive integer`);
     }
-    this.policy = buildPathPolicy(options.extraDenyGlobs);
+    this.policy = buildPathPolicy(options.extraDenyGlobs, options.extraAllowGlobs);
   }
 
   /** Rejects anything that is not a plain revision: no leading `-`, no whitespace; `..` only as a simple range. */

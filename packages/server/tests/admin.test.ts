@@ -106,7 +106,7 @@ test("admin proposal endpoints: diff, approve once, stale conflict, reject, unkn
   const rt = await start(true);
   const body = (path: string, method = "GET") => fetch(`${rt.a}${path}`, { method }).then(async (r) => ({ status: r.status, json: JSON.parse((await r.text()) || "{}") as Record<string, unknown> }));
   const edit = (mode: string) => ({ clients: [{ client_id: "laptop", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode }] }] });
-  assert.deepEqual((await body("/admin/api/proposal")).json, { proposal: null });
+  assert.deepEqual((await body("/admin/api/proposal")).json, { proposal: null, unusable: false });
   const first = rt.proposals.propose(edit("read_write")) as { proposal_id: string };
   const shown = (await body("/admin/api/proposal")).json.proposal as { proposal_id: string; diff: { path: string }[] };
   assert.equal(shown.proposal_id, first.proposal_id);
@@ -132,9 +132,9 @@ test("admin autosave changes the log size and retention through the config owner
   const clients = rt.config.editableView().clients.map(({ client_id, enabled, projects }) => ({ client_id, enabled, projects }));
   assert.equal((await rt.put({ logging: { max_bytes: 8192, retention_days: 3 }, clients })).status, 200);
   const view = (await (await fetch(`${rt.a}/admin/api/config`)).json()) as { logging: unknown };
-  assert.deepEqual(view.logging, { max_bytes: 8192, retention_days: 3 });
+  assert.deepEqual(view.logging, { max_bytes: 8192, retention_days: 3, level: "RUNNING" });
   assert.equal((await rt.put({ logging: { max_bytes: 1, retention_days: 3 }, clients })).status, 422);
-  assert.deepEqual(rt.config.loggingSettings(), { max_bytes: 8192, retention_days: 3 });
+  assert.deepEqual(rt.config.loggingSettings(), { max_bytes: 8192, retention_days: 3, level: "RUNNING" });
   await rt.close();
 });
 
@@ -144,7 +144,7 @@ test("the page is vanilla: no framework or remote script, no generic Save button
   assert.ok(!/>\s*Save\s*</i.test(html), "no generic Save button");
   assert.ok(!/<script[^>]*\ssrc=|react|vue|svelte|angular|jquery/i.test(html));
   assert.ok(html.includes("/admin/api/clients") && html.includes("/rotate-key") && html.includes('"/enable"') && html.includes('"/disable"'), "the Clients screen drives the lifecycle API");
-  assert.ok(!html.includes("/admin/api/proposal"), "the proposal flow has no screen of its own");
+  assert.ok(html.includes("/admin/api/proposal") && !html.includes("mcp_bearer_sha256"), "the proposal review is a card of the Projects screen and calls only the proposal API");
   assert.equal((await fetch(`${rt.a}/`, { redirect: "manual" })).status, 302);
   await rt.close();
 });
@@ -246,5 +246,28 @@ test("runtime knobs over the Admin API: the state serves the autosave debounce, 
   const view = (await (await fetch(`${rt.a}/admin/api/config`)).json()) as { runtime: { admin_autosave_debounce_ms: number } };
   assert.equal(view.runtime.admin_autosave_debounce_ms, 900);
   assert.equal(readFileSync(rt.file, "utf8").includes('"admin_autosave_debounce_ms": 900'), true, "persisted in the one config file");
+  await rt.close();
+});
+
+test("admin proposal item endpoints: review one rule at a time, approve-all as a convenience, MCP has no approval path", async () => {
+  const rt = await start(true);
+  const body = (path: string, method = "GET") => fetch(`${rt.a}${path}`, { method }).then(async (r) => ({ status: r.status, json: JSON.parse((await r.text()) || "{}") as Record<string, unknown> }));
+  const edit = { clients: [{ client_id: "laptop", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode: "read_only", deny_globs: ["a/**", "b/**", "c/**"] }] }] };
+  const made = rt.proposals.propose(edit) as { proposal_id: string };
+  const shown = (await body("/admin/api/proposal")).json.proposal as { items: { item_id: string; path: string; status: string }[] };
+  assert.equal(shown.items.length, 3);
+  const [a, b] = shown.items;
+  const before = rt.syncs();
+  const rejected = await body(`/admin/api/proposal/${made.proposal_id}/items/${a!.item_id}/reject`, "POST");
+  assert.deepEqual([rejected.status, rejected.json.remaining], [200, 2]);
+  assert.equal(rt.syncs(), before, "rejecting syncs nothing");
+  const approved = await body(`/admin/api/proposal/${made.proposal_id}/items/${b!.item_id}/approve`, "POST");
+  assert.deepEqual([approved.status, approved.json.remaining], [200, 1]);
+  assert.equal(rt.syncs(), before + 1);
+  assert.equal((await body(`/admin/api/proposal/${made.proposal_id}/items/${a!.item_id}/approve`, "POST")).status, 404, "a decided item is gone");
+  assert.equal((await body(`/admin/api/proposal/${made.proposal_id}/items/${b!.item_id}/approve`)).status, 405);
+  assert.equal((await body(`/admin/api/proposal/${made.proposal_id}/approve`, "POST")).status, 200, "approve-all takes what is still pending");
+  assert.deepEqual((rt.config.snapshot().clients[0]?.projects[0] as { deny_globs?: string[] }).deny_globs?.slice().sort(), ["b/**", "c/**"], "the rejected rule never applied");
+  assert.equal((await body("/admin/api/proposal")).json.proposal, null);
   await rt.close();
 });

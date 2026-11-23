@@ -18,6 +18,8 @@ export type FsReaderOptions = {
   limits?: Partial<FsLimits>;
   /** Additive to the built-in deny list; can never remove a built-in rule. */
   extraDenyGlobs?: string[];
+  /** Explicit allow rules of the project (see path-policy precedence). */
+  extraAllowGlobs?: string[];
   /** Path rules to apply; defaults to the host platform. */
   platform?: PathPlatform;
 };
@@ -51,7 +53,7 @@ export class FilesystemReader {
     this.root = realpathSync(options.root);
     if (!statSync(this.root).isDirectory()) throw new FsError("INVALID_ARGUMENT", "root is not a directory");
     this.limits = resolveLimits(options.limits);
-    this.policy = buildPathPolicy(options.extraDenyGlobs);
+    this.policy = buildPathPolicy(options.extraDenyGlobs, options.extraAllowGlobs);
   }
 
   get fsLimits(): FsLimits {

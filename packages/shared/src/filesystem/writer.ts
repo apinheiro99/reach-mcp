@@ -121,6 +121,8 @@ export type FsWriterOptions = {
   allowGlobs?: string[];
   limits?: Partial<FsLimits>;
   extraDenyGlobs?: string[];
+  /** Explicit allow rules of the project (see path-policy precedence). */
+  extraAllowGlobs?: string[];
   platform?: PathPlatform;
   /** Clock, injectable for trash dating. */
   now?: () => number;
@@ -146,7 +148,7 @@ export class FilesystemWriter {
     if (!isInsideRoot(project, this.root, this.platform)) throw new FsError("INVALID_ARGUMENT", "write root must be inside the project root");
     this.rootRel = path.relative(project, this.root).split(path.sep).join("/");
     this.limits = resolveLimits(options.limits);
-    this.policy = buildPathPolicy(options.extraDenyGlobs);
+    this.policy = buildPathPolicy(options.extraDenyGlobs, options.extraAllowGlobs);
     this.allow = options.allowGlobs?.map(globToRegExp);
     this.now = options.now ?? Date.now;
   }

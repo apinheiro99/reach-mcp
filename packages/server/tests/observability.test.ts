@@ -19,7 +19,7 @@ function writers() {
   const audit = new AuditWriter(new RotatingTextWriter({ dir, base: "audit", settings }));
   const lines = (base: string) => {
     try {
-      return readFileSync(path.join(dir, `${base}.log`), "utf8").split("\n").filter(Boolean);
+      return readdirSync(dir).filter((f) => f.startsWith(`${base}-`)).sort().map((f) => readFileSync(path.join(dir, f), "utf8")).join("").split("\n").filter(Boolean);
     } catch {
       return [];
     }
@@ -40,9 +40,9 @@ test("connection log lines carry ids and codes, never a credential; a refusal is
   client.ws.close();
   await until(() => w.log().some((l) => l.includes("client disconnected")), "disconnect logged");
   const text = w.log().join("\n");
-  assert.match(text, /INFO connections client connected client_id=laptop/);
+  assert.match(text, /RUNNING connections client connected client_id=laptop display_name=Work_laptop client_build=ok-1/);
   assert.match(text, /WARNING connections client refused code=AUTH_FAILED/);
-  assert.match(text, /INFO connections client disconnected client_id=laptop/);
+  assert.match(text, /RUNNING connections client disconnected client_id=laptop/);
   for (const secret of [CLIENT_MARKER, MCP_MARKER]) assert.ok(!w.everything().includes(secret), "no credential in any file");
   await rt.close();
 });
@@ -56,7 +56,7 @@ test("a routed request is logged with its exact request_id and no payload; reads
   await until(() => requestsOf(client).length === 1, "request");
   answerOk(client, requestsOf(client)[0] as { request_id?: string }, { op: "fs_read", path: "secret.txt", start_line: 1, end_line: 1, total_lines: 1, truncated: false, next_start_line: null, redactions: 0, content: `1: ${FILE_CONTENT}` });
   assert.equal((await pending).ok, true);
-  assert.deepEqual(w.log().filter((l) => l.includes("request completed")).map((l) => l.replace(/^\S+ /, "")), ["INFO connections request_id=req-read-1 request completed op=fs_read client_id=laptop project_id=web"]);
+  assert.deepEqual(w.log().filter((l) => l.includes("request completed")).map((l) => l.replace(/^\S+ /, "")), ["INFO connections request_id=req-read-1 request completed op=fs_read client_id=laptop project_id=web display_name=Work_laptop client_build=ok-1"]);
   assert.deepEqual(w.trail(), [], "a read creates no audit record");
   assert.ok(!w.everything().includes(FILE_CONTENT) && !w.everything().includes("secret.txt"), "no file content or path in the log");
   await rt.close();
@@ -115,7 +115,7 @@ test("admin and proposal actions are each audited once, without secret values", 
     `actor=human\taction=proposal_approve\ttarget=${id2}\tresult=stale`,
     `actor=human\taction=proposal_reject\ttarget=${id2}\tresult=rejected`,
   ]);
-  const files = readdirSync(w.dir).filter((f) => f.endsWith(".log")).map((f) => readFileSync(path.join(w.dir, f), "utf8")).join("\n");
+  const files = readdirSync(w.dir).filter((f) => /\.log(\.\d+)?$/.test(f)).map((f) => readFileSync(path.join(w.dir, f), "utf8")).join("\n");
   for (const secret of [NEW_BEARER, CLIENT_MARKER, MCP_MARKER, PHYSICAL_ROOT, "sha256"]) assert.ok(!files.includes(secret), `a log or audit file leaked ${secret}`);
   admin.closeAllConnections();
   await new Promise<void>((r) => admin.close(() => r()));

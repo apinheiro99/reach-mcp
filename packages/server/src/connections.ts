@@ -188,7 +188,7 @@ export class ClientConnectionRegistry {
       const settle = (result: RotationResult) => {
         if (!this.#rotations.delete(clientId)) return;
         cancel();
-        this.#logger.log(result === "rotated" ? "INFO" : "WARNING", "connections", `key rotation ${result} client_id=${clientId}`);
+        this.#logger.log(result === "rotated" ? "RUNNING" : "WARNING", "connections", `key rotation ${result} client_id=${clientId}`);
         this.#audit.record({ actor: "admin", action: "rotate_key", client_id: clientId, result });
         resolve(result);
       };
@@ -253,9 +253,20 @@ export class ClientConnectionRegistry {
     });
   }
 
+  /** The safe identity of a Client for a log line: Machine UUID, friendly name and build, each only when known. Never a key or a digest. */
+  #who(clientId: string): string {
+    const summary = this.#options.config.clientSummaries().find((c) => c.client_id === clientId);
+    const parts = [
+      ["machine_uuid", this.#admissionOf(clientId)?.machineUuid],
+      ["display_name", summary?.display_name?.replaceAll(/\s+/g, "_")],
+      ["client_build", this.#lastBuild.get(clientId)],
+    ];
+    return parts.flatMap(([key, value]) => (value ? [` ${key}=${value}`] : [])).join("");
+  }
+
   /** The one place a sent request is logged and, if it changes files, audited: exactly once, at its terminal outcome. */
   #recordOutcome(clientId: string, projectId: string, operation: Operation, response: ResponseEnvelope, timedOut: boolean): void {
-    const where = `op=${operation.op} client_id=${clientId} project_id=${projectId}`;
+    const where = `op=${operation.op} client_id=${clientId} project_id=${projectId}${this.#who(clientId)}`;
     const result = timedOut ? "timed_out" : response.ok ? "ok" : response.error.code;
     if (timedOut) this.#logger.log("ERROR", "connections", `request timed out ${where}`, response.request_id);
     else if (response.ok) this.#logger.log("INFO", "connections", `request completed ${where}`, response.request_id);
@@ -323,7 +334,7 @@ export class ClientConnectionRegistry {
     const session: Session = { clientId, socket, build, connectedSince: now, lastSeen: now };
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
-    this.#logger.log("INFO", "connections", `client connected client_id=${clientId}`);
+    this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()) });
     this.syncPolicy(clientId);
     return session;
@@ -345,7 +356,7 @@ export class ClientConnectionRegistry {
     } catch {
       return void this.#logger.log("WARNING", "connections", `key promotion not persisted client_id=${clientId}`);
     }
-    this.#logger.log("INFO", "connections", `key promoted client_id=${clientId}`);
+    this.#logger.log("RUNNING", "connections", `key promoted client_id=${clientId}`);
     this.#audit.record({ actor: "client", action: "key_promoted", client_id: clientId, result: "ok" });
   }
 
@@ -366,7 +377,7 @@ export class ClientConnectionRegistry {
       this.#logger.log("WARNING", "connections", `machine_uuid not bound client_id=${clientId}`);
       return false;
     }
-    this.#logger.log("INFO", "connections", `machine_uuid bound client_id=${clientId}`);
+    this.#logger.log("RUNNING", "connections", `machine_uuid bound client_id=${clientId}`);
     this.#audit.record({ actor: "client", action: "machine_uuid_bound", client_id: clientId, result: "ok" });
     return true;
   }
@@ -378,7 +389,7 @@ export class ClientConnectionRegistry {
     } catch {
       return false;
     }
-    this.#logger.log("INFO", "connections", `client registered pending client_id=${clientId}`);
+    this.#logger.log("RUNNING", "connections", `client registered pending client_id=${clientId}`);
     this.#audit.record({ actor: "client", action: "register_pending", client_id: clientId, result: "ok" });
     return true;
   }
@@ -420,7 +431,7 @@ export class ClientConnectionRegistry {
     this.#sessions.delete(session.clientId);
     this.#lastHeard.set(session.clientId, session.lastSeen);
     this.#rotations.get(session.clientId)?.settle("offline");
-    this.#logger.log("INFO", "connections", `client disconnected client_id=${session.clientId}`);
+    this.#logger.log("RUNNING", "connections", `client disconnected client_id=${session.clientId}${this.#who(session.clientId)}`);
     for (const [id, pending] of [...this.#pending]) {
       if (pending.session === session) pending.settle(failureResponse(id, this.#lost(pending.mutation, "client disconnected")));
     }
