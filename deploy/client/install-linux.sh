@@ -140,6 +140,7 @@ unit="$unit_dir/$UNIT_NAME"
   echo "$line"
   echo "Restart=on-failure"
   echo "RestartSec=2"
+  echo "RestartPreventExitStatus=3"
   echo
   echo "[Install]"
   echo "WantedBy=multi-user.target"

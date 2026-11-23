@@ -1,7 +1,8 @@
-import { generateIdentityKey } from "@reach-mcp/shared/identity";
+import { generateIdentityKey, newNonce } from "@reach-mcp/shared/identity";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { WebSocketServer } from "ws";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -45,4 +46,23 @@ test("the client process refuses bad arguments with a usage line and exit code 2
   assert.ok(run.stderr.includes("usage: client") && !run.stderr.includes(CREDENTIAL));
   const missing = spawnSync(process.execPath, [main, "--bootstrap", path.join(tmpdir(), "no-such-bootstrap"), "--build", "y"], { encoding: "utf8" });
   assert.equal(missing.status, 2, "an unreadable bootstrap is a usage error, not a crash");
+});
+
+test("the client process exits with the dedicated refused code and a safe diagnostic when the Server refuses its build, instead of a silent clean exit", async () => {
+  const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+  wss.on("connection", (socket) => {
+    socket.send(JSON.stringify({ kind: "challenge", nonce: newNonce() }));
+    socket.once("message", () => socket.send(JSON.stringify({ kind: "reject", error: { code: "INCOMPATIBLE_BUILD", message: "client build is not accepted" } })));
+  });
+  const file = bootstrapFile(`ws://127.0.0.1:${(wss.address() as { port: number }).port}/client`);
+  const main = path.join(import.meta.dirname, "..", "src", "main.ts");
+  const child = spawn(process.execPath, [main, "--bootstrap", file, "--build", "old-build", "--allow-insecure-ws"], { stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const status = await new Promise<number | null>((resolve) => child.once("exit", resolve));
+  await new Promise<void>((resolve) => wss.close(() => resolve()));
+  assert.equal(status, 3, "a distinct exit code the service unit does not restart on");
+  assert.ok(stderr.includes("INCOMPATIBLE_BUILD") && stderr.includes("client build is not accepted"), stderr);
+  assert.ok(!stderr.includes(CREDENTIAL), "the diagnostic never carries the private key");
 });

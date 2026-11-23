@@ -44,6 +44,7 @@ test("Linux: installs the extracted runtime to an explicit directory (spaces all
   assert.equal(exec, `ExecStart="${process.execPath}" "${d.install}/reach-client.mjs" --bootstrap "${d.bootstrap}" --build dev-1 --allow-insecure-ws`);
   assert.match(unit, /^User=dev$/m);
   assert.match(unit, /^Restart=on-failure$/m);
+  assert.match(unit, /^RestartPreventExitStatus=3$/m, "a Client the Server refused (exit 3) is not restarted in a loop");
   assert.doesNotMatch(unit, /packages\/|WorkingDirectory|reach-private|Environment|credential=/i, "no source checkout, no private path, no secret");
   assert.ok(!readdirSync(path.dirname(d.install)).some((n) => n.includes(".new.") || n.includes(".old.")), "no staging leftovers");
   const start = spawnSync(process.execPath, [path.join(d.install, "reach-client.mjs"), "--bootstrap", d.bootstrap], { encoding: "utf8" });
