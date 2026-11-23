@@ -7,7 +7,7 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic-file.ts";
 import { hashCredential } from "./auth.ts";
 import { publicKeyFingerprint } from "@reach-mcp/shared/identity";
-import { ClientId, EffectiveProjectPolicy, PublicKey } from "@reach-mcp/shared/wire";
+import { ClientId, EffectiveProjectPolicy, MachineUuid, PublicKey } from "@reach-mcp/shared/wire";
 
 const ClientDisplayNameUpdate = z.strictObject({ display_name: z.string() });
 
@@ -31,6 +31,8 @@ const ClientEntry = z.strictObject({
   public_key: PublicKey.optional(),
   /** A replacement key staged by a Rotate Key: valid next to public_key until the Client proves it, then it becomes public_key. */
   next_public_key: PublicKey.optional(),
+  /** The non-secret Machine UUID of this Client's OS machine, bound once by an authenticated Client. Server-owned: correlation only, never edited by a human and never authentication. */
+  machine_uuid: MachineUuid.optional(),
   projects: z.array(EffectiveProjectPolicy).max(200),
 });
 
@@ -49,6 +51,7 @@ export const ServerConfig = z
   .superRefine((config, ctx) => {
     const seen = new Set<string>();
     const keys = new Set<string>();
+    const machines = new Set<string>();
     config.clients.forEach((client, c) => {
       if (seen.has(client.client_id)) ctx.addIssue({ code: "custom", path: ["clients", c, "client_id"], message: "duplicate client_id" });
       seen.add(client.client_id);
@@ -56,6 +59,8 @@ export const ServerConfig = z
       if (client.enabled && !client.public_key) ctx.addIssue({ code: "custom", path: ["clients", c, "public_key"], message: "an enabled client needs a public key" });
       if (client.public_key && keys.has(client.public_key)) ctx.addIssue({ code: "custom", path: ["clients", c, "public_key"], message: "duplicate public key" });
       if (client.public_key) keys.add(client.public_key);
+      if (client.machine_uuid && machines.has(client.machine_uuid)) ctx.addIssue({ code: "custom", path: ["clients", c, "machine_uuid"], message: "duplicate machine_uuid" });
+      if (client.machine_uuid) machines.add(client.machine_uuid);
       if (client.next_public_key && (!client.public_key || keys.has(client.next_public_key))) ctx.addIssue({ code: "custom", path: ["clients", c, "next_public_key"], message: "a staged key needs a distinct current key" });
       if (client.next_public_key) keys.add(client.next_public_key);
       const projects = new Set<string>();
@@ -71,13 +76,13 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 const AdminEdit = z.strictObject({
   mcp_bearer: z.string().min(16).max(256).regex(/^\S+$/, "must not contain whitespace").optional(),
   logging: LoggingSettings.optional(),
-  clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, pending: true })).max(500),
+  clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, pending: true, machine_uuid: true })).max(500),
 });
 /** The shape of editableView(): Clients with their policies and an enrollment flag, never the key. Strict, for readers of stored copies. */
 export const EditableView = z.strictObject({
   configured: z.boolean(),
   logging: LoggingSettings,
-  clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true }).extend({ has_public_key: z.boolean() })).max(500),
+  clients: z.array(ClientEntry.omit({ public_key: true, next_public_key: true, machine_uuid: true }).extend({ has_public_key: z.boolean() })).max(500),
 });
 export type EditableView = z.infer<typeof EditableView>;
 
@@ -86,13 +91,20 @@ export const ProposedEdit = AdminEdit.omit({ mcp_bearer: true, logging: true });
 export type ProposedEdit = z.infer<typeof ProposedEdit>;
 
 /** What a caller may read of one Client: never its key. */
+/** The friendly name for a new Client: the hostname as given, then `-1`, `-2`, ... until it is free. Never identity. */
+export function uniqueDisplayName(base: string, taken: readonly (string | undefined)[]): string {
+  let name = base;
+  for (let n = 1; taken.includes(name); n += 1) name = `${base.slice(0, 100 - `-${n}`.length)}-${n}`;
+  return name;
+}
+
 export type PublicClient = { client_id: string; display_name?: string; enabled: boolean; projects: EffectiveProjectPolicy[] };
 /** The one status of a Client: Pending (enrolled, never decided), Enabled or Disabled (a human decision). */
 export type ClientStatus = "pending" | "enabled" | "disabled";
 /** What the admin Clients screen reads of one Client: identity and authorization, never the key itself. */
 export type ClientSummary = { client_id: string; display_name?: string; status: ClientStatus; fingerprint: string | null; projects: number };
 /** What admission needs: whether the id is registered, its authorization status and its stored public key, whatever the status. */
-export type ClientAdmission = { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null } | null;
+export type ClientAdmission = { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null; machineUuid: string | null } | null;
 /** The editable view of one Client: whether it is enrolled (has a public key), never the key itself. */
 export type EditableClient = PublicClient & { has_public_key: boolean };
 
@@ -175,15 +187,22 @@ export class ServerConfigStore {
   }
 
   /** Registers a previously unknown Client as Pending with its public key, one atomic write; no project and no access until a human enables it. */
-  registerPendingClient(clientId: string, publicKey: string, displayName?: string): void {
+  registerPendingClient(clientId: string, publicKey: string, displayName?: string, machineUuid?: string): void {
     const active = this.#requireActive();
     if (active.clients.some((c) => c.client_id === clientId)) throw new ConfigError(["client_id: already registered"]);
-    this.activateCandidate({ ...active, clients: [...active.clients, { client_id: clientId, ...(displayName ? { display_name: displayName } : {}), enabled: false, pending: true, public_key: publicKey, projects: [] }] });
+    if (machineUuid && active.clients.some((c) => c.machine_uuid === machineUuid)) throw new ConfigError(["machine_uuid: already registered"]);
+    const name = displayName && uniqueDisplayName(displayName, active.clients.map((c) => c.display_name));
+    this.activateCandidate({ ...active, clients: [...active.clients, { client_id: clientId, ...(name ? { display_name: name } : {}), enabled: false, pending: true, public_key: publicKey, ...(machineUuid ? { machine_uuid: machineUuid } : {}), projects: [] }] });
   }
 
   /** The human decision to authorize (true) or refuse (false) a registered Client; its identity, key and projects are kept either way. */
   setClientEnabled(clientId: string, enabled: boolean): void {
     this.#changeClient(clientId, (client) => ({ ...omitPending(client), enabled }));
+  }
+
+  /** Binds the Machine UUID of the machine an authenticated Client runs on to its record, once. It never changes a key or a status. */
+  bindMachineUuid(clientId: string, machineUuid: string): void {
+    this.#changeClient(clientId, (client) => ({ ...client, machine_uuid: machineUuid }));
   }
 
   /** Durably stages the replacement key a Client generated itself; the current key keeps authenticating next to it. One staged key per Client. */
@@ -209,7 +228,7 @@ export class ServerConfigStore {
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */
   editableView(): EditableView {
     if (!this.#active) return { configured: false, logging: { ...DEFAULT_LOGGING }, clients: [] };
-    return structuredClone({ configured: true, logging: this.#active.logging, clients: this.#active.clients.map(({ public_key, ...client }) => { delete client.next_public_key; return { ...client, has_public_key: public_key !== undefined }; }) });
+    return structuredClone({ configured: true, logging: this.#active.logging, clients: this.#active.clients.map(({ public_key, ...client }) => { delete client.next_public_key; delete client.machine_uuid; return { ...client, has_public_key: public_key !== undefined }; }) });
   }
 
   /** The log size and retention in force; the defaults while no configuration is active. */
@@ -241,11 +260,11 @@ export class ServerConfigStore {
   /** Admission facts for a client_id: null when unregistered. The key is returned in every status; only an Enabled Client is authorized. */
   admissionOf(clientId: string): ClientAdmission {
     const client = this.#requireActive().clients.find((c) => c.client_id === clientId);
-    return client ? { status: statusOf(client), publicKey: client.public_key ?? null, nextPublicKey: client.next_public_key ?? null } : null;
+    return client ? { status: statusOf(client), publicKey: client.public_key ?? null, nextPublicKey: client.next_public_key ?? null, machineUuid: client.machine_uuid ?? null } : null;
   }
 
   #editCandidate(clients: ProposedEdit["clients"], mcp_bearer_sha256: string, logging: LoggingSettings | undefined) {
-    const keys = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, { public_key: c.public_key, next_public_key: c.next_public_key }]));
+    const keys = new Map((this.#active?.clients ?? []).map((c) => [c.client_id, { public_key: c.public_key, next_public_key: c.next_public_key, machine_uuid: c.machine_uuid }]));
     const pending = new Set((this.#active?.clients ?? []).filter((c) => c.pending).map((c) => c.client_id));
     return { mcp_bearer_sha256, logging, clients: clients.map((c) => ({ ...c, ...keys.get(c.client_id), ...(pending.has(c.client_id) && !c.enabled ? { pending: true } : {}) })) };
   }

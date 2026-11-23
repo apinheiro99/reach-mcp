@@ -148,7 +148,7 @@ test("Pending: an unknown client_id proving its key is registered with the publi
   await c.closed;
   assert.equal(code(c.frames), "PENDING_APPROVAL");
   assert.equal(c.frames.some((f) => f.kind === "welcome" || f.kind === "policy_sync"), false, "no welcome and no policy before a human Enable");
-  assert.deepEqual(t.config.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null });
+  assert.deepEqual(t.config.admissionOf("newbox"), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null, machineUuid: null });
   assert.equal(t.config.effectivePoliciesFor("newbox"), null);
   assert.deepEqual(t.registry.status(), [], "a Pending registration never becomes a session");
   const stored = readFileSync(configFile, "utf8");
@@ -455,5 +455,75 @@ test("display name: a known Client reconnecting with another suggestion never ov
   t.config.setClientDisplayName("namebox", "Operator choice");
   await (await t.connect({ id: "namebox", identity: fresh, extra: { display_name: "Another suggestion" } })).closed;
   assert.equal(t.config.clientSummaries().find((c) => c.client_id === "namebox")?.display_name, "Operator choice");
+  await t.done();
+});
+
+test("the Client build is retained after its session ends and the same client_id with a new key never creates a second Client", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "welcome and policy");
+  assert.equal(t.registry.lastBuild("laptop"), "ok-1");
+  assert.equal(t.registry.lastBuild("never-seen"), null);
+  c.ws.close();
+  await until(() => t.registry.status().length === 0, "session gone");
+  assert.equal(t.registry.lastBuild("laptop"), "ok-1", "the version stays observable offline");
+  await t.done();
+});
+
+const MACHINE = "3eb1bd43-9947-eb76-2998-e566ccc2e099";
+const OTHER_MACHINE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+test("legacy Client: the first authenticated hello with a Machine UUID binds it once, keeps status and projects, and never changes a key", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { machine_uuid: MACHINE } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.deepEqual(t.config.admissionOf("laptop"), { status: "enabled", publicKey: LAPTOP.publicKey, nextPublicKey: null, machineUuid: MACHINE });
+  assert.equal(t.config.effectivePoliciesFor("laptop")!.length, 2, "projects are kept");
+  c.ws.close();
+  await until(() => t.registry.status().length === 0, "session gone");
+  const again = await t.connect({ extra: { machine_uuid: MACHINE } });
+  await until(() => again.frames.length === 3, "admitted again with the same machine");
+  assert.equal(t.config.snapshot().clients.length, 3);
+  await t.done();
+});
+
+test("a Client whose record is bound to a machine is refused from another machine, and a Client without a Machine UUID is unchanged", async () => {
+  const t = await setup();
+  t.config.bindMachineUuid("laptop", MACHINE);
+  const copied = await t.connect({ extra: { machine_uuid: OTHER_MACHINE } });
+  await copied.closed;
+  assert.equal(code(copied.frames), "AUTH_FAILED", "identity copied to another machine");
+  const legacy = await t.connect({});
+  await until(() => legacy.frames.length === 3, "a Client that reports no Machine UUID still connects");
+  assert.equal(t.config.admissionOf("laptop")!.machineUuid, MACHINE);
+  await t.done();
+});
+
+test("reinstall of a known machine never creates a second Client and the Machine UUID alone never takes over a record", async () => {
+  const t = await setup();
+  t.config.bindMachineUuid("laptop", MACHINE);
+  const reinstalled = await t.connect({ id: MACHINE, identity: newIdentity(), extra: { machine_uuid: MACHINE } });
+  await reinstalled.closed;
+  assert.equal(code(reinstalled.frames), "AUTH_FAILED", "same machine, new id and fresh key: no second record");
+  assert.equal(t.config.admissionOf(MACHINE), null);
+  const takeover = await t.connect({ id: "laptop", identity: newIdentity(), extra: { machine_uuid: MACHINE } });
+  await takeover.closed;
+  assert.equal(code(takeover.frames), "AUTH_FAILED", "the non-secret Machine UUID is not a credential");
+  assert.equal(t.config.admissionOf("laptop")!.publicKey, LAPTOP.publicKey, "the trusted key is unchanged");
+  assert.equal(t.config.snapshot().clients.length, 3);
+  await t.done();
+});
+
+test("a new machine enrolls as a distinct Pending Client carrying its Machine UUID; the governed Rotate Key keeps the one record", async () => {
+  const t = await setup();
+  const fresh = newIdentity();
+  const c = await t.connect({ id: OTHER_MACHINE, identity: fresh, extra: { machine_uuid: OTHER_MACHINE } });
+  await c.closed;
+  assert.equal(code(c.frames), "PENDING_APPROVAL");
+  assert.deepEqual(t.config.admissionOf(OTHER_MACHINE), { status: "pending", publicKey: fresh.publicKey, nextPublicKey: null, machineUuid: OTHER_MACHINE });
+  t.config.bindMachineUuid("laptop", MACHINE);
+  t.config.stageClientPublicKey("laptop", fresh.publicKey === LAPTOP.publicKey ? DESKTOP.publicKey : newIdentity().publicKey);
+  assert.equal(t.config.snapshot().clients.filter((x) => x.client_id === "laptop").length, 1);
+  assert.equal(t.config.admissionOf("laptop")!.machineUuid, MACHINE, "rotation keeps the machine binding");
   await t.done();
 });
