@@ -29,6 +29,12 @@ default:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "push"'
 
+# Jobs that start a real Client need a native Linux machine id; the one CI-only helper provides it (production resolution is untouched).
+.real-client-tests:
+  before_script:
+    - npm ci
+    - node scripts/git-ci/ensure-machine-id.ts
+
 .validation-summary:
   artifacts:
     when: always
@@ -63,6 +69,7 @@ default:
 "Automated Tests":
   extends:
     - .branch-push-only
+    - .real-client-tests
     - .validation-summary
   stage: validate
   script:
@@ -79,6 +86,7 @@ default:
 "Release Check":
   extends:
     - .branch-push-only
+    - .real-client-tests
     - .validation-summary
   stage: validate
   script:
