@@ -684,17 +684,23 @@ Targeted `edit_file`-style mutation remains the preferred mechanism when safe ma
 
 Each Client has:
 
-- a unique `client_id`;
+- a unique `client_id`, which on first run is the **Machine UUID** of its OS machine (below);
 - one Ed25519 keypair generated locally by that Client;
 - one private key that never leaves the Client machine;
 - one public key stored by the Server as the Client authentication identity.
+
+### Machine UUID, identity versus authentication
+
+The Machine UUID is one stable, **non-secret** identifier of an OS machine. The native identifier is Linux `/etc/machine-id` or Windows SMBIOS `Win32_ComputerSystemProduct.UUID`; it is canonicalized to 32 lowercase hex digits (case, dashes, braces and a trailing newline never fork it), hashed with SHA-256 under the fixed prefix `reach-machine-uuid-v1`, and the first 128 bits are written as `8-4-4-4-12` hex. It is a plain custom representation with no UUID version/variant semantics, owned by `machineUuid` in `packages/shared/src/identity.ts`; only `packages/client/src/machine-identity.ts` touches the OS. A machine whose native identifier cannot be read fails closed: there is no hostname, MAC or random fallback.
+
+It identifies and never authenticates: Ed25519 challenge-response stays the only proof, on every connection. Reinstalling or recreating Client state on the same machine yields the same `client_id`, so the Server never creates a second logical Client; because the id is not secret, a fresh key under a known `client_id` is refused (`AUTH_FAILED`) and never takes over the record: only the governed Rotate Key flow, proven with the current key, changes the key and it preserves Pending/Enabled. A different native identifier is a different Client and follows normal Pending admission. Clients that already hold a random `client_id` keep it (no migration, no duplicate). The hostname is only the suggested friendly name: the Server keeps the first free of `name`, `name-1`, `name-2`, ...; it is never identity. The Client build from the hello is retained by the Server after the session ends and shown in health.
 
 ### Zero-touch enrollment
 
 Normal enrollment is zero-touch up to registration when an authorized agent can access the target machine and the machine can reach the Server service plane:
 
 1. the agent downloads the correct platform Client artifact from the Server and verifies the release manifest/hash;
-2. the Client generates its `client_id` and Ed25519 keypair locally;
+2. the Client derives its `client_id` (the Machine UUID) from the native OS machine identifier and generates its Ed25519 keypair locally;
 3. the Client keeps the private key in protected local state and sends only its public key plus non-secret enrollment metadata and proof of private-key possession to the Server;
 4. the Server stores the Client identity/public key as **Pending**; Pending Clients have no operational access;
 5. a human explicitly selects **Enable** in the Admin UI/API;

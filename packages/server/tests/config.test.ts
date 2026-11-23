@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ConfigError, hashCredential, ServerConfigStore } from "../src/index.ts";
+import { ConfigError, hashCredential, ServerConfigStore, uniqueDisplayName } from "../src/index.ts";
 import { newIdentity } from "./identity-fixture.ts";
 import { PolicySync } from "@reach-mcp/shared/wire";
 
@@ -329,4 +329,18 @@ test("a config without display_name stays valid and its summary has no name", ()
   const store = new ServerConfigStore(write(valid()));
   store.loadInitial();
   assert.ok(store.clientSummaries().some((c) => c.display_name === undefined), "UUID is the fallback shown by the UI");
+});
+
+test("friendly names: a colliding hostname becomes name-1, name-2 deterministically and a free one is kept; the name is never identity", () => {
+  assert.equal(uniqueDisplayName("studio", []), "studio");
+  assert.equal(uniqueDisplayName("studio", ["studio", undefined]), "studio-1");
+  assert.equal(uniqueDisplayName("studio", ["studio", "studio-1"]), "studio-2");
+  assert.equal(uniqueDisplayName("studio", ["studio-1"]), "studio", "the base is used while it is free");
+  assert.ok(uniqueDisplayName("h".repeat(100), ["h".repeat(100)]).length <= 100);
+  const store = new ServerConfigStore(write(valid()));
+  store.loadInitial();
+  store.registerPendingClient("m1", newIdentity().publicKey, "studio");
+  store.registerPendingClient("m2", newIdentity().publicKey, "studio");
+  store.registerPendingClient("m3", newIdentity().publicKey, "studio");
+  assert.deepEqual(store.snapshot().clients.filter((c) => c.client_id.startsWith("m")).map((c) => [c.client_id, c.display_name]), [["m1", "studio"], ["m2", "studio-1"], ["m3", "studio-2"]]);
 });

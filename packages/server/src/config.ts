@@ -86,6 +86,13 @@ export const ProposedEdit = AdminEdit.omit({ mcp_bearer: true, logging: true });
 export type ProposedEdit = z.infer<typeof ProposedEdit>;
 
 /** What a caller may read of one Client: never its key. */
+/** The friendly name for a new Client: the hostname as given, then `-1`, `-2`, ... until it is free. Never identity. */
+export function uniqueDisplayName(base: string, taken: readonly (string | undefined)[]): string {
+  let name = base;
+  for (let n = 1; taken.includes(name); n += 1) name = `${base.slice(0, 100 - `-${n}`.length)}-${n}`;
+  return name;
+}
+
 export type PublicClient = { client_id: string; display_name?: string; enabled: boolean; projects: EffectiveProjectPolicy[] };
 /** The one status of a Client: Pending (enrolled, never decided), Enabled or Disabled (a human decision). */
 export type ClientStatus = "pending" | "enabled" | "disabled";
@@ -178,7 +185,8 @@ export class ServerConfigStore {
   registerPendingClient(clientId: string, publicKey: string, displayName?: string): void {
     const active = this.#requireActive();
     if (active.clients.some((c) => c.client_id === clientId)) throw new ConfigError(["client_id: already registered"]);
-    this.activateCandidate({ ...active, clients: [...active.clients, { client_id: clientId, ...(displayName ? { display_name: displayName } : {}), enabled: false, pending: true, public_key: publicKey, projects: [] }] });
+    const name = displayName && uniqueDisplayName(displayName, active.clients.map((c) => c.display_name));
+    this.activateCandidate({ ...active, clients: [...active.clients, { client_id: clientId, ...(name ? { display_name: name } : {}), enabled: false, pending: true, public_key: publicKey, projects: [] }] });
   }
 
   /** The human decision to authorize (true) or refuse (false) a registered Client; its identity, key and projects are kept either way. */

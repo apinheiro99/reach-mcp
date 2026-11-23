@@ -457,3 +457,15 @@ test("display name: a known Client reconnecting with another suggestion never ov
   assert.equal(t.config.clientSummaries().find((c) => c.client_id === "namebox")?.display_name, "Operator choice");
   await t.done();
 });
+
+test("the Client build is retained after its session ends and the same client_id with a new key never creates a second Client", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "welcome and policy");
+  assert.equal(t.registry.lastBuild("laptop"), "ok-1");
+  assert.equal(t.registry.lastBuild("never-seen"), null);
+  c.ws.close();
+  await until(() => t.registry.status().length === 0, "session gone");
+  assert.equal(t.registry.lastBuild("laptop"), "ok-1", "the version stays observable offline");
+  await t.done();
+});

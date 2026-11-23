@@ -64,6 +64,8 @@ export class ClientConnectionRegistry {
   readonly #rotations = new Map<string, Rotation>();
   /** When each Client was last heard, kept after its session ends so the Clients screen can say "seen 2h ago". */
   readonly #lastHeard = new Map<string, number>();
+  /** The Client build of each Client's latest session, kept after the session ends so the version stays observable offline. */
+  readonly #lastBuild = new Map<string, string>();
   readonly #options: ConnectionOptions;
   readonly #handshakeTimeoutMs: number;
   readonly #staleMs: number;
@@ -193,6 +195,11 @@ export class ClientConnectionRegistry {
     });
   }
 
+  /** The build the Client reported on its latest connection, or null when it has never connected since the Server started. */
+  lastBuild(clientId: string): string | null {
+    return this.#lastBuild.get(clientId) ?? null;
+  }
+
   status(): SessionStatus[] {
     return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
   }
@@ -311,6 +318,7 @@ export class ClientConnectionRegistry {
     const now = this.#now();
     const session: Session = { clientId, socket, build, connectedSince: now, lastSeen: now };
     this.#sessions.set(clientId, session);
+    this.#lastBuild.set(clientId, build);
     this.#logger.log("INFO", "connections", `client connected client_id=${clientId}`);
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true });
     this.syncPolicy(clientId);

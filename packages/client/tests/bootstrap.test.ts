@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { acceptEffectivePolicy, BootstrapError, loadBootstrap, parseBootstrap } from "../src/index.ts";
 import { EffectiveProjectPolicy } from "@reach-mcp/shared/wire";
-import { generateIdentityKey, verifyChallenge } from "@reach-mcp/shared/identity";
+import { generateIdentityKey, machineUuid, verifyChallenge } from "@reach-mcp/shared/identity";
 import { FsError } from "@reach-mcp/shared/filesystem";
 
 const KEY = generateIdentityKey();
+const NATIVE_ID = "0123456789abcdef0123456789abcdef";
 /** The Client private key: it must never appear in an error, view or dump. */
 const CRED = KEY.privateKey;
 const base = mkdtempSync(path.join(tmpdir(), "reach-client-"));
@@ -150,17 +151,17 @@ test("first run: createIdentity generates the client_id and Ed25519 key once, wr
   const f = path.join(mkdtempSync(path.join(tmpdir(), "reach-first-run-")), "bootstrap.env");
   writeFileSync(f, `REACH_SERVER_URL=wss://server.example/ws\nREACH_ROOTS=${JSON.stringify([anchor])}\n`, { mode: 0o600 });
   assert.throws(() => loadBootstrap(f), (e: unknown) => e instanceof BootstrapError && /missing REACH_CLIENT_ID/.test(e.message), "without the first-run option nothing is generated or written");
-  const first = loadBootstrap(f, { createIdentity: true });
+  const first = loadBootstrap(f, { createIdentity: true, readNativeMachineId: () => NATIVE_ID });
   const text = readFileSync(f, "utf8");
   assert.match(text, /REACH_CLIENT_ID=\S+\nREACH_CLIENT_IDENTITY_KEY=\S+\n$/);
   assert.equal(statSync(f).mode & 0o077, 0, "the identity file stays private");
-  const second = loadBootstrap(f, { createIdentity: true });
+  const second = loadBootstrap(f, { createIdentity: true, readNativeMachineId: () => NATIVE_ID });
   assert.equal(readFileSync(f, "utf8"), text, "the identity is generated once");
   assert.deepEqual([second.clientId, second.publicKey()], [first.clientId, first.publicKey()]);
   assert.ok(!JSON.stringify(first.publicView()).includes(/REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(text)![1]!));
   const open = path.join(path.dirname(f), "open.env");
   writeFileSync(open, readFileSync(f, "utf8").split("\n").filter((l) => !l.startsWith("REACH_CLIENT")).join("\n"), { mode: 0o644 });
-  assert.throws(() => loadBootstrap(open, { createIdentity: true }), (e: unknown) => e instanceof BootstrapError && /group or others/.test(e.message), "a file open to others never receives a key");
+  assert.throws(() => loadBootstrap(open, { createIdentity: true, readNativeMachineId: () => NATIVE_ID }), (e: unknown) => e instanceof BootstrapError && /group or others/.test(e.message), "a file open to others never receives a key");
   assert.ok(!readFileSync(open, "utf8").includes("REACH_CLIENT_IDENTITY_KEY"));
 });
 
@@ -184,4 +185,28 @@ test("prepareRotation: a candidate pair changes nothing until commit, then repla
   assert.equal(loadBootstrap(f).publicKey(), next, "a restart loads the rotated identity");
   assert.equal(verifyChallenge(next, "N".repeat(43), "laptop-1", boot.sign("N".repeat(43))), true, "signatures now come from the new key");
   assert.throws(() => parseBootstrap(text, {}, undefined).prepareRotation(), (e: unknown) => e instanceof BootstrapError && !String(e).includes(CRED), "a bootstrap with no file cannot rotate");
+});
+
+test("first run: the client_id is the Machine UUID of the OS machine, so recreating the local state keeps the same logical Client with a new key", () => {
+  const first = path.join(mkdtempSync(path.join(tmpdir(), "reach-machine-a-")), "bootstrap.env");
+  const second = path.join(mkdtempSync(path.join(tmpdir(), "reach-machine-b-")), "bootstrap.env");
+  const other = path.join(mkdtempSync(path.join(tmpdir(), "reach-machine-c-")), "bootstrap.env");
+  for (const f of [first, second, other]) writeFileSync(f, `REACH_SERVER_URL=wss://server.example/ws\nREACH_ROOTS=${JSON.stringify([anchor])}\n`, { mode: 0o600 });
+  const a = loadBootstrap(first, { createIdentity: true, readNativeMachineId: () => NATIVE_ID });
+  const reinstalled = loadBootstrap(second, { createIdentity: true, readNativeMachineId: () => NATIVE_ID });
+  const another = loadBootstrap(other, { createIdentity: true, readNativeMachineId: () => "fedcba9876543210fedcba9876543210" });
+  assert.equal(a.clientId, machineUuid(NATIVE_ID));
+  assert.equal(reinstalled.clientId, a.clientId, "same machine, same client_id after a reinstall");
+  assert.notEqual(reinstalled.publicKey(), a.publicKey(), "authentication is a separate, fresh key");
+  assert.notEqual(another.clientId, a.clientId);
+});
+
+test("first run: an unreadable native machine identifier fails closed, writes nothing and never falls back to the hostname", () => {
+  const f = path.join(mkdtempSync(path.join(tmpdir(), "reach-machine-fail-")), "bootstrap.env");
+  const text = `REACH_SERVER_URL=wss://server.example/ws\nREACH_ROOTS=${JSON.stringify([anchor])}\n`;
+  writeFileSync(f, text, { mode: 0o600 });
+  for (const read of [() => { throw new Error("denied"); }, () => "not-an-id"]) {
+    assert.throws(() => loadBootstrap(f, { createIdentity: true, readNativeMachineId: read }), (e: unknown) => e instanceof BootstrapError && /Machine UUID/.test(e.message));
+  }
+  assert.equal(readFileSync(f, "utf8"), text);
 });

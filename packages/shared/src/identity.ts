@@ -52,3 +52,16 @@ export function verifyChallenge(publicKey: string, nonce: string, clientId: stri
 
 /** The canonical, non-secret fingerprint of a public key: "ed25519:" and the SHA-256 of its raw 32 bytes in lowercase hex. */
 export const publicKeyFingerprint = (publicKey: string): string => `ed25519:${createHash("sha256").update(Buffer.from(publicKey, "base64url")).digest("hex")}`;
+
+/**
+ * The Machine UUID: one stable, NON-secret identifier of an OS machine, derived from its native identifier (Linux /etc/machine-id,
+ * Windows SMBIOS Win32_ComputerSystemProduct.UUID). The native id is canonicalized to 32 lowercase hex digits, hashed with SHA-256
+ * and the first 128 bits are written in 8-4-4-4-12 form. It is a deliberately plain custom representation (no UUID version or
+ * variant bits). It identifies the machine and never authenticates it: Ed25519 stays the only proof.
+ */
+export function machineUuid(nativeId: string): string {
+  const canonical = nativeId.trim().replace(/^\{|\}$/g, "").replaceAll("-", "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(canonical)) throw new Error("native machine identifier is not 32 hexadecimal digits");
+  const hex = createHash("sha256").update(`reach-machine-uuid-v1\n${canonical}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
