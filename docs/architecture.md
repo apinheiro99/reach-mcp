@@ -689,6 +689,10 @@ Each Client has:
 - one private key that never leaves the Client machine;
 - one public key stored by the Server as the Client authentication identity.
 
+### Access Rules and granular approval
+
+The path evaluator is the one owner of Access Rule precedence (immutable safety deny, explicit deny, explicit allow, inherited sensitive deny, inherited allow); sensitive defaults such as `.env` are inherited denies a human can override with an explicit allow, only the internal `.git` store is immutable. MCP-proposed changes are reviewed item by item through the Server (`ProposalStore`); direct Admin edits are already human-authorized. See `docs/configuration.md`.
+
 ### Runtime configuration ownership
 
 Mutable runtime behavior (heartbeat, stale, handshake and request timeouts, reconnect backoff, Admin autosave debounce) is owned by the `runtime` section of the Server config, with its defaults, bounds and live-apply behavior declared once in `packages/shared/src/runtime-settings.ts`. The Server reads it at the moment of use, pushes the Client-side values with the welcome and every policy snapshot, and the Admin UI reads the debounce from the state API. A repository guard (`tests/runtime-guard.test.ts`) fails when a declared default is written as a literal elsewhere. Details and the knob table: `docs/configuration.md`.

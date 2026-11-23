@@ -72,6 +72,20 @@ Every mutable runtime value has ONE owner: the `runtime` section of the Server c
 - No knob is restart-only today; `restart_required` in the table is the place a structural value must be declared so it is never cached silently.
 - Logging size and retention stay in the existing `logging` section of the same owner and already apply live through the writer's settings callback; an operational log level is not part of this change.
 
+## Access Rules: precedence, sensitive defaults and approval
+
+A project's Access Rules are its explicit rules: `deny_globs`, `allow_globs` and the write rules (`writable_globs`, `mode`). One evaluator (`buildPathPolicy` in `packages/shared/src/filesystem/path-policy.ts`) decides every path, in this order:
+
+1. **immutable safety deny**: the internal `.git` store. No Access Rule opens it. Root confinement, traversal and symlink refusal are outside this ACL layer and never overridable either;
+2. **explicit deny** (`deny_globs`);
+3. **explicit allow** (`allow_globs`);
+4. **inherited sensitive deny**: the built-in defaults (private keys, credentials, secrets, tokens, databases, `.env` family; `.env.example`-style templates are not denied);
+5. **inherited allow**: everything else inside the root.
+
+So `.env` is denied with no rule, and a human can open exactly `.env` with an explicit allow while `.env.production` stays denied; an explicit deny still beats an explicit allow. One effective explicit rule per glob: the same glob in `allow_globs` and `deny_globs` of one project is refused at validation, never resolved by list order. Writing additionally needs `mode`/`writable_globs`; an allow rule only lifts a read/write denial, it does not make a project writable. The Git compatibility listing stays conservative (it still excludes the inherited defaults).
+
+**Who approves what.** Direct edits in the Admin UI go through `PUT /admin/api/config` and are already human-authorized. Everything proposed through MCP (`reach_config_propose`, proposal only, no MCP tool approves or rejects) is split into independent review items (one per Access Rule glob added or removed, per project added or removed, per changed field), each with a stable id (`i1`, `i2`, ...) and a status. `GET /admin/api/proposal` lists them; `POST /admin/api/proposal/<id>/items/<item>/approve|reject` decides one; `POST /admin/api/proposal/<id>/approve|reject` is only a convenience over the items still pending. Rejecting one item changes nothing and leaves the rest reviewable. An approval is applied to the CURRENT configuration (never to the old edit) through the one config owner, then Clients are synced once. It is stale-safe: if the configuration changed after the proposal (or after its last approved item), the remaining items answer 409 stale and nothing is applied; rejecting never needs a fresh base. The proposal closes when every item is decided.
+
 ## Persistence and logs
 
 Runtime configuration, proposal state and logs live under the deployment-provided persistent root (`REACH_PRIVATE_PATH`, mounted at `/reach-private` as `config.json`, `proposal.json` and `logs/`). Secrets never belong in the public repository, logs or CI output.

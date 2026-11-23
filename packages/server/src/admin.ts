@@ -17,7 +17,7 @@ import type { ProposalStore } from "./proposals.ts";
 import type { SourcePolicy } from "./trusted-network.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
-const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(approve|reject)$/;
+const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(?:items\/([^/]+)\/)?(approve|reject)$/;
 const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|rotate-key)$/;
 const DISPLAY_NAME_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/display-name$/;
 const ROTATION_HTTP = { rotated: 200, offline: 409, busy: 409, timeout: 504, refused: 422 } as const;
@@ -187,7 +187,9 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     if (decision) {
       if (method !== "POST") return send(res, 405);
       const id = decodeURIComponent(decision[1] as string);
-      const result = decision[2] === "approve" ? proposals.approve(id) : proposals.reject(id);
+      const itemId = decision[2] === undefined ? undefined : decodeURIComponent(decision[2]);
+      const approve = decision[3] === "approve";
+      const result = itemId === undefined ? (approve ? proposals.approve(id) : proposals.reject(id)) : approve ? proposals.approveItem(id, itemId) : proposals.rejectItem(id, itemId);
       return send(res, DECISION_HTTP[result.status], { ok: result.status === "approved" || result.status === "rejected", ...result, config: config.editableView() });
     }
     send(res, 404);

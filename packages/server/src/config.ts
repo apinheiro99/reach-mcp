@@ -70,6 +70,11 @@ export const ServerConfig = z
       client.projects.forEach((project, p) => {
         if (projects.has(project.project_id)) ctx.addIssue({ code: "custom", path: ["clients", c, "projects", p, "project_id"], message: "duplicate project_id within a client" });
         projects.add(project.project_id);
+        // One effective explicit rule per glob: the same glob allowed and denied would otherwise depend on evaluation order.
+        const denied = new Set(project.deny_globs ?? []);
+        (project.allow_globs ?? []).forEach((glob, g) => {
+          if (denied.has(glob)) ctx.addIssue({ code: "custom", path: ["clients", c, "projects", p, "allow_globs", g], message: "conflicting explicit rules: the same glob is allowed and denied" });
+        });
       });
     });
   });

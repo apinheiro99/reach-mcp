@@ -248,3 +248,26 @@ test("runtime knobs over the Admin API: the state serves the autosave debounce, 
   assert.equal(readFileSync(rt.file, "utf8").includes('"admin_autosave_debounce_ms": 900'), true, "persisted in the one config file");
   await rt.close();
 });
+
+test("admin proposal item endpoints: review one rule at a time, approve-all as a convenience, MCP has no approval path", async () => {
+  const rt = await start(true);
+  const body = (path: string, method = "GET") => fetch(`${rt.a}${path}`, { method }).then(async (r) => ({ status: r.status, json: JSON.parse((await r.text()) || "{}") as Record<string, unknown> }));
+  const edit = { clients: [{ client_id: "laptop", enabled: false, projects: [{ project_id: "web", physical_root: PRIVATE_ROOT, mode: "read_only", deny_globs: ["a/**", "b/**", "c/**"] }] }] };
+  const made = rt.proposals.propose(edit) as { proposal_id: string };
+  const shown = (await body("/admin/api/proposal")).json.proposal as { items: { item_id: string; path: string; status: string }[] };
+  assert.equal(shown.items.length, 3);
+  const [a, b] = shown.items;
+  const before = rt.syncs();
+  const rejected = await body(`/admin/api/proposal/${made.proposal_id}/items/${a!.item_id}/reject`, "POST");
+  assert.deepEqual([rejected.status, rejected.json.remaining], [200, 2]);
+  assert.equal(rt.syncs(), before, "rejecting syncs nothing");
+  const approved = await body(`/admin/api/proposal/${made.proposal_id}/items/${b!.item_id}/approve`, "POST");
+  assert.deepEqual([approved.status, approved.json.remaining], [200, 1]);
+  assert.equal(rt.syncs(), before + 1);
+  assert.equal((await body(`/admin/api/proposal/${made.proposal_id}/items/${a!.item_id}/approve`, "POST")).status, 404, "a decided item is gone");
+  assert.equal((await body(`/admin/api/proposal/${made.proposal_id}/items/${b!.item_id}/approve`)).status, 405);
+  assert.equal((await body(`/admin/api/proposal/${made.proposal_id}/approve`, "POST")).status, 200, "approve-all takes what is still pending");
+  assert.deepEqual((rt.config.snapshot().clients[0]?.projects[0] as { deny_globs?: string[] }).deny_globs?.slice().sort(), ["b/**", "c/**"], "the rejected rule never applied");
+  assert.equal((await body("/admin/api/proposal")).json.proposal, null);
+  await rt.close();
+});

@@ -32,7 +32,7 @@ test("propose: stores only a redacted base and a secret-free edit, and changes n
   const result = rt.proposals.propose(edit(rt));
   assert.equal(result.status, "pending");
   const stored = readFileSync(proposalFile(rt), "utf8");
-  assert.deepEqual(Object.keys(JSON.parse(stored)).sort(), ["base", "created_at", "edit", "proposal_id"]);
+  assert.deepEqual(Object.keys(JSON.parse(stored)).sort(), ["base", "created_at", "items", "proposal_id"]);
   for (const secret of [hashCredential(MCP_MARKER), hashCredential(CLIENT_MARKER), MCP_MARKER, CLIENT_MARKER, "sha256", "mcp_bearer"]) assert.ok(!stored.includes(secret), `proposal file leaked ${secret}`);
   assert.equal(readFileSync(rt.file, "utf8"), before, "the config file is untouched");
   assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_only", "the active snapshot is untouched");
@@ -58,7 +58,7 @@ test("approve: activates through the config owner, syncs policies exactly once, 
   const rt = await startRuntime();
   const id = (rt.proposals.propose(edit(rt)) as { proposal_id: string }).proposal_id;
   const sync = spySync(rt);
-  assert.deepEqual(rt.proposals.approve(id), { status: "approved" });
+  assert.deepEqual(rt.proposals.approve(id), { status: "approved", remaining: 0 });
   assert.equal(sync.n, 1);
   assert.equal(rt.config.editableView().clients[0]?.projects[1]?.mode, "read_write");
   assert.equal(rt.config.admissionOf("laptop")?.publicKey, LAPTOP.publicKey, "public keys survive an approved edit");
@@ -86,7 +86,7 @@ test("reject: only the proposal goes away; no config change and no sync", async 
   const id = (rt.proposals.propose(edit(rt)) as { proposal_id: string }).proposal_id;
   const before = readFileSync(rt.file, "utf8");
   const sync = spySync(rt);
-  assert.deepEqual(rt.proposals.reject(id), { status: "rejected" });
+  assert.deepEqual(rt.proposals.reject(id), { status: "rejected", remaining: 0 });
   assert.equal(rt.proposals.pending(), null);
   assert.equal(readFileSync(rt.file, "utf8"), before);
   assert.equal(sync.n, 0);
@@ -129,7 +129,7 @@ test("a tampered proposal file cannot smuggle a secret through approval", async 
   const rt = await startRuntime();
   const id = (rt.proposals.propose(edit(rt)) as { proposal_id: string }).proposal_id;
   const stored = JSON.parse(readFileSync(proposalFile(rt), "utf8"));
-  stored.edit.mcp_bearer = "attacker-bearer-0123456789";
+  stored.items[0].mcp_bearer = "attacker-bearer-0123456789";
   writeFileSync(proposalFile(rt), JSON.stringify(stored));
   assert.equal(rt.proposals.approve(id).status, "not_found", "a tampered file is no proposal");
   assert.equal(rt.config.mcpBearerDigest(), hashCredential(MCP_MARKER));
@@ -147,9 +147,9 @@ test("a tampered proposal file fails closed: unknown or secret fields anywhere m
     ["base client bearer", ["base", "clients", 0, "mcp_bearer"], LEAK],
     ["base project unknown", ["base", "clients", 0, "projects", 0, "surprise"], LEAK],
     ["base top-level unknown", ["base", "mcp_bearer_sha256"], LEAK],
-    ["edit bearer", ["edit", "mcp_bearer"], LEAK],
-    ["edit key", ["edit", "clients", 0, "public_key"], LEAK],
-    ["edit project unknown", ["edit", "clients", 0, "projects", 0, "surprise"], LEAK],
+    ["item bearer", ["items", 0, "mcp_bearer"], LEAK],
+    ["item key", ["items", 0, "change", "public_key"], LEAK],
+    ["item change unknown", ["items", 0, "change", "surprise"], LEAK],
     ["bad time", ["created_at"], "yesterday"],
   ];
   const setAt = (root: unknown, keys: (string | number)[], value: unknown) => {
@@ -206,4 +206,83 @@ test("owner audit: MCP cannot activate; one edit schema owner; the proposal and 
   assert.equal((read("config.ts").match(/AdminEdit = z\./g) ?? []).length, 1);
   assert.ok(!/new Map|new Set/.test(read("admin.ts")) && !/let pending|const pending/.test(read("admin.ts") + read("mcp.ts")), "no proposal state outside ProposalStore");
   assert.ok(!/writeFileSync|renameSync|openSync/.test(read("proposals.ts") + read("config.ts")), "one atomic write primitive");
+});
+
+/** A valid edit that proposes `count` new deny rules on the api project, one glob each. */
+const ruleEdit = (rt: Rt, count: number, list: "deny_globs" | "allow_globs" = "deny_globs") => ({
+  clients: rt.config.editableView().clients.map(plain).map((c) => ({ ...c, projects: c.projects.map((p) => (p.project_id === "api" ? { ...p, [list]: [...((p as unknown as Record<string, string[]>)[list] ?? []), ...Array.from({ length: count }, (_, i) => `rules/r${i}/**`)] } : p)) })),
+});
+const apiRules = (rt: Rt, list = "deny_globs") => (rt.config.editableView().clients[0]?.projects[1] as unknown as Record<string, string[] | undefined>)[list] ?? [];
+
+test("granular review: ten proposed Access Rules are ten independent items; approving eight and rejecting two yields exactly eight effective rules", async () => {
+  const rt = await startRuntime();
+  const sync = spySync(rt);
+  const id = (rt.proposals.propose(ruleEdit(rt, 10)) as { proposal_id: string }).proposal_id;
+  const items = rt.proposals.pending()!.items;
+  assert.equal(items.length, 10);
+  assert.equal(new Set(items.map((i) => i.item_id)).size, 10, "stable distinct ids");
+  assert.ok(items.every((i) => i.status === "pending"));
+  for (const item of items.slice(0, 2)) assert.deepEqual(rt.proposals.rejectItem(id, item.item_id), { status: "rejected", remaining: 10 - items.indexOf(item) - 1 });
+  assert.deepEqual(apiRules(rt), [], "rejecting changes nothing");
+  assert.equal(sync.n, 0);
+  for (const item of items.slice(2)) assert.equal(rt.proposals.approveItem(id, item.item_id).status, "approved");
+  assert.deepEqual(apiRules(rt).sort(), items.slice(2).map((i) => i.path.match(/\[(rules[^\]]+)\]$/)![1]!).sort(), "exactly the eight approved rules are effective");
+  assert.equal(sync.n, 8, "one durable change, one sync, per approved item");
+  assert.equal(rt.proposals.pending(), null, "the proposal closes when every item is decided");
+  await rt.close();
+});
+
+test("granular review: rejecting one item leaves the others pending and approve-all is only a convenience over the remaining items", async () => {
+  const rt = await startRuntime();
+  const sync = spySync(rt);
+  const id = (rt.proposals.propose(ruleEdit(rt, 3)) as { proposal_id: string }).proposal_id;
+  const [first] = rt.proposals.pending()!.items;
+  assert.deepEqual(rt.proposals.rejectItem(id, first!.item_id), { status: "rejected", remaining: 2 });
+  assert.equal(rt.proposals.rejectItem(id, first!.item_id).status, "not_found", "a decided item cannot be decided again");
+  assert.equal(rt.proposals.approveItem(id, "nope").status, "not_found");
+  assert.deepEqual(rt.proposals.pending()!.items.map((i) => i.status), ["rejected", "pending", "pending"]);
+  assert.deepEqual(rt.proposals.approve(id), { status: "approved", remaining: 0 });
+  assert.equal(sync.n, 1, "approve-all applies the remaining items in one durable change and one sync");
+  assert.equal(apiRules(rt).length, 2);
+  assert.ok(!apiRules(rt).includes("rules/r0/**"), "the rejected item never applied");
+  await rt.close();
+});
+
+test("granular review is stale-safe: a human edit after the first approved item makes the remaining items stale and is never overwritten", async () => {
+  const rt = await startRuntime();
+  const id = (rt.proposals.propose(ruleEdit(rt, 3)) as { proposal_id: string }).proposal_id;
+  const items = rt.proposals.pending()!.items;
+  assert.equal(rt.proposals.approveItem(id, items[0]!.item_id).status, "approved");
+  rt.config.applyEdit({ clients: rt.config.editableView().clients.map(plain).map((c) => ({ ...c, display_name: "edited by a human" })) });
+  const sync = spySync(rt);
+  assert.equal(rt.proposals.approveItem(id, items[1]!.item_id).status, "stale");
+  assert.equal(rt.proposals.approve(id).status, "stale");
+  assert.equal(sync.n, 0);
+  assert.equal(rt.config.editableView().clients[0]?.display_name, "edited by a human", "the human change survives");
+  assert.deepEqual(apiRules(rt), ["rules/r0/**"].filter((g) => items[0]!.path.includes(g)).length ? [items[0]!.path.match(/\[(rules[^\]]+)\]$/)![1]] : [], "only the item approved before the human edit is applied");
+  assert.equal(rt.proposals.rejectItem(id, items[1]!.item_id).status, "rejected", "rejecting never needs a fresh base");
+  await rt.close();
+});
+
+test("an approved explicit allow rule is an Access Rule item like any other, and a conflicting allow+deny edit is refused at proposal time", async () => {
+  const rt = await startRuntime();
+  assert.equal(rt.proposals.propose(ruleEdit(rt, 1, "allow_globs")).status, "pending");
+  const [item] = rt.proposals.pending()!.items;
+  assert.match(item!.path, /\.allow_globs\[rules\/r0\/\*\*\]$/);
+  const id = rt.proposals.pending()!.proposal_id;
+  assert.equal(rt.proposals.approveItem(id, item!.item_id).status, "approved");
+  assert.deepEqual(apiRules(rt, "allow_globs"), ["rules/r0/**"]);
+  const both = rt.config.editableView().clients.map(plain).map((c) => ({ ...c, projects: c.projects.map((p) => (p.project_id === "api" ? { ...p, deny_globs: ["rules/r0/**"] } : p)) }));
+  const refused = rt.proposals.propose({ clients: both });
+  assert.equal(refused.status, "invalid");
+  assert.match(JSON.stringify(refused), /conflicting explicit rules/);
+  await rt.close();
+});
+
+test("a proposal that changes nothing is refused instead of creating an undecidable proposal", async () => {
+  const rt = await startRuntime();
+  const same = { clients: rt.config.editableView().clients.map(plain) };
+  assert.deepEqual(rt.proposals.propose(same), { status: "invalid", problems: ["the proposal changes nothing"] });
+  assert.equal(rt.proposals.pending(), null);
+  await rt.close();
 });
