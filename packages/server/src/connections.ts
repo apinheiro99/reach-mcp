@@ -23,13 +23,14 @@ import {
   SessionMessage,
   type Operation,
   type ServerProof,
-  type UpdateFailure,
+  type UpdateApplyResult,
   type WireError,
 } from "@reach-mcp/shared/wire";
 import { NO_AUDIT, type Audit } from "./audit.ts";
 import { clientRuntimeOf, type RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
 import type { ClientAdmission, ServerConfigStore } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
+import { UpdateLifecycle, type UpdateStatus } from "./update-lifecycle.ts";
 
 export type ConnectionOptions = {
   config: ServerConfigStore;
@@ -61,11 +62,10 @@ export type ConnectionOptions = {
 };
 
 /** `compatible` false is a management-only session: authenticated and live, but never given policy, requests or key rotation. */
-type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; update: UpdateStatus | null; connectedSince: number; lastSeen: number };
+type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; connectedSince: number; lastSeen: number };
 type Handshake = { nonce: string; clientNonce: string | null };
 type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
-/** Where the one update of a session stands: `requested` until the Client answers, then its own states. `failed` frees the slot; every other state holds it until the session ends. */
-export type UpdateStatus = { state: "requested" | "staging" | "restarting" | "failed"; reason?: UpdateFailure };
+export type { UpdateStatus } from "./update-lifecycle.ts";
 export type UpdateResult = "accepted" | "offline" | "current" | "unsupported" | "busy";
 export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
@@ -81,6 +81,8 @@ export class ClientConnectionRegistry {
   readonly #sessions = new Map<string, Session>();
   readonly #pending = new Map<string, Pending>();
   readonly #rotations = new Map<string, Rotation>();
+  /** Every update attempt of every Client, kept across reconnects; terminal states come from a receipt only. */
+  readonly #updates = new UpdateLifecycle();
   /** When each Client was last heard, kept after its session ends so the Clients screen can say "seen 2h ago". */
   readonly #lastHeard = new Map<string, number>();
   /** The Client build of each Client's latest session, kept after the session ends so the version stays observable offline. */
@@ -227,10 +229,11 @@ export class ClientConnectionRegistry {
     if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return this.#recordUpdate(clientId, "offline");
     if (session.build === this.#options.serverBuild) return this.#recordUpdate(clientId, "current");
     if (!session.updateCapable) return this.#recordUpdate(clientId, "unsupported");
-    if (session.update !== null && session.update.state !== "failed") return this.#recordUpdate(clientId, "busy");
-    session.update = { state: "requested" };
-    if (!this.#send(session, { kind: "update" })) {
-      session.update = null;
+    if (this.#updates.hasInFlight(clientId)) return this.#recordUpdate(clientId, "busy");
+    const updateId = this.#newId("update");
+    this.#updates.begin(clientId, session, { update_id: updateId, from_build: session.build, target_build: this.#options.serverBuild });
+    if (!this.#send(session, { kind: "update", update_id: updateId })) {
+      this.#updates.discard(clientId, updateId);
       return this.#recordUpdate(clientId, "offline");
     }
     return this.#recordUpdate(clientId, "accepted");
@@ -249,7 +252,7 @@ export class ClientConnectionRegistry {
   }
 
   status(): SessionStatus[] {
-    return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, compatible: s.compatible, update_capable: s.updateCapable, update: s.update, connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
+    return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, compatible: s.compatible, update_capable: s.updateCapable, update: this.#updates.status(s.clientId), connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
   }
 
   /** Terminates every stale session. */
@@ -403,7 +406,7 @@ export class ClientConnectionRegistry {
       existing.socket.terminate();
     }
     const now = this.#now();
-    const session: Session = { clientId, socket, build, compatible, updateCapable: updateCapable === true, update: null, connectedSince: now, lastSeen: now };
+    const session: Session = { clientId, socket, build, compatible, updateCapable: updateCapable === true, connectedSince: now, lastSeen: now };
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
     this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
@@ -480,18 +483,30 @@ export class ClientConnectionRegistry {
     if (!message.ok) return session.socket.terminate();
     if (message.data.kind === "rotated") return this.#onRotated(session, message.data);
     if (message.data.kind === "update_state") return this.#onUpdateState(session, message.data);
+    if (message.data.kind === "update_receipt") return this.#onUpdateReceipt(session, message.data.receipt);
     const pending = this.#pending.get(message.data.request_id);
     // A response settles only the request it answers, and only on the session that carried it; anything else is dropped.
     if (pending && pending.session === session) pending.settle(message.data);
   }
 
-  /** An update state counts only while an update was asked on this very session; it is logged and audited once per state the Client reports. */
+  /** An update state counts only for the attempt asked on this very session; it is logged and audited once per state the Client reports. */
   #onUpdateState(session: Session, report: ClientUpdateState): void {
-    if (session.update === null) return;
-    session.update = report.state === "failed" ? { state: "failed", reason: report.reason } : { state: report.state };
-    const result = report.state === "failed" ? `failed:${report.reason}` : report.state;
-    this.#logger.log(report.state === "failed" ? "WARNING" : "RUNNING", "connections", `client update ${result} client_id=${session.clientId}${this.#who(session.clientId)}`);
-    this.#audit.record({ actor: "client", action: "client_update_state", client_id: session.clientId, result });
+    if (this.#updates.progress(session.clientId, session, report) !== "recorded") return;
+    this.#recordClientUpdate(session.clientId, report.state === "failed" ? `failed:${report.reason}` : report.state, report.state === "failed");
+  }
+
+  /** The terminal apply receipt: accepted on any authenticated session, so it survives a reconnect and a Server restart; a repeat changes and logs nothing, a conflict changes nothing. */
+  #onUpdateReceipt(session: Session, receipt: UpdateApplyResult): void {
+    const outcome = this.#updates.receipt(session.clientId, session, receipt);
+    if (outcome === "duplicate") return;
+    const result = outcome === "recorded" ? (receipt.state === "failed" ? `failed:${receipt.reason}` : receipt.state) : `receipt_${outcome}`;
+    this.#recordClientUpdate(session.clientId, result, outcome !== "recorded" || receipt.state === "failed");
+  }
+
+  /** The one place a Client-reported update state is logged and audited, with the Client id and the result only. */
+  #recordClientUpdate(clientId: string, result: string, warning: boolean): void {
+    this.#logger.log(warning ? "WARNING" : "RUNNING", "connections", `client update ${result} client_id=${clientId}${this.#who(clientId)}`);
+    this.#audit.record({ actor: "client", action: "client_update_state", client_id: clientId, result });
   }
 
   /** The Client's answer to a rotation: only the one asked, on the session that was asked, stages its new key; it is told to commit only once that is stored. */
@@ -513,6 +528,7 @@ export class ClientConnectionRegistry {
   #drop(session: Session): void {
     if (this.#sessions.get(session.clientId) !== session) return;
     this.#sessions.delete(session.clientId);
+    this.#updates.sessionEnded(session.clientId, session);
     this.#lastHeard.set(session.clientId, session.lastSeen);
     this.#rotations.get(session.clientId)?.settle("offline");
     this.#logger.log("RUNNING", "connections", `client disconnected client_id=${session.clientId}${this.#who(session.clientId)}`);

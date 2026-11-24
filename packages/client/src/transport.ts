@@ -7,7 +7,7 @@ import { followTrustRotations, newNonce, verifyServerAuth } from "@reach-mcp/sha
 import { RUNTIME_DEFAULTS, type ClientRuntime } from "@reach-mcp/shared/runtime-settings";
 import WebSocket from "ws";
 import type { RawData } from "ws";
-import { ClientAuthBegin, ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type ServerProof, type WireError } from "@reach-mcp/shared/wire";
+import { ClientAuthBegin, ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type ServerProof, type UpdateApplyResult, type WireError } from "@reach-mcp/shared/wire";
 import type { Bootstrap } from "./bootstrap.ts";
 import { suggestClientDisplayName } from "./display-name.ts";
 import { UpdateError } from "./updater.ts";
@@ -34,6 +34,8 @@ export type TransportOptions = {
   handler?: FrameHandler;
   /** Makes this Client update-capable: the hello says so, and the Server's update command runs it. */
   updater?: UpdateRunner;
+  /** Reads the latest terminal apply result the privileged wrapper left; reported after every welcome, and never produced by the Client itself. */
+  receipt?: () => UpdateApplyResult | null;
   /** Opaque build identifier of this Client, sent as-is in the hello. */
   build: string;
   /** Called once when the Server's admission answer is terminal (see TERMINAL_REJECTS), so the process owner can surface it; never for transient loss. */
@@ -91,6 +93,7 @@ export class ClientTransport {
   readonly #handshakeTimeoutMs: number;
   readonly #handler: FrameHandler | undefined;
   readonly #updater: UpdateRunner | undefined;
+  readonly #receipt: (() => UpdateApplyResult | null) | undefined;
   #updating = false;
   readonly #onTerminal: ((error: WireError) => void) | undefined;
   readonly #onPin: ((event: "first" | "rotated") => void) | undefined;
@@ -106,6 +109,7 @@ export class ClientTransport {
     this.#heartbeat = options.heartbeat ?? DEFAULT_HEARTBEAT;
     this.#handler = options.handler;
     this.#updater = options.updater;
+    this.#receipt = options.receipt;
     this.#onTerminal = options.onTerminal;
     this.#onPin = options.onPin;
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
@@ -192,6 +196,7 @@ export class ClientTransport {
       this.#lastError = null;
       this.#lastHealthyAt = this.#now();
       if (reply.data.runtime) this.#applyRuntime(socket, reply.data.runtime);
+      this.#reportReceipt(socket);
       return;
     }
     this.#lastError = reply.data.error;
@@ -255,7 +260,7 @@ export class ClientTransport {
     if (!this.#handler || !message?.ok) return this.#failClosed(socket, "unexpected frame after the handshake");
     if (message.data.kind === "rotate_key") return this.#rotateKey(socket, message.data.rotation_id);
     if (message.data.kind === "rotate_committed") return this.#commitRotation(socket, message.data.rotation_id);
-    if (message.data.kind === "update") return this.#update(socket);
+    if (message.data.kind === "update") return this.#update(socket, message.data.update_id);
     if (message.data.kind === "policy_sync") {
       if (message.data.runtime) this.#applyRuntime(socket, message.data.runtime);
       try {
@@ -277,17 +282,23 @@ export class ClientTransport {
   }
 
   /** The explicit update: one at a time, states reported on the asking connection, a failure reported with its closed reason and never dropping the socket. A Client that did not say it can update treats the frame as a violation. */
-  #update(socket: WebSocket): void {
+  #update(socket: WebSocket, updateId: string): void {
     if (!this.#updater) return this.#failClosed(socket, "update not supported");
     if (this.#updating) return;
     this.#updating = true;
     const send = (frame: object) => socket === this.#socket && this.#state === "connected" && socket.send(JSON.stringify(frame));
-    this.#updater((state) => send({ kind: "update_state", state })).then(
+    this.#updater((state) => send({ kind: "update_state", update_id: updateId, state })).then(
       () => undefined,
-      (error: unknown) => send({ kind: "update_state", state: "failed", reason: error instanceof UpdateError ? error.reason : "staging" }),
+      (error: unknown) => send({ kind: "update_state", update_id: updateId, state: "failed", reason: error instanceof UpdateError ? error.reason : "staging" }),
     ).finally(() => {
       this.#updating = false;
     });
+  }
+
+  /** The latest terminal apply result, reported once per admitted session; the Server treats a repeat as idempotent. A missing or unreadable receipt reports nothing and is never replaced by a guess. */
+  #reportReceipt(socket: WebSocket): void {
+    const receipt = this.#receipt?.();
+    if (receipt) socket.send(JSON.stringify({ kind: "update_receipt", receipt }));
   }
 
   /** Rotation step 1: the Bootstrap owner generates a CANDIDATE pair; only its public key goes back. The valid key stays the identity. */
