@@ -54,6 +54,7 @@ if ($null -ne $Task) {
   if ($TaskArgs.IndexOf("`"$InstallDir\reach-client.mjs`"", [StringComparison]::OrdinalIgnoreCase) -lt 0) { Fail "scheduled task '$($R.task_name)' does not run the REACH Client from ${InstallDir}: refusing to remove it" }
   Stop-ScheduledTask -TaskName $R.task_name -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $R.task_name -Confirm:$false
+  Unregister-ScheduledTask -TaskName 'REACH Client Update' -Confirm:$false -ErrorAction SilentlyContinue
 }
 
 # Only Node processes started from the recorded install directory are stopped, then the runtime goes: only a directory that holds the REACH launcher.

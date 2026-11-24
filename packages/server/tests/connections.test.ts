@@ -5,7 +5,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
-import { ClientConnectionRegistry, hashCredential, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { ClientConnectionRegistry, createAdminHandler, hashCredential, ProposalStore, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
 import { DESKTOP, LAPTOP, newIdentity, signedHello, type TestIdentity } from "./identity-fixture.ts";
 
 /** An editable view's client without the two read-only facts the edit schema does not accept. */
@@ -273,9 +275,10 @@ test("Rotate Key: only the Client's public key comes back and is STAGED next to 
   await t.done();
 });
 
-test("build gate: an incompatible opaque build is refused with both identifiers and no protocol number", async () => {
+test("build gate: an incompatible opaque build from a Client that is not Enabled is refused with both identifiers and no protocol number", async () => {
   const t = await setup();
-  const c = await t.connect({ build: "old-9" });
+  const stranger = newIdentity();
+  const c = await t.connect({ id: "newbox", identity: stranger, build: "old-9" });
   await c.closed;
   const reject = c.frames.find((f) => f.kind === "reject")!;
   assert.equal(reject.error!.code, "INCOMPATIBLE_BUILD");
@@ -283,6 +286,50 @@ test("build gate: an incompatible opaque build is refused with both identifiers 
   assert.equal(reject.server_build, "srv-1");
   assert.ok(!/protocol|version/i.test(JSON.stringify(reject)));
   assert.deepEqual(t.registry.status(), []);
+  await t.done();
+});
+
+// The handshake parser every pre-change Client runs: a strict welcome that only accepts compatible=true, with no extra field.
+const preChangeClientAcceptsWelcome = (frame: Frame): boolean => {
+  const keys = Object.keys(frame);
+  return frame.kind === "welcome" && (frame as { compatible?: unknown }).compatible === true && keys.every((k) => ["kind", "server_build", "compatible", "runtime"].includes(k));
+};
+
+test("management-only session: a known Enabled Client with an incompatible build gets the welcome pre-change Clients accept, stays connected, and gets no policy, request or key rotation", async () => {
+  const t = await setup();
+  const c = await t.connect({ build: "old-9" });
+  await until(() => c.frames.some((f) => f.kind === "welcome"), "welcome");
+  assert.equal(preChangeClientAcceptsWelcome(c.frames.find((f) => f.kind === "welcome")!), true, "a pre-change parser keeps the socket");
+  assert.deepEqual(t.registry.status().map((s) => [s.client_id, s.client_build, s.compatible, s.online]), [["laptop", "old-9", false, true]], "the Server alone knows it is incompatible");
+  const refused = await t.registry.route("laptop", "web", { op: "fs_list", path: "" });
+  assert.equal(refused.ok, false);
+  assert.equal(!refused.ok && refused.error.code, "INCOMPATIBLE_BUILD");
+  assert.equal(t.registry.syncPolicy("laptop"), false, "no policy snapshot is ever pushed");
+  assert.equal(await t.registry.rotateKey("laptop"), "refused");
+  const pong = new Promise<void>((r) => c.ws.once("pong", () => r()));
+  c.ws.ping();
+  await pong;
+  assert.equal(c.ws.readyState, WebSocket.OPEN, "the socket stays alive and answers the heartbeat");
+  assert.deepEqual(c.frames.map((f) => f.kind), ["challenge", "welcome"], "nothing but the welcome reached the Client");
+  await t.done();
+});
+
+test("management-only session: the stale sweep ends it like any other session", async () => {
+  const t = await setup();
+  const c = await t.connect({ build: "old-9" });
+  await until(() => c.frames.some((f) => f.kind === "welcome"), "welcome");
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms + 1_000);
+  assert.equal(t.registry.status()[0]!.online, false);
+  t.registry.sweep();
+  await c.closed;
+  await t.done();
+});
+
+test("a compatible Client is unchanged: compatible welcome without error", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "welcome and policy");
+  assert.equal(t.registry.status()[0]!.compatible, true);
   await t.done();
 });
 
@@ -570,5 +617,101 @@ test("policy snapshots carry the live Client timing so a connected Client can fo
   t.registry.syncAllPolicies();
   await until(() => c.frames.length === 4, "second policy snapshot");
   assert.deepEqual((c.frames[3] as { runtime?: unknown }).runtime, clientRuntimeOf(live));
+  await t.done();
+});
+
+const updateFrames = (client: { frames: Frame[] }) => client.frames.filter((f) => f.kind === "update");
+const updateState = (client: { ws: WebSocket }, state: object) => client.ws.send(JSON.stringify({ kind: "update_state", ...state }));
+
+test("update: an update-capable Client gets exactly one command, a second is busy, its states are tracked, and a failure frees the slot", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy", "one update in flight per Client");
+  await until(() => updateFrames(c).length === 1, "the command");
+  assert.deepEqual(updateFrames(c)[0], { kind: "update" }, "the command carries nothing");
+  updateState(c, { state: "staging" });
+  await until(() => t.registry.status()[0]!.update?.state === "staging", "staging");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy");
+  updateState(c, { state: "failed", reason: "verification" });
+  await until(() => t.registry.status()[0]!.update?.state === "failed", "failed");
+  assert.deepEqual(t.registry.status()[0]!.update, { state: "failed", reason: "verification" });
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a failed update can be asked again");
+  await until(() => updateFrames(c).length === 2, "second command");
+  updateState(c, { state: "restarting" });
+  await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy");
+  await t.done();
+});
+
+test("update: an incompatible (management-only) Client may be updated while every project operation stays blocked; non-capable and offline Clients are refused explicitly", async () => {
+  const t = await setup();
+  const old = await t.connect({ build: "old-9", extra: { update_capable: true } });
+  await until(() => old.frames.some((f) => f.kind === "welcome"), "welcome");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(old).length === 1, "command on the incompatible session");
+  const refused = await t.registry.route("laptop", "web", { op: "fs_list", path: "" });
+  assert.equal(!refused.ok && refused.error.code, "INCOMPATIBLE_BUILD");
+  assert.equal(t.registry.syncPolicy("laptop"), false);
+  assert.equal(await t.registry.rotateKey("laptop"), "refused");
+  const preChange = await t.connect({ id: "desktop", identity: DESKTOP, build: "old-9" });
+  await until(() => preChange.frames.some((f) => f.kind === "welcome"), "pre-change welcome");
+  assert.equal(t.registry.requestUpdate("desktop"), "unsupported", "a pre-change Client has no handler: nothing is sent and its socket is not dropped");
+  assert.deepEqual(updateFrames(preChange), []);
+  assert.equal(preChange.ws.readyState, WebSocket.OPEN);
+  assert.equal(t.registry.requestUpdate("off"), "offline");
+  assert.equal(t.registry.requestUpdate("nobody"), "offline");
+  await t.done();
+});
+
+test("update: a state reported without an update asked is ignored, and the slot ends with the session", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  updateState(c, { state: "staging" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(t.registry.status()[0]!.update, null, "nothing was asked, so nothing is tracked");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  c.ws.close();
+  await c.closed;
+  await until(() => t.registry.status().length === 0, "session ended");
+  const again = await t.connect({ extra: { update_capable: true } });
+  await until(() => again.frames.length === 3, "reconnected");
+  assert.equal(t.registry.status()[0]!.update, null, "a new session starts with no update in flight");
+  await t.done();
+});
+
+test("update: a Client already on the Server's build is refused as current and nothing is sent; the Admin view says so and keeps connected_since apart from the heartbeat", async () => {
+  const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
+  const c = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "current");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(updateFrames(c), [], "no command was sent to a current Client");
+  assert.equal(t.registry.status()[0]!.update, null);
+
+  const proposals = new ProposalStore({ path: path.join(path.dirname(configFile), "proposal.json"), config: t.config, connections: t.registry });
+  const server = createServer(createAdminHandler({ config: t.config, connections: t.registry, proposals, serverBuild: "srv-1" }));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/admin/api/clients`;
+  const view = async () => ((await (await fetch(base)).json()) as { clients: { client_id: string; connected_since: number | null; last_seen: number | null; update_available: boolean | null }[] }).clients.find((x) => x.client_id === "laptop")!;
+  const first = await view();
+  assert.equal(first.update_available, false, "the Server says this Client is already current");
+  assert.equal(typeof first.connected_since, "number");
+  t.clock.advance(4000);
+  c.ws.ping();
+  await until(() => t.registry.status()[0]!.last_seen > t.registry.status()[0]!.connected_since, "heartbeat seen");
+  const second = await view();
+  assert.equal(second.connected_since, first.connected_since, "the session start does not move with the heartbeat");
+  assert.ok(second.last_seen! > first.last_seen!, "last_seen is the heartbeat");
+  const post = await fetch(`${base}/laptop/update`, { method: "POST" });
+  assert.deepEqual([post.status, await post.json()], [409, { ok: false, result: "current" }], "the endpoint refuses explicitly");
+  const old = await t.connect({ id: "desktop", identity: DESKTOP, build: "ok-0", extra: { update_capable: true } });
+  await until(() => old.frames.length === 3, "second admitted");
+  const stale = ((await (await fetch(base)).json()) as { clients: { client_id: string; update_available: boolean | null }[] }).clients.find((x) => x.client_id === "desktop");
+  assert.equal(stale?.update_available, true, "a Client on another build can be updated");
+  await new Promise<void>((r) => server.close(() => r()));
+  server.closeAllConnections();
   await t.done();
 });

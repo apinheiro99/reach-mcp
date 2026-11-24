@@ -14,6 +14,8 @@ $RootGiven = [bool]$env:REACH_ROOT
 $AllowWholeDrive = $env:REACH_ALLOW_WHOLE_DRIVE -eq '1'
 $Root = if ($env:REACH_ROOT) { $env:REACH_ROOT } else { Join-Path $StateDir 'root' }
 $Origin = "$env:REACH_SERVER_ORIGIN".TrimEnd('/')
+# An archive the Client already downloaded (an operator-triggered update); it is still checked against the manifest below before anything changes.
+$Staged = $env:REACH_STAGED
 
 function Fail([string]$Message) { throw "install.ps1: $Message" }
 
@@ -93,7 +95,7 @@ try {
   if ($Build -isnot [string] -or $Build -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') { Fail 'the manifest client build id is not a plain identifier' }
 
   $ArchiveFile = Join-Path $Work 'client.zip'
-  Get-Release $Artifact.download_path $ArchiveFile
+  if ($Staged) { Copy-Item -LiteralPath $Staged -Destination $ArchiveFile } else { Get-Release $Artifact.download_path $ArchiveFile }
   if ((Get-Item -LiteralPath $ArchiveFile).Length -ne $Artifact.size_bytes) { Fail "the downloaded size differs from the manifest $($Artifact.size_bytes)" }
   if ((Get-FileHash -LiteralPath $ArchiveFile -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Artifact.sha256) { Fail 'the downloaded SHA-256 differs from the manifest' }
 

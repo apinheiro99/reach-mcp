@@ -76,8 +76,8 @@ root="${root%/}"
 unit="$unit_dir/$unit_name"
 if [ -e "$unit" ]; then
   grep '^ExecStart=' "$unit" | grep -Fq "\"${install_dir%/}/reach-client.mjs\"" || die "$unit does not run the REACH Client from $install_dir: refusing to remove it"
-  if [ "$system" = 1 ]; then systemctl disable --now "$unit_name" >/dev/null 2>&1 || true; fi
-  rm -f "$unit"
+  if [ "$system" = 1 ]; then systemctl disable --now "$unit_name" reach-mcp-client-update.path >/dev/null 2>&1 || true; fi
+  rm -f "$unit" "$unit_dir/reach-mcp-client-update.path" "$unit_dir/reach-mcp-client-update.service"
   if [ "$system" = 1 ]; then systemctl daemon-reload; fi
 fi
 

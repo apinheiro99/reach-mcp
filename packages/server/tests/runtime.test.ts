@@ -133,7 +133,7 @@ test("Server and Client runtimes: unknown Client waits Pending, Enable admits it
   assert.equal(statSync(file).mode & 0o077, 0, "the identity file stays private");
 
   assert.equal(await wait(async () => (await list()).clients.length === 1), true, "the valid unknown identity registered itself");
-  assert.deepEqual((await list()).counts, { total: 1, enabled: 0, pending: 1, disabled: 0, online: 0, offline: 1 });
+  assert.deepEqual((await list()).counts, { total: 1, enabled: 0, pending: 1, disabled: 0, online: 0, incompatible: 0, offline: 1 });
   assert.equal(await connected(), 0, "Pending has no operational session");
   const config = readFileSync(d.config, "utf8");
   assert.ok(config.includes(clientId) && config.includes("public_key") && !config.includes(oldKey), "the Server holds the public key only");

@@ -290,3 +290,16 @@ test("rotation frames: the Server asks with a rotation_id, the Client answers wi
   assert.equal(PostWelcomeMessage.safeParse({ ...commit, public_key: answer.public_key }).success, false);
   for (const code of ["PENDING_APPROVAL", "CLIENT_DISABLED"]) assert.equal(WireError.safeParse({ code, message: "m" }).success, true, code);
 });
+
+test("update frames: the command carries nothing, a state is one of three, a failure has only a closed reason, and the hello capability is only `true`", async () => {
+  const { ServerUpdate, ClientUpdateState, UPDATE_FAILURES } = await import("../src/wire/index.ts");
+  assert.equal(ServerUpdate.safeParse({ kind: "update" }).success, true);
+  for (const bad of [{ kind: "update", url: "http://x" }, { kind: "update", command: "anything" }, { kind: "update", build: "b" }]) assert.equal(ServerUpdate.safeParse(bad).success, false, "no URL, command or build can ride on it");
+  for (const state of ["staging", "restarting"]) assert.equal(ClientUpdateState.safeParse({ kind: "update_state", state }).success, true);
+  for (const reason of UPDATE_FAILURES) assert.equal(ClientUpdateState.safeParse({ kind: "update_state", state: "failed", reason }).success, true);
+  for (const bad of [{ kind: "update_state", state: "failed" }, { kind: "update_state", state: "failed", reason: "C:\\some\\path" }, { kind: "update_state", state: "restarting", reason: "manifest" }, { kind: "update_state", state: "done" }]) assert.equal(ClientUpdateState.safeParse(bad).success, false);
+  assert.equal(SessionMessage.safeParse({ kind: "update_state", state: "staging" }).success, true);
+  const hello = { kind: "hello", client_id: "laptop-1", client_build: "b1", public_key: "A".repeat(43), signature: "B".repeat(86) };
+  assert.equal(ClientHello.safeParse(hello).success, ClientHello.safeParse({ ...hello, update_capable: true }).success, "the field is optional, so a pre-change hello still parses");
+  assert.equal(ClientHello.safeParse({ ...hello, update_capable: false }).success, false);
+});

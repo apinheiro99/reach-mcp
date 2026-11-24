@@ -15,9 +15,10 @@ DEFAULT_UNIT_DIR=/etc/systemd/system
 
 usage() {
   cat >&2 <<EOF
-usage: install.sh --server-origin http://<host>[:<port>] [--root <abs-dir>] [--state-dir <abs-dir>] [--install-dir <abs-dir>] [--unit-dir <abs-dir>] [--allow-whole-disk] [--test-no-system]
+usage: install.sh --server-origin http://<host>[:<port>] [--root <abs-dir>] [--state-dir <abs-dir>] [--install-dir <abs-dir>] [--unit-dir <abs-dir>] [--staged <abs-file>] [--allow-whole-disk] [--test-no-system]
   --root         the one physical root the Client may serve; default <state-dir>/root (any directory, including /)
   --allow-whole-disk  required to share / (the whole disk) as the root; without it the installer stops and shows the warning
+  --staged       an already downloaded archive (an operator-triggered update stages it); it is still checked against the manifest's size and SHA-256 before anything changes
   --test-no-system  tests only: no account, ownership or systemd change; the unit is written and not started
 EOF
   exit 2
@@ -28,12 +29,12 @@ die() {
   exit 2
 }
 
-origin="" root="" root_given="" whole_disk="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
+staged="" origin="" root="" root_given="" whole_disk="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --test-no-system) system=0; shift; continue ;;
     --allow-whole-disk) whole_disk=1; shift; continue ;;
-    --server-origin | --root | --state-dir | --install-dir | --unit-dir) [ $# -ge 2 ] || usage ;;
+    --server-origin | --root | --state-dir | --install-dir | --unit-dir | --staged) [ $# -ge 2 ] || usage ;;
     *) usage ;;
   esac
   case "$1" in
@@ -42,6 +43,7 @@ while [ $# -gt 0 ]; do
     --state-dir) state_dir="$2" ;;
     --install-dir) install_dir="$2" ;;
     --unit-dir) unit_dir="$2" ;;
+    --staged) staged="$2" ;;
   esac
   shift 2
 done
@@ -185,7 +187,12 @@ want_sha="$(printf '%s\n' "$selection" | sed -n 2p)"
 want_size="$(printf '%s\n' "$selection" | sed -n 3p)"
 build="$(printf '%s\n' "$selection" | sed -n 4p)"
 
-fetch "$download_path" "$work/client.tgz"
+if [ -n "$staged" ]; then
+  [ -f "$staged" ] || die "--staged is not a file"
+  cp "$staged" "$work/client.tgz"
+else
+  fetch "$download_path" "$work/client.tgz"
+fi
 CHECK='
 const fs = require("node:fs");
 const { createHash } = require("node:crypto");

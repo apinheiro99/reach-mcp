@@ -15,7 +15,7 @@ export const ServerChallenge = z.strictObject({ kind: z.literal("challenge"), no
 export type ServerChallenge = z.infer<typeof ServerChallenge>;
 
 /** Client -> Server, once per connection: identity, public key and the signature of the challenge. A first valid hello from an unknown client_id registers it as Pending; it gets no access until a human enables it. */
-export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional() });
+export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional(), update_capable: z.literal(true).optional() });
 export type ClientHello = z.infer<typeof ClientHello>;
 
 export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true), runtime: ClientRuntime.optional() });
@@ -50,8 +50,25 @@ export type ServerRotateCommitted = z.infer<typeof ServerRotateCommitted>;
 export const ClientRotated = z.strictObject({ kind: z.literal("rotated"), rotation_id: RequestId, public_key: PublicKey });
 export type ClientRotated = z.infer<typeof ClientRotated>;
 
-/** What an admitted Client may send: a response to a request, or the answer to a key rotation. */
-export const SessionMessage = z.union([ClientRotated, ...ResponseEnvelope.options]);
+/** Server -> Client: the explicit operator command to update to the Server's canonical release build. It carries no URL, path, command or build: the Client resolves everything from the Server's release manifest. Sent only to a Client whose hello said `update_capable`. */
+export const ServerUpdate = z.strictObject({ kind: z.literal("update") });
+export type ServerUpdate = z.infer<typeof ServerUpdate>;
+
+/** Why an update stopped before the replacement: a closed set, so a state can never carry a path, URL or secret. */
+export const UPDATE_FAILURES = ["unsupported", "current", "manifest", "artifact", "verification", "staging", "handoff"] as const;
+export const UpdateFailure = z.enum(UPDATE_FAILURES);
+export type UpdateFailure = z.infer<typeof UpdateFailure>;
+
+/** Client -> Server: where the one update in flight stands. `restarting` is the last word of a successful update: the replacement is verified and handed to the platform lifecycle owner, and the Client reconnects on the new build. */
+export const ClientUpdateState = z.discriminatedUnion("state", [
+  z.strictObject({ kind: z.literal("update_state"), state: z.literal("staging") }),
+  z.strictObject({ kind: z.literal("update_state"), state: z.literal("restarting") }),
+  z.strictObject({ kind: z.literal("update_state"), state: z.literal("failed"), reason: UpdateFailure }),
+]);
+export type ClientUpdateState = z.infer<typeof ClientUpdateState>;
+
+/** What an admitted Client may send: a response to a request, the answer to a key rotation, or an update state. */
+export const SessionMessage = z.union([ClientRotated, ...ClientUpdateState.options, ...ResponseEnvelope.options]);
 export type SessionMessage = z.infer<typeof SessionMessage>;
 
 /** Client -> Server: the hello, then one response per request. */
@@ -62,11 +79,11 @@ export const ClientMessage = z.union([ClientHello, ...SessionMessage.options]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
 /** Server -> Client: the handshake answer, the policy snapshot, and the requests the Client executes. */
-export const ServerMessage = z.union([ServerChallenge, ServerWelcome, ServerReject, PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted]);
+export const ServerMessage = z.union([ServerChallenge, ServerWelcome, ServerReject, PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted, ServerUpdate]);
 export type ServerMessage = z.infer<typeof ServerMessage>;
 
 /** What the Server may send once the Client is admitted. */
-export const PostWelcomeMessage = z.union([PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted]);
+export const PostWelcomeMessage = z.union([PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted, ServerUpdate]);
 export type PostWelcomeMessage = z.infer<typeof PostWelcomeMessage>;
 
 export type WireParse<T> = { ok: true; data: T } | { ok: false; error: WireError };

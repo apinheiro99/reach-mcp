@@ -34,10 +34,10 @@ export const COMPONENT_CSS = `
 .row-detail{color:var(--c-muted);font-size:var(--fs-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-aside{color:var(--c-muted);font-size:var(--fs-sm);white-space:nowrap}
 .toggle{display:inline-flex;align-items:center;gap:var(--sp-2);cursor:pointer;font-size:var(--fs-md)}
-.toggle input{appearance:none;width:2.25rem;height:1.25rem;border-radius:var(--radius-pill);background:var(--c-elevated);border:1px solid var(--c-border-strong);position:relative;margin:0;cursor:pointer;transition:background .15s}
-.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:.95rem;height:.95rem;border-radius:50%;background:var(--c-muted);transition:transform .15s,background .15s}
-.toggle input:checked{background:var(--c-accent-soft);border-color:var(--c-accent)}
-.toggle input:checked::after{transform:translateX(1rem);background:var(--c-accent)}
+.toggle input{appearance:none;width:2.25rem;height:1.25rem;border-radius:var(--radius-pill);background:var(--c-bad-soft);border:1px solid var(--c-bad);position:relative;margin:0;cursor:pointer;transition:background .15s}
+.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:.95rem;height:.95rem;border-radius:50%;background:var(--c-bad);transition:transform .15s,background .15s}
+.toggle input:checked{background:var(--c-ok-soft);border-color:var(--c-ok)}
+.toggle input:checked::after{transform:translateX(1rem);background:var(--c-ok)}
 .field{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-sm);color:var(--c-muted);min-width:0}
 .input{font:inherit;color:var(--c-text);background:var(--c-surface);border:1px solid var(--c-border-strong);border-radius:var(--radius-control);padding:.45rem .65rem;min-width:0;width:100%}
 .input[data-kind="path"]{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--fs-sm)}
@@ -59,9 +59,9 @@ export const COMPONENT_CSS = `
 .stack{display:flex;flex-direction:column;gap:var(--gap)}
 .hint{color:var(--c-muted);font-size:var(--fs-sm)}
 .table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
-.table th{color:var(--c-muted);font-weight:600;text-align:left;padding:var(--sp-2);border-bottom:1px solid var(--c-border)}
+.table th{color:var(--c-muted);font-weight:600;text-align:left;padding:var(--sp-2);border-bottom:1px solid var(--c-border);position:sticky;top:0;z-index:1;background:var(--c-surface)}
 .table td{padding:var(--sp-2);border-bottom:1px solid var(--c-border);overflow-wrap:anywhere}
-.card[data-variant="table"] .card-body{padding:0;overflow-x:auto}
+.card[data-variant="table"] .card-body{padding:0;overflow:auto;max-height:70vh}
 .card[data-variant="table"] .table th{padding:var(--sp-4);font-size:var(--fs-md);color:var(--c-text)}
 .card[data-variant="table"] .table td{padding:var(--sp-3) var(--sp-4)}
 .table tr:last-child td{border-bottom:0}
@@ -69,7 +69,7 @@ export const COMPONENT_CSS = `
 .table tr[data-tone="warn"] td:first-child{box-shadow:inset 2px 0 0 var(--c-warn)}
 .table tr[data-note="head"] td{border-bottom:0}
 .table tr[data-note="body"] td{padding-top:0}
-.stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--gap)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:var(--gap)}
 .toolbar{display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--gap)}
 .toolbar>.search{flex:1 1 16rem}
 .toolbar .input{height:2.9rem;border-radius:var(--radius-card)}
@@ -86,8 +86,6 @@ export const COMPONENT_CSS = `
 .meter{height:.6rem;border-radius:var(--radius-pill);background:var(--c-border);overflow:hidden}
 .meter span{display:block;height:100%;border-radius:var(--radius-pill);background:var(--c-accent)}
 .meter[data-tone="warn"] span{background:var(--c-warn)}.meter[data-tone="bad"] span{background:var(--c-bad)}
-@container (max-width:75rem){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@container (max-width:46rem){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .unavailable{display:flex;align-items:center;gap:var(--sp-2);color:var(--c-muted);font-size:var(--fs-sm);padding:var(--sp-2) 0}
 .unavailable .icon{width:1rem;height:1rem}
 .autosave{display:inline-flex;align-items:center;gap:var(--sp-2);padding:.4rem .9rem;border-radius:var(--radius-pill);border:1px solid var(--c-border-strong);background:var(--c-card);font-size:var(--fs-md);white-space:nowrap}
@@ -116,8 +114,22 @@ export const COMPONENT_CSS = `
 :where(a,button,input,select,summary):focus-visible{outline:none;box-shadow:var(--focus-ring)}
 `;
 
+// Replacing a data host rebuilds its scroll container, which would send a list the user scrolled back to the top on every poll: the
+// shared owner captures the container's position first and restores it on the new one (null scroll container: nothing to keep).
+export const REDRAW_JS = `
+function redrawKeepingScroll(host, ...nodes) {
+  const old = host.querySelector(".card-body");
+  const top = old ? old.scrollTop : 0;
+  const left = old ? old.scrollLeft : 0;
+  host.replaceChildren(...nodes);
+  const fresh = host.querySelector(".card-body");
+  if (fresh) { fresh.scrollTop = top; fresh.scrollLeft = left; }
+}
+`;
+
+
 // Browser side of the same owner. Plain script, no framework. The icon set is closed: a view asks for a name from this map.
-export const COMPONENT_JS = `
+export const COMPONENT_JS = REDRAW_JS + `
 const ICONS = {
   home: "M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10",
   users: "M9 11a3 3 0 100-6 3 3 0 000 6zM3 20v-1a5 5 0 0110 0v1M17 11a2.5 2.5 0 100-5M16 14.2A4.5 4.5 0 0121 19v1",
@@ -150,6 +162,7 @@ const ICONS = {
   refresh: "M20 11a8 8 0 00-14.5-4M4 4v4h4M4 13a8 8 0 0014.5 4M20 20v-4h-4"
 };
 const UI = {
+  redraw: redrawKeepingScroll,
   el(tag, props, ...kids) { const n = Object.assign(document.createElement(tag), props || {}); n.append(...kids); return n; },
   icon(name) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -191,6 +204,7 @@ const UI = {
   },
   toggle(label, checked, onChange) {
     const input = UI.el("input", { type: "checkbox", checked });
+    input.setAttribute("aria-label", label || (checked ? "On" : "Off"));
     input.addEventListener("change", () => onChange(input.checked));
     return UI.el("label", { className: "toggle" }, input, label);
   },

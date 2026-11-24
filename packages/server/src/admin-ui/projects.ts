@@ -179,7 +179,7 @@ async function renderProjects(view) {
 
   function drawTable() {
     const shown = rows().filter(matches);
-    tableHost.replaceChildren(UI.card({ variant: "table", children: [shown.length
+    UI.redraw(tableHost, UI.card({ variant: "table", children: [shown.length
       ? UI.table(["Client", "Project", "Root Path", "Policy", "Access", "Actions"], shown.map(row))
       : UI.el("div", { className: "pj-empty" }, UI.unavailable(ui.data.clients.length ? "No project matches this search" : "No client has registered yet"))] }));
   }

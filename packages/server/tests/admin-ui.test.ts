@@ -11,6 +11,7 @@ import path from "node:path";
 import { ClientConnectionRegistry, createAdminHandler, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { renderAdminPage } from "../src/admin-page.ts";
 import { NAV_ITEMS } from "../src/admin-ui/nav.ts";
+import { REDRAW_JS } from "../src/admin-ui/components.ts";
 import { watchSources } from "../src/admin-ui/dev-reload.ts";
 
 const SRC = path.join(import.meta.dirname, "..", "src");
@@ -133,17 +134,17 @@ test("page: vanilla and self-contained, autosave states, no Save button, no fram
   assert.ok(!page.includes("EventSource"), "no live reload outside DEV");
 });
 
-test("Clients screen: the approved reference as structure: six counters in order, one search, one status filter, the five columns, one toggle and one Rotate Key per row, a highlighted Pending row, only canonical components", () => {
+test("Clients screen: the approved reference as structure: six counters in order, one search, one status filter, the four columns, one toggle and one Rotate Key per row, a highlighted Pending row, only canonical components", () => {
   const clients = uiSource["clients.ts"] as string;
   const labels = [...clients.matchAll(/UI\.stat\(\{ icon: "[a-z-]+", value: n\.\w+, label: "(\w+)"/g)].map((m) => m[1]);
-  assert.deepEqual(labels, ["Total", "Enabled", "Pending", "Disabled", "Online", "Offline"], "the six counters of docs/screens/02_clients.png, in that order");
+  assert.deepEqual(labels, ["Total", "Enabled", "Pending", "Disabled", "Online", "Incompatible", "Offline"], "the counters of docs/screens/02_clients.png plus Incompatible, in that order");
   assert.equal(clients.match(/UI\.search\(/g)?.length, 1, "one search field");
   assert.equal(clients.match(/UI\.select\(/g)?.length, 1, "one status filter");
-  assert.ok(clients.includes('"Client", "Status", "Connection", "Public Key (Fingerprint)", "Actions"'), "the five columns of the reference");
+  assert.ok(clients.includes('["Client", "Status", "Public Key (Fingerprint)", "Actions"]'), "Status is the one operational column; the administrative Enabled pill column is gone");
   assert.equal(clients.match(/UI\.toggle\(/g)?.length, 1, "one Enable/Disable toggle owner");
   assert.equal(clients.match(/UI\.button\("Rotate Key"/g)?.length, 1, "one Rotate Key action");
   assert.ok(/tone: c\.status === "pending" \? "warn"/.test(clients) && /Awaiting approval\./.test(clients), "the Pending row is highlighted and says why");
-  assert.ok(/STATUS_PILL = \{ enabled: \["Enabled", "ok"/.test(clients) && /UI\.pill\(label, tone, icon\)/.test(clients), "status uses the canonical pill");
+  assert.ok(/STATE_PILL = \{ online: \["Online", "ok"/.test(clients) && /UI\.pill\(label, tone, icon\)/.test(clients), "status uses the canonical pill");
   assert.ok(/api\("GET", "\/admin\/api\/clients"\)/.test(clients) && /api\("POST", path\)/.test(clients), "the screen only calls the Server lifecycle API");
   assert.ok(!/status === "enabled" \? .*online|has_public_key|enabled:\s*true/.test(clients), "no status or count is computed from raw config in the UI");
   assert.equal(clients.match(/every\(load\)/g)?.length, 1, "automatic refresh reuses the shell's one poller");
@@ -225,5 +226,119 @@ test("identity badge: one primitive renders either an icon or an image, and Clie
     assert.ok(!/UI\.identity\(\{ icon: "box"/.test(text), `${file} no longer shows a Client as a generic box`);
   }
   assert.ok(/UI\.stat\(\{ icon: "box", value: all\.length, label: "Projects" \}\)/.test(projects), "the Projects statistic keeps its box icon");
-  assert.ok(/STATUS_PILL/.test(clients) && /cl-dot/.test(clients), "status pill and connection dot stay in clients.ts");
+  assert.ok(/STATE_PILL/.test(clients), "the operational state pill stays in clients.ts");
+});
+
+test("Clients status: Online, Offline and Incompatible come from the Server's facts; Enabled is the toggle, not a status pill; Incompatible is never Offline", () => {
+  const clients = uiSource["clients.ts"] as string;
+  assert.ok(/operationalState = \(c\) => \(!c\.online \? "offline" : c\.compatible === false \? "incompatible" : "online"\)/.test(clients), "a live compatible=false session is Incompatible, not Offline and not Online");
+  assert.ok(/STATE_PILL = \{ online: \["Online", "ok", "wifi"\], offline: \["Offline", "bad", "wifi-off"\], incompatible: \["Incompatible", "warn", "alert"\] \}/.test(clients), "explicit text with an icon: color is never the only signal");
+  assert.ok(!/STATUS_PILL|\["Enabled", "ok", "check"\]/.test(clients), "no administrative Status pill competes with health");
+  assert.ok(/state === "incompatible" \? detail\("Build " \+ c\.client_build \+ " is not accepted by this Server \(build " \+ serverBuild/.test(clients), "the reason shows the two builds the Server reported");
+  assert.ok(!/client_build\s*[!=]==?\s*serverBuild|serverBuild\s*[!=]==?/.test(clients), "the browser never compares builds");
+  assert.ok(/AUTH_LABEL = \{ enabled: "Enabled", pending: "Pending approval", disabled: "Disabled" \}/.test(clients) && /UI\.toggle\(AUTH_LABEL\[c\.status\]/.test(clients), "authorization is the toggle with a text label");
+  assert.ok(/Awaiting approval\./.test(clients) && /tone: c\.status === "pending" \? "warn"/.test(clients), "Pending stays visible as an onboarding note, apart from health");
+  for (const filter of ['["online", "Online"]', '["offline", "Offline"]', '["incompatible", "Incompatible"]']) assert.ok(clients.includes(filter), `filter ${filter}`);
+});
+
+test("Clients actions: Update Client only when the Server's facts allow it and through the Server endpoint; Rotate Key needs a compatible online Client", () => {
+  const clients = uiSource["clients.ts"] as string;
+  assert.equal(clients.match(/UI\.button\("Update Client"/g)?.length, 1, "one Update Client action");
+  assert.ok(/act\(base \+ "\/update", "Update requested[^"]*"\)/.test(clients), "it calls the Server update endpoint and nothing else");
+  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_available === false \?[^;]*c\.update_capable !== true \?[^;]*c\.update && c\.update\.state !== "failed" \?/.test(clients), "online, update_capable and no in-flight update, each with a truthful reason");
+  assert.ok(/update\.disabled = true; update\.title = blocked/.test(clients), "an unavailable update is disabled with its reason");
+  assert.ok(/if \(state !== "online"\) \{ rotate\.disabled = true;/.test(clients) && /An incompatible client cannot rotate its key/.test(clients), "an incompatible management-only Client does not offer Rotate Key");
+  for (const text of ["Update requested\u2026", "Update failed"]) assert.ok(clients.includes(text.replace("\\u2026", "\u2026")), text);
+  assert.ok(/api\("POST", path\)/.test(clients) && /r\.json\.problems \|\| \[r\.json\.result/.test(clients), "a Server refusal (409/422) is shown as it is");
+});
+
+test("shared primitives: sticky table header and semantic toggle live once in components.ts and no view duplicates them", () => {
+  const owner = uiSource["components.ts"] as string;
+  assert.ok(/\.table th\{[^}]*position:sticky;top:0;z-index:1;background:var\(--c-surface\)\}/.test(owner), "sticky header with an opaque semantic background and a z-index");
+  assert.ok(/\.card\[data-variant="table"\] \.card-body\{padding:0;overflow:auto;max-height:70vh\}/.test(owner), "the table card is the scroll container, so the header has something to stick to");
+  assert.ok(/\.toggle input\{[^}]*background:var\(--c-bad-soft\);border:1px solid var\(--c-bad\)/.test(owner) && /\.toggle input:checked\{background:var\(--c-ok-soft\);border-color:var\(--c-ok\)\}/.test(owner), "off is bad-toned, on is ok-toned, from theme tokens");
+  assert.ok(/input\.setAttribute\("aria-label"/.test(owner), "the toggle always has accessible text");
+  for (const [file, text] of Object.entries(uiSource)) {
+    if (file === "components.ts") continue;
+    assert.ok(!/(th|thead)[^{}]*\{[^}]*position:sticky/.test(text as string), `${file} has no table-header sticky CSS of its own`);
+    assert.ok(!/\.toggle\s*\{|\.toggle input/.test(text as string), `${file} has no toggle styling of its own`);
+  }
+  assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test((uiSource["clients.ts"] as string).replace(/"\/admin\/[^"]*"/g, "")), "no raw color in the Clients view");
+});
+
+test("Clients API: the view carries the Server build and a counts partition that adds up with Incompatible", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "reach-148-"));
+  const config = new ServerConfigStore(path.join(dir, "config.json"));
+  const connections = new ClientConnectionRegistry({ config, serverBuild: "srv-9", isBuildCompatible: () => true });
+  const proposals = new ProposalStore({ path: path.join(dir, "proposal.json"), config, connections });
+  const server = createServer(createAdminHandler({ config, connections, proposals, serverBuild: "srv-9" }));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const body = (await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/admin/api/clients`)).json()) as { server_build: string; counts: Record<string, number> };
+  assert.equal(body.server_build, "srv-9");
+  assert.equal(body.counts.online! + body.counts.incompatible! + body.counts.offline!, body.counts.total, "every Client is exactly one of Online, Incompatible or Offline");
+  server.closeAllConnections();
+  connections.stop();
+  await new Promise<void>((r) => server.close(() => r()));
+});
+
+test("shared stats layout fits any number of counters: Clients renders seven cards and .stats has no fixed column count", () => {
+  const owner = uiSource["components.ts"] as string;
+  const clients = uiSource["clients.ts"] as string;
+  assert.equal(clients.match(/UI\.stat\(\{/g)?.length, 7, "Clients renders seven fleet counters");
+  assert.ok(/\.stats\{display:grid;grid-template-columns:repeat\(auto-fit,minmax\(9rem,1fr\)\);gap:var\(--gap\)\}/.test(owner), "the shared grid sizes by content, not by a fixed count");
+  assert.ok(!/\.stats\{[^}]*repeat\(\d/.test(owner) && !/@container[^{]*\{\.stats/.test(owner), "no fixed six-column rule and no per-width column override");
+  assert.ok(!/\.stats\{|\.cl-stats|grid-template-columns/.test(clients), "no Clients-only grid CSS");
+});
+
+// A poll must not send a scrolled list back to the top: the shared redraw keeps the scroll container's position.
+type Scroller = { scrollTop: number; scrollLeft: number };
+const redrawHarness = () => {
+  const redraw = new Function(`${REDRAW_JS}; return redrawKeepingScroll;`)() as (host: unknown, ...nodes: unknown[]) => void;
+  const host = {
+    body: { scrollTop: 0, scrollLeft: 0 } as Scroller | null,
+    querySelector() { return this.body; },
+    replaceChildren() { this.body = this.body === null ? null : { scrollTop: 0, scrollLeft: 0 }; },
+  };
+  return { redraw, host };
+};
+
+test("a periodic refresh keeps the list position: the table scroll container's scrollTop and scrollLeft survive the redraw", () => {
+  const { redraw, host } = redrawHarness();
+  host.body!.scrollTop = 420;
+  host.body!.scrollLeft = 36;
+  const before = host.body;
+  redraw(host, "fresh table");
+  assert.notEqual(host.body, before, "the container really was rebuilt");
+  assert.deepEqual({ top: host.body!.scrollTop, left: host.body!.scrollLeft }, { top: 420, left: 36 });
+  host.body = null;
+  assert.doesNotThrow(() => redraw(host, "empty state"), "no scroll container yet: nothing to restore");
+});
+
+test("Clients and Projects redraw their table through the shared helper, and the refresh interval is untouched", () => {
+  for (const file of ["clients.ts", "projects.ts"]) {
+    const text = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", file), "utf8");
+    assert.match(text, /UI\.redraw\(tableHost, UI\.card\(\{ variant: "table"/, `${file} redraws the table through UI.redraw`);
+    assert.doesNotMatch(text, /tableHost\.replaceChildren\(UI\.card/, `${file} no longer rebuilds the table container directly`);
+  }
+  assert.match(readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "shell.ts"), "utf8"), /setInterval\(\(\) => \{ fn\(\); refreshVersion\(\); \}, 5000\)/);
+});
+
+test("Clients rows: the name is the identity, the id stays searchable in a tooltip, Online counts the session from connected_since, Update is off when the Server says current", () => {
+  const clients = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "clients.ts"), "utf8");
+  assert.ok(/subtitle: c\.machine_uuid && c\.machine_uuid !== c\.client_id \? "UUID " \+ c\.machine_uuid : ""/.test(clients), "only the Machine UUID, discreetly, when there is one");
+  assert.ok(/nameInput\.title = "Client id " \+ c\.client_id/.test(clients), "the id is still one hover away");
+  assert.ok(/\[c\.display_name, c\.client_id, c\.machine_uuid, c\.fingerprint\]/.test(clients), "name, id, Machine UUID and fingerprint stay searchable");
+  assert.ok(/c\.online \? "Connected · " \+ \(c\.connected_since \? since\(c\.connected_since\)/.test(clients), "Online shows how long the session has lasted");
+  assert.ok(/"Last seen " \+ \(c\.last_seen \? ago\(c\.last_seen\)/.test(clients), "Offline shows the last heartbeat");
+  assert.ok(/c\.update_available === false \? "Already up to date"/.test(clients), "the Server's fact disables Update");
+  assert.ok(!/client_build\s*[!=]==?\s*serverBuild|serverBuild\s*[!=]==?/.test(clients), "the browser still compares no builds");
+});
+
+test("Clients Update: the press disables the button at once, an action reloads even with focus in the table, and a poll still leaves a focused control alone", () => {
+  const clients = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "clients.ts"), "utf8");
+  assert.ok(/onClick: \(\) => \{ update\.disabled = true;/.test(clients), "the button is disabled the moment it is pressed");
+  assert.ok(/about 20 s/.test(clients), "the operator is told how long it takes");
+  assert.ok(/await load\(true\);\n {2}\}\n\n {2}async function saveDisplayName/.test(clients), "an action forces its reload, so the Server's update state shows at once");
+  assert.ok(/async function load\(force\) \{\n {4}if \(ui\.editing \|\| \(!force && tableHost\.contains\(document\.activeElement\)\)\) return;/.test(clients), "only a poll skips a focused table; typing a name is always protected");
+  assert.ok(/every\(load\)/.test(clients), "the poll itself is unchanged");
 });
