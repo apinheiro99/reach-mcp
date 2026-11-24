@@ -229,7 +229,7 @@ export class ClientConnectionRegistry {
     if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return this.#recordUpdate(clientId, "offline");
     if (session.build === this.#options.serverBuild) return this.#recordUpdate(clientId, "current");
     if (!session.updateCapable) return this.#recordUpdate(clientId, "unsupported");
-    if (this.#updates.isHeldBy(clientId, session)) return this.#recordUpdate(clientId, "busy");
+    if (this.#updates.hasInFlight(clientId)) return this.#recordUpdate(clientId, "busy");
     const updateId = this.#newId("update");
     this.#updates.begin(clientId, session, { update_id: updateId, from_build: session.build, target_build: this.#options.serverBuild });
     if (!this.#send(session, { kind: "update", update_id: updateId })) {

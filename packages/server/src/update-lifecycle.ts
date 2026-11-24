@@ -13,6 +13,8 @@ type Attempt = { status: UpdateStatus; holder: object };
 const IN_FLIGHT: ReadonlySet<UpdateState> = new Set(["requested", "staging", "restarting"]);
 /** Before the handoff nothing was applied and nothing can come back: the attempt dies with the session that held it. */
 const PRE_HANDOFF: ReadonlySet<UpdateState> = new Set(["requested", "staging"]);
+/** The only moves a Client report may make; a duplicate or a step back (restarting -> staging) is not on the list. `failed` stays possible until a receipt, because the trigger can fail after `restarting` was reported. */
+const NEXT: Readonly<Record<"requested" | "staging" | "restarting", readonly string[]>> = { requested: ["staging", "failed"], staging: ["restarting", "failed"], restarting: ["failed"] };
 
 export class UpdateLifecycle {
   readonly #attempts = new Map<string, Attempt>();
@@ -22,10 +24,10 @@ export class UpdateLifecycle {
     return this.#attempts.get(clientId)?.status ?? null;
   }
 
-  /** True while this very session holds an attempt that can still report: an attempt handed off on an older session no longer blocks a retry, it is replaced. */
-  isHeldBy(clientId: string, holder: object): boolean {
+  /** True while the Client has an attempt that is not terminal, whichever session asked: an attempt handed off (`restarting`) blocks every new one across reconnects until its receipt; only a terminal state frees the slot. */
+  hasInFlight(clientId: string): boolean {
     const attempt = this.#attempts.get(clientId);
-    return attempt !== undefined && attempt.holder === holder && IN_FLIGHT.has(attempt.status.state);
+    return attempt !== undefined && IN_FLIGHT.has(attempt.status.state);
   }
 
   /** Records a new attempt on the session that was asked; a retry always comes with a fresh id and replaces the previous record. */
@@ -38,10 +40,11 @@ export class UpdateLifecycle {
     if (this.#attempts.get(clientId)?.status.update_id === updateId) this.#attempts.delete(clientId);
   }
 
-  /** The Client's pre-handoff state counts only for the attempt in flight on the session that was asked. */
+  /** The Client's progress counts only for the attempt in flight, from the session that was asked, and only as an allowed move: never backwards, a duplicate changes nothing. */
   progress(clientId: string, holder: object, report: ClientUpdateState): ProgressOutcome {
     const attempt = this.#attempts.get(clientId);
     if (!attempt || attempt.holder !== holder || attempt.status.update_id !== report.update_id || !IN_FLIGHT.has(attempt.status.state)) return "ignored";
+    if (!NEXT[attempt.status.state as keyof typeof NEXT].includes(report.state)) return "ignored";
     const { update_id, from_build, target_build } = attempt.status;
     attempt.status = report.state === "failed" ? { update_id, from_build, target_build, state: "failed", reason: report.reason } : { update_id, from_build, target_build, state: report.state };
     return "recorded";

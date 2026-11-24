@@ -643,6 +643,7 @@ test("update: an update-capable Client gets exactly one command, a second is bus
   assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a failed update can be asked again");
   await until(() => updateFrames(c).length === 2, "second command");
   assert.notEqual(updateIdOf(c), (updateFrames(c)[0] as unknown as { update_id: string }).update_id, "a retry is a new attempt with a fresh id");
+  updateState(c, updateIdOf(c), { state: "staging" });
   updateState(c, updateIdOf(c), { state: "restarting" });
   await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
   assert.equal(t.registry.requestUpdate("laptop"), "busy");
@@ -739,6 +740,7 @@ test("update lifecycle: reconnecting on the target build is NOT success; only a 
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(c).length === 1, "the command");
   const id = updateIdOf(c);
+  updateState(c, id, { state: "staging" });
   updateState(c, id, { state: "restarting" });
   await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
   c.ws.close();
@@ -765,6 +767,7 @@ test("update lifecycle: a failed/apply receipt is terminal and allows a manual r
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(c).length === 1, "the command");
   const first = updateIdOf(c);
+  updateState(c, first, { state: "staging" });
   updateState(c, first, { state: "restarting" });
   await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
   c.ws.send(JSON.stringify(receiptOf(first, { state: "failed", reason: "apply" })));
@@ -788,5 +791,69 @@ test("update lifecycle: after the Server lost its state an authenticated receipt
   c.ws.send(JSON.stringify(receiptOf("update-before-restart")));
   await until(() => t.registry.status()[0]!.update?.state === "applied", "restored");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a restored terminal result holds no slot");
+  await t.done();
+});
+
+test("update lifecycle: progress only moves forward (no staging after restarting, a duplicate changes nothing), restarting may still fail as handoff from the original session", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(c).length === 1, "the command");
+  const id = updateIdOf(c);
+  updateState(c, id, { state: "restarting" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(t.registry.status()[0]!.update?.state, "requested", "restarting cannot skip staging");
+  updateState(c, id, { state: "staging" });
+  await until(() => t.registry.status()[0]!.update?.state === "staging", "staging");
+  updateState(c, id, { state: "staging" });
+  updateState(c, id, { state: "restarting" });
+  await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
+  updateState(c, id, { state: "restarting" });
+  updateState(c, id, { state: "staging" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(t.registry.status()[0]!.update?.state, "restarting", "no step back to staging, and the duplicate restarting is ignored");
+  updateState(c, id, { state: "failed", reason: "handoff" });
+  await until(() => t.registry.status()[0]!.update?.state === "failed", "the trigger can still fail after restarting was reported");
+  assert.equal(t.registry.status()[0]!.update?.reason, "handoff");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a terminal failure frees the slot");
+  await t.done();
+});
+
+test("update lifecycle: requested and staging die with their session and allow a retry; restarting survives the session and keeps the Client busy", async () => {
+  const t = await setup();
+  const reconnect = async () => {
+    const c = await t.connect({ extra: { update_capable: true } });
+    await until(() => c.frames.length === 3, "admitted");
+    return c;
+  };
+  const dropSession = async (c: Awaited<ReturnType<typeof reconnect>>) => {
+    c.ws.close();
+    await c.closed;
+    await until(() => t.registry.status().length === 0, "session ended");
+  };
+  for (const reached of [[], ["staging"]] as const) {
+    const c = await reconnect();
+    assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+    await until(() => updateFrames(c).length === 1, "the command");
+    for (const state of reached) updateState(c, updateIdOf(c), { state });
+    await until(() => t.registry.status()[0]!.update?.state === (reached.length ? "staging" : "requested"), "reached");
+    await dropSession(c);
+    const again = await reconnect();
+    assert.equal(t.registry.status()[0]!.update, null, `${reached.join() || "requested"}: the attempt died with its session`);
+    assert.equal(t.registry.requestUpdate("laptop"), "accepted", "and a retry is allowed");
+    await dropSession(again);
+  }
+  const c = await reconnect();
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(c).length === 1, "the command");
+  updateState(c, updateIdOf(c), { state: "staging" });
+  updateState(c, updateIdOf(c), { state: "restarting" });
+  await until(() => t.registry.status()[0]!.update?.state === "restarting", "handed off");
+  await dropSession(c);
+  const back = await reconnect();
+  assert.equal(t.registry.status()[0]!.update?.state, "restarting", "the handed-off attempt survived the reconnect");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy", "and it keeps the Client busy until its receipt");
+  assert.equal(back.frames.filter((f) => f.kind === "update").length, 0, "no second command was sent");
   await t.done();
 });
