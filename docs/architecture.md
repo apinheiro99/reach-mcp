@@ -748,6 +748,20 @@ Failure matrix: if the Server cannot persist the staged key, no commit is sent a
 
 There is no Server-generated Client secret to display, copy or recover.
 
+### Server trust and signed release metadata
+
+Decision: [ADR-0005](decisions/ADR-0005-server-trust-identity-and-signed-release-metadata.md). Until this contract only the Client proved its identity; the Client never authenticated the Server, and the release manifest was unsigned, so SHA-256 protected only against corruption. One chain now covers the control channel and the release metadata:
+
+- **One Server trust key.** One persistent Ed25519 key owned by the Server (private half only in `/reach-private`). Its public half is pinned in the Client Bootstrap, the only owner of persistent Client configuration. The same key authenticates the WebSocket handshake and signs the release manifest; there is no second signing key, certificate hierarchy or crypto family.
+- **First trust is TOFU, stated plainly.** The installer pins the key it fetches from the Server it was pointed at, which is trust on first use under the V1 premise of a local/controlled network. It is not authentication of the first HTTP fetch; an operator can supply `REACH_SERVER_TRUST_KEY` out of band instead. After pinning the Client never accepts another key because of a hostname or address.
+- **Server authenticates before the Client proves itself.** The signature covers a protocol label, the Client's fresh nonce, the Server's fresh nonce and the Server key. The Client verifies it with the pinned key and closes on failure, before it signs its own proof and before it accepts any welcome, policy, update or command.
+- **Signed envelope.** Manifest v2 stays byte-for-byte as produced by the release builder, which remains its only owner; the Server never rewrites it. It is served inside a Server-signed envelope `{ release_epoch, manifest, signature }`, where the signature covers a domain label, the canonical `release_epoch` and the exact manifest bytes. The Client verifies the envelope and epoch before parsing the manifest and before trusting any `build_id`, `download_path`, hash or size; SHA-256 and size stay mandatory for the artifact itself.
+- **Freshness by epoch, not by clock or build id.** A Server-owned, persisted, monotonic `release_epoch` lives in the signed envelope, outside the manifest; the Client persists the highest accepted epoch and refuses a lower one, and refuses the same epoch when the digest of the exact manifest bytes differs. An intentional rollback is published with a greater epoch. `build_id` stays opaque with exact-equality compatibility.
+- **Rotation.** A new Server key is accepted only through a statement signed by the currently pinned key with a greater `rotation_generation`. If the old private key is lost, recovery is a recorded operator re-bootstrap of the fleet, never an automatic acceptance.
+- **Clients installed before pinning** pin once, on their first connection with a valid signed handshake, then run strictly.
+
+Not covered in V1: an attacker active during first install or the one-time pin, compromise of the Server host or key, traffic confidentiality and denial of service. Ownership: the Server owns the key, the epoch and the signatures; the Client Bootstrap owns the pin, the highest accepted epoch and the rotation generation; the browser/Admin UI owns none of it.
+
 ---
 
 ## 8. Server-Client connection lifecycle
@@ -755,7 +769,7 @@ There is no Server-generated Client secret to display, copy or recover.
 Exactly one active connection is allowed per `client_id`.
 
 - Client opens one persistent outbound WebSocket to the Server;
-- authentication occurs once per connection with a fresh Server challenge and Ed25519 signature;
+- the Client first authenticates the Server with the pinned Server trust key, then authentication of the Client occurs once per connection with a fresh Server challenge and Ed25519 signature (see "Server trust and signed release metadata");
 - ordinary messages on an authenticated connection are not individually re-signed;
 - second simultaneous connection for the same `client_id` is rejected explicitly;
 - heartbeat/keepalive determines healthy vs stale;
