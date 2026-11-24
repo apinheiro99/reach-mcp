@@ -7,6 +7,8 @@ set -eu
 
 DEFAULT_INSTALL_DIR=/opt/reach-mcp-client
 UNIT_NAME=reach-mcp-client.service
+UPDATE_PATH=reach-mcp-client-update.path
+UPDATE_SERVICE=reach-mcp-client-update.service
 TOP=reach-client
 
 usage() {
@@ -148,8 +150,41 @@ unit="$unit_dir/$UNIT_NAME"
 chmod 0644 "$unit.tmp"
 mv "$unit.tmp" "$unit"
 
+# The operator-triggered update. The Client runs as an unprivileged user and cannot replace this install, so the installer registers the
+# privileged half next to it: a path unit that fires when the Client creates the marker in its update directory, and a one-shot service
+# that runs the update script shipped in this install. The marker carries no data; the script re-verifies everything against the Server.
+state_dir="$(dirname "$bootstrap")"
+{
+  echo "# Fires when the REACH Client asks for an update (it only creates the marker)."
+  echo "[Unit]"
+  echo "Description=REACH MCP Client update request"
+  echo
+  echo "[Path]"
+  echo "PathExists=$state_dir/update/apply"
+  echo "Unit=$UPDATE_SERVICE"
+  echo
+  echo "[Install]"
+  echo "WantedBy=multi-user.target"
+} >"$unit_dir/$UPDATE_PATH.tmp"
+{
+  echo "# Applies a staged REACH Client update with the installer, as root; started only by $UPDATE_PATH."
+  echo "[Unit]"
+  echo "Description=REACH MCP Client update"
+  echo
+  echo "[Service]"
+  echo "Type=oneshot"
+  echo "Environment=\"PATH=$(dirname "$node_bin"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\""
+  echo "ExecStart=/bin/sh \"$install_dir/deploy/apply-update-linux.sh\" --bootstrap \"$bootstrap\" --install-dir \"$install_dir\" --unit-dir \"$unit_dir\""
+} >"$unit_dir/$UPDATE_SERVICE.tmp"
+chmod 0644 "$unit_dir/$UPDATE_PATH.tmp" "$unit_dir/$UPDATE_SERVICE.tmp"
+mv "$unit_dir/$UPDATE_PATH.tmp" "$unit_dir/$UPDATE_PATH"
+mv "$unit_dir/$UPDATE_SERVICE.tmp" "$unit_dir/$UPDATE_SERVICE"
+
+# A running Client keeps its old files in memory, so a rerun (an update) restarts it onto the new install; a first install simply starts it.
 if [ "$enable" = 1 ]; then
   systemctl daemon-reload
-  systemctl enable --now "$UNIT_NAME"
+  systemctl enable "$UNIT_NAME" "$UPDATE_PATH"
+  systemctl restart "$UNIT_NAME"
+  systemctl start "$UPDATE_PATH"
 fi
 echo "installed $install_dir, unit $unit"

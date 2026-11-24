@@ -5,6 +5,8 @@ import type { WireError } from "@reach-mcp/shared/wire";
 import { loadBootstrap } from "./bootstrap.ts";
 import { ClientDispatcher } from "./dispatcher.ts";
 import { ClientTransport } from "./transport.ts";
+import { runUpdate } from "./updater.ts";
+import path from "node:path";
 
 export type ClientArgs = { bootstrap: string; build: string; allowInsecureWs: boolean };
 
@@ -20,7 +22,7 @@ export type RunningClient = { transport: ClientTransport; stop(): void };
 export function startClient(args: ClientArgs, onTerminal?: (error: WireError) => void): RunningClient {
   const bootstrap = loadBootstrap(args.bootstrap, { allowInsecureWs: args.allowInsecureWs, createIdentity: true });
   const dispatcher = new ClientDispatcher({ anchors: bootstrap.anchors });
-  const transport = new ClientTransport(bootstrap, { build: args.build, handler: dispatcher, ...(onTerminal ? { onTerminal } : {}) });
+  const transport = new ClientTransport(bootstrap, { build: args.build, handler: dispatcher, updater: (report) => runUpdate({ endpoint: bootstrap.endpoint, build: args.build, stateDir: path.dirname(args.bootstrap) }, report), ...(onTerminal ? { onTerminal } : {}) });
   transport.start();
   return { transport, stop: () => transport.stop() };
 }

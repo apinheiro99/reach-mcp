@@ -18,9 +18,10 @@ import type { SourcePolicy } from "./trusted-network.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(?:items\/([^/]+)\/)?(approve|reject)$/;
-const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|rotate-key)$/;
+const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|rotate-key|update)$/;
 const DISPLAY_NAME_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/display-name$/;
 const ROTATION_HTTP = { rotated: 200, offline: 409, busy: 409, timeout: 504, refused: 422 } as const;
+const UPDATE_HTTP = { accepted: 202, offline: 409, busy: 409, unsupported: 422 } as const;
 const DECISION_HTTP = { approved: 200, rejected: 200, not_found: 404, stale: 409, invalid: 422 } as const;
 
 export type AdminDeps = Omit<HealthDeps, "uptimeSeconds"> & {
@@ -91,7 +92,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
   /** Every Client as the Clients screen reads it: config facts and live session facts joined, plus the counts that always add up. */
   const clientsView = () => {
     const sessions = connections.status();
-    const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), compatible: sessions.find((s) => s.client_id === c.client_id)?.compatible ?? null, last_seen: connections.lastSeen(c.client_id), client_build: connections.lastBuild(c.client_id) ?? null }));
+    const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), compatible: sessions.find((s) => s.client_id === c.client_id)?.compatible ?? null, update_capable: sessions.find((s) => s.client_id === c.client_id)?.update_capable ?? null, update: sessions.find((s) => s.client_id === c.client_id)?.update ?? null, last_seen: connections.lastSeen(c.client_id), client_build: connections.lastBuild(c.client_id) ?? null }));
     const count = (status: string) => clients.filter((c) => c.status === status).length;
     const online = clients.filter((c) => c.online).length;
     return { clients, counts: { total: clients.length, enabled: count("enabled"), pending: count("pending"), disabled: count("disabled"), online, offline: clients.length - online } };
@@ -172,6 +173,10 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
       if (action === "rotate-key") {
         const result = await connections.rotateKey(id);
         return send(res, ROTATION_HTTP[result], { ok: result === "rotated", result });
+      }
+      if (action === "update") {
+        const result = connections.requestUpdate(id);
+        return send(res, UPDATE_HTTP[result], { ok: result === "accepted", result });
       }
       const enable = action === "enable";
       return change(res, `client_${action}`, id, () => {
