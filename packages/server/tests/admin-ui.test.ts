@@ -322,3 +322,14 @@ test("Clients and Projects redraw their table through the shared helper, and the
   }
   assert.match(readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "shell.ts"), "utf8"), /setInterval\(\(\) => \{ fn\(\); refreshVersion\(\); \}, 5000\)/);
 });
+
+test("Clients rows: the name is the identity, the id stays searchable in a tooltip, Online counts the session from connected_since, Update is off when the Server says current", () => {
+  const clients = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "clients.ts"), "utf8");
+  assert.ok(/subtitle: c\.machine_uuid && c\.machine_uuid !== c\.client_id \? "UUID " \+ c\.machine_uuid : ""/.test(clients), "only the Machine UUID, discreetly, when there is one");
+  assert.ok(/nameInput\.title = "Client id " \+ c\.client_id/.test(clients), "the id is still one hover away");
+  assert.ok(/\[c\.display_name, c\.client_id, c\.machine_uuid, c\.fingerprint\]/.test(clients), "name, id, Machine UUID and fingerprint stay searchable");
+  assert.ok(/c\.online \? "Connected · " \+ \(c\.connected_since \? since\(c\.connected_since\)/.test(clients), "Online shows how long the session has lasted");
+  assert.ok(/"Last seen " \+ \(c\.last_seen \? ago\(c\.last_seen\)/.test(clients), "Offline shows the last heartbeat");
+  assert.ok(/c\.update_available === false \? "Already up to date"/.test(clients), "the Server's fact disables Update");
+  assert.ok(!/client_build\s*[!=]==?\s*serverBuild|serverBuild\s*[!=]==?/.test(clients), "the browser still compares no builds");
+});

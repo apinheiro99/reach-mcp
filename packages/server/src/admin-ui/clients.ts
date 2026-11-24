@@ -27,8 +27,10 @@ const UPDATE_TEXT = { requested: "Update requested…", staging: "Updating: down
 const FILTERS = [["all", "All statuses"], ["online", "Online"], ["offline", "Offline"], ["incompatible", "Incompatible"], ["pending", "Pending"], ["enabled", "Enabled"], ["disabled", "Disabled"]];
 const matchesFilter = (c, filter) => filter === "all" || c.status === filter || operationalState(c) === filter;
 // Update is offered only when the Server's own facts allow it; the Server still decides and its refusal is shown as it is.
-const updateBlock = (c) => (!c.online ? "The Client must be online to update" : c.update_capable !== true ? "This build cannot update remotely: run the installer once on the host" : c.update && c.update.state !== "failed" ? "An update is already in progress" : "");
-const matchesSearch = (c, text) => !text || [c.display_name, c.client_id, c.fingerprint].some((v) => (v || "").toLowerCase().includes(text));
+const updateBlock = (c) => (!c.online ? "The Client must be online to update" : c.update_available === false ? "Already up to date" : c.update_capable !== true ? "This build cannot update remotely: run the installer once on the host" : c.update && c.update.state !== "failed" ? "An update is already in progress" : "");
+// How long the live session has lasted (connected_since is set when it was admitted; the heartbeat last_seen would restart this on every ping).
+const since = (ms) => ago(ms).replace(" ago", "");
+const matchesSearch = (c, text) => !text || [c.display_name, c.client_id, c.machine_uuid, c.fingerprint].some((v) => (v || "").toLowerCase().includes(text));
 
 async function renderClients(view) {
   const ui = { search: "", filter: "all", data: null, editing: false, timer: 0 };
@@ -69,11 +71,12 @@ async function renderClients(view) {
     const nameInput = UI.input({ value: c.display_name || "", placeholder: c.client_id, onInput: (v) => scheduleDisplayNameSave(c.client_id, v) });
     nameInput.classList.add("cl-name");
     nameInput.setAttribute("aria-label", "Client name");
-    const name = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: nameInput, subtitle: c.machine_uuid && c.machine_uuid !== c.client_id ? c.client_id + " · UUID " + c.machine_uuid : c.client_id });
+    nameInput.title = "Client id " + c.client_id;
+    const name = UI.identity({ badgeImageSrc: "/admin/assets/reach-logo.png", title: nameInput, subtitle: c.machine_uuid && c.machine_uuid !== c.client_id ? "UUID " + c.machine_uuid : "" });
     const detail = (text, tone) => { const d = UI.el("div", { className: "cl-detail", textContent: text }); if (tone) d.dataset.tone = tone; return d; };
     const conn = UI.el("div", { className: "cl-conn" }, UI.el("div", { className: "cl-conn-state" }, UI.pill(label, tone, icon)),
       state === "incompatible" ? detail("Build " + c.client_build + " is not accepted by this Server (build " + serverBuild + "): update it to manage it again", "warn") : "",
-      detail((c.online ? "Connected · " : "Last seen ") + (c.last_seen ? ago(c.last_seen) : "—") + (c.client_build && state !== "incompatible" ? " · build " + c.client_build : "")),
+      detail((c.online ? "Connected · " + (c.connected_since ? since(c.connected_since) : "—") : "Last seen " + (c.last_seen ? ago(c.last_seen) : "—")) + (c.client_build && state !== "incompatible" ? " · build " + c.client_build : "")),
       c.update ? detail(UPDATE_TEXT[c.update.state] + (c.update.reason ? ": " + c.update.reason : ""), c.update.state === "failed" ? "bad" : "warn") : "");
     const fp = UI.el("div", { className: "cl-fp" }, UI.el("span", { textContent: shortFingerprint(c.fingerprint), title: c.fingerprint || "" }),
       c.fingerprint ? UI.iconButton("copy", "Copy fingerprint", () => navigator.clipboard.writeText(c.fingerprint).then(() => say("saved", "Fingerprint copied · " + clock()))) : "");

@@ -5,7 +5,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
-import { ClientConnectionRegistry, hashCredential, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { ClientConnectionRegistry, createAdminHandler, hashCredential, ProposalStore, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
 import { DESKTOP, LAPTOP, newIdentity, signedHello, type TestIdentity } from "./identity-fixture.ts";
 
 /** An editable view's client without the two read-only facts the edit schema does not accept. */
@@ -677,5 +679,39 @@ test("update: a state reported without an update asked is ignored, and the slot 
   const again = await t.connect({ extra: { update_capable: true } });
   await until(() => again.frames.length === 3, "reconnected");
   assert.equal(t.registry.status()[0]!.update, null, "a new session starts with no update in flight");
+  await t.done();
+});
+
+test("update: a Client already on the Server's build is refused as current and nothing is sent; the Admin view says so and keeps connected_since apart from the heartbeat", async () => {
+  const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
+  const c = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "current");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(updateFrames(c), [], "no command was sent to a current Client");
+  assert.equal(t.registry.status()[0]!.update, null);
+
+  const proposals = new ProposalStore({ path: path.join(path.dirname(configFile), "proposal.json"), config: t.config, connections: t.registry });
+  const server = createServer(createAdminHandler({ config: t.config, connections: t.registry, proposals, serverBuild: "srv-1" }));
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/admin/api/clients`;
+  const view = async () => ((await (await fetch(base)).json()) as { clients: { client_id: string; connected_since: number | null; last_seen: number | null; update_available: boolean | null }[] }).clients.find((x) => x.client_id === "laptop")!;
+  const first = await view();
+  assert.equal(first.update_available, false, "the Server says this Client is already current");
+  assert.equal(typeof first.connected_since, "number");
+  t.clock.advance(4000);
+  c.ws.ping();
+  await until(() => t.registry.status()[0]!.last_seen > t.registry.status()[0]!.connected_since, "heartbeat seen");
+  const second = await view();
+  assert.equal(second.connected_since, first.connected_since, "the session start does not move with the heartbeat");
+  assert.ok(second.last_seen! > first.last_seen!, "last_seen is the heartbeat");
+  const post = await fetch(`${base}/laptop/update`, { method: "POST" });
+  assert.deepEqual([post.status, await post.json()], [409, { ok: false, result: "current" }], "the endpoint refuses explicitly");
+  const old = await t.connect({ id: "desktop", identity: DESKTOP, build: "ok-0", extra: { update_capable: true } });
+  await until(() => old.frames.length === 3, "second admitted");
+  const stale = ((await (await fetch(base)).json()) as { clients: { client_id: string; update_available: boolean | null }[] }).clients.find((x) => x.client_id === "desktop");
+  assert.equal(stale?.update_available, true, "a Client on another build can be updated");
+  await new Promise<void>((r) => server.close(() => r()));
+  server.closeAllConnections();
   await t.done();
 });
