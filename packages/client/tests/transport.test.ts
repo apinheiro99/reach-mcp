@@ -573,7 +573,7 @@ test("Pending and Disabled refusals are not terminal: the Client keeps the ordin
 
 test("rotate_key: the Client answers with only a candidate public key, keeps the valid key until the Server commits, then reconnects proving the new key", async () => {
   const file = path.join(mkdtempSync(path.join(tmpdir(), "reach-rotate-")), "bootstrap.env");
-  writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:1/ws\nREACH_CLIENT_ID=laptop-1\nREACH_CLIENT_IDENTITY_KEY=${CRED}\nREACH_ROOTS=${JSON.stringify([root])}\n`, { mode: 0o600 });
+  writeFileSync(file, `REACH_SERVER_URL=ws://127.0.0.1:1/ws\nREACH_CLIENT_ID=laptop-1\nREACH_CLIENT_IDENTITY_KEY=${CRED}\nREACH_SERVER_TRUST_KEY=${SERVER_KEY.publicKey}\nREACH_ROOTS=${JSON.stringify([root])}\n`, { mode: 0o600 });
   let connections = 0;
   let committedAfter = "";
   const srv = await server((s) =>
@@ -606,7 +606,7 @@ test("rotate_key: the Client answers with only a candidate public key, keeps the
   srv.sockets[0]!.terminate();
   await until(() => t.snapshot().state === "backoff", "retry armed");
   c.advance(c.pending()[0]!);
-  await until(() => srv.seen.length === 2, "the Client reconnects");
+  await until(() => srv.seen[1]?.frames.length === 1, "the Client reconnects and sends its hello after the verified server_auth");
   const hello = ClientHello.parse(srv.seen[1]!.frames[0]);
   assert.equal(hello.public_key, answer.public_key);
   assert.equal(verifyClientAuth(hello.public_key, srv.seen[1]!.nonce, hello.client_nonce!, "laptop-1", hello.signature), true, "the reconnect proves the new key");
