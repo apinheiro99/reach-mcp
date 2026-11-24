@@ -183,7 +183,10 @@ test("Clients API: one safe list with counts that add up; Enable and Disable per
   assert.equal((await post("ghost", "enable")).status, 422, "an unknown client is refused deterministically");
   assert.equal((await fetch(`${rt.a}/admin/api/clients/%E0%A4%A/enable`, { method: "POST" })).status, 400, "a malformed id is a bad request");
   assert.equal((await post("box", "rotate-key")).status, 409, "a Client that is not connected cannot rotate");
-  assert.equal((await post("box", "purge")).status, 404, "only the three lifecycle actions exist");
+  const update = await post("box", "update");
+  assert.deepEqual([update.status, (await update.json()) as object], [409, { ok: false, result: "offline" }], "an offline Client cannot be asked to update: nothing is queued");
+  assert.equal((await fetch(`${rt.a}/admin/api/clients/box/update`)).status, 405, "update is an explicit POST");
+  assert.equal((await post("box", "purge")).status, 404, "only the lifecycle actions exist");
   assert.equal((await fetch(`${rt.a}/admin/api/clients/box/enable`)).status, 405);
   assert.equal((await fetch(`${rt.a}/admin/api/clients`, { method: "POST" })).status, 405);
   view = await list();

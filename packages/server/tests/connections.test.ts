@@ -617,3 +617,65 @@ test("policy snapshots carry the live Client timing so a connected Client can fo
   assert.deepEqual((c.frames[3] as { runtime?: unknown }).runtime, clientRuntimeOf(live));
   await t.done();
 });
+
+const updateFrames = (client: { frames: Frame[] }) => client.frames.filter((f) => f.kind === "update");
+const updateState = (client: { ws: WebSocket }, state: object) => client.ws.send(JSON.stringify({ kind: "update_state", ...state }));
+
+test("update: an update-capable Client gets exactly one command, a second is busy, its states are tracked, and a failure frees the slot", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy", "one update in flight per Client");
+  await until(() => updateFrames(c).length === 1, "the command");
+  assert.deepEqual(updateFrames(c)[0], { kind: "update" }, "the command carries nothing");
+  updateState(c, { state: "staging" });
+  await until(() => t.registry.status()[0]!.update?.state === "staging", "staging");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy");
+  updateState(c, { state: "failed", reason: "verification" });
+  await until(() => t.registry.status()[0]!.update?.state === "failed", "failed");
+  assert.deepEqual(t.registry.status()[0]!.update, { state: "failed", reason: "verification" });
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a failed update can be asked again");
+  await until(() => updateFrames(c).length === 2, "second command");
+  updateState(c, { state: "restarting" });
+  await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy");
+  await t.done();
+});
+
+test("update: an incompatible (management-only) Client may be updated while every project operation stays blocked; non-capable and offline Clients are refused explicitly", async () => {
+  const t = await setup();
+  const old = await t.connect({ build: "old-9", extra: { update_capable: true } });
+  await until(() => old.frames.some((f) => f.kind === "welcome"), "welcome");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(old).length === 1, "command on the incompatible session");
+  const refused = await t.registry.route("laptop", "web", { op: "fs_list", path: "" });
+  assert.equal(!refused.ok && refused.error.code, "INCOMPATIBLE_BUILD");
+  assert.equal(t.registry.syncPolicy("laptop"), false);
+  assert.equal(await t.registry.rotateKey("laptop"), "refused");
+  const preChange = await t.connect({ id: "desktop", identity: DESKTOP, build: "old-9" });
+  await until(() => preChange.frames.some((f) => f.kind === "welcome"), "pre-change welcome");
+  assert.equal(t.registry.requestUpdate("desktop"), "unsupported", "a pre-change Client has no handler: nothing is sent and its socket is not dropped");
+  assert.deepEqual(updateFrames(preChange), []);
+  assert.equal(preChange.ws.readyState, WebSocket.OPEN);
+  assert.equal(t.registry.requestUpdate("off"), "offline");
+  assert.equal(t.registry.requestUpdate("nobody"), "offline");
+  await t.done();
+});
+
+test("update: a state reported without an update asked is ignored, and the slot ends with the session", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  updateState(c, { state: "staging" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(t.registry.status()[0]!.update, null, "nothing was asked, so nothing is tracked");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  c.ws.close();
+  await c.closed;
+  await until(() => t.registry.status().length === 0, "session ended");
+  const again = await t.connect({ extra: { update_capable: true } });
+  await until(() => again.frames.length === 3, "reconnected");
+  assert.equal(t.registry.status()[0]!.update, null, "a new session starts with no update in flight");
+  await t.done();
+});

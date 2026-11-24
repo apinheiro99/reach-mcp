@@ -140,7 +140,8 @@ test("Windows (structural only, no PowerShell runs here): defaults, explicit ove
   assert.doesNotMatch(ps, /credential|secret|REACH_CLIENT|Get-Content|\.env\b/i, "the script never reads the bootstrap or mentions a credential");
   assert.doesNotMatch(ps, /packages\\client|packages\/client|reach-private|\/reach\//, "no source checkout and no PO-private path");
   assert.doesNotMatch(ps, /Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer/, "no download and no self-update");
-  assert.equal([...ps.matchAll(/Register-ScheduledTask/g)].length, 1, "one Client per machine: exactly one task, never one per project");
+  assert.equal([...ps.matchAll(/Register-ScheduledTask/g)].length, 2, "one Client per machine: the Client task and the one machine-level update task, never one per project");
+  assert.match(ps, /-TaskName 'REACH Client Update'/, "the second task is the one-shot update task (no trigger)");
 });
 
 test("one Client install per machine: the install assets know no project and have no self-update", () => {
@@ -275,4 +276,65 @@ test("Linux preflight: a system Node the service user can run passes the check a
   assert.equal(result.status, 2);
   assert.match(result.stderr, /could not download http:\/\/127\.0\.0\.1:1\/release\/manifest/, "it got past the Node check to the first network step");
   assert.doesNotMatch(result.stderr, /cannot run/);
+});
+
+test("Linux update: the installer registers the privileged half (a path unit on the Client's marker and a one-shot service) beside the Client unit, and a rerun restarts the Client onto the new install", () => {
+  const d = dirs();
+  const result = run([...common(d, archive()), "--user", "dev"]);
+  assert.equal(result.status, 0, result.stderr);
+  const state = path.dirname(d.bootstrap);
+  const pathUnit = readFileSync(path.join(d.units, "reach-mcp-client-update.path"), "utf8");
+  assert.match(pathUnit, new RegExp(`^PathExists=${state.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/update/apply$`, "m"));
+  assert.match(pathUnit, /^Unit=reach-mcp-client-update\.service$/m);
+  const service = readFileSync(path.join(d.units, "reach-mcp-client-update.service"), "utf8");
+  assert.match(service, /^Type=oneshot$/m);
+  assert.doesNotMatch(service, /^User=/m, "the update half runs as root: the Client's own account cannot replace its install");
+  assert.ok(service.includes(`ExecStart=/bin/sh "${d.install}/deploy/apply-update-linux.sh" --bootstrap "${d.bootstrap}" --install-dir "${d.install}" --unit-dir "${d.units}"`));
+  assert.doesNotMatch(pathUnit + service, /curl|wget|http|credential|secret/i, "the units carry no URL and no secret");
+  const script = readFileSync(SCRIPT, "utf8");
+  assert.match(script, /systemctl enable "\$UNIT_NAME" "\$UPDATE_PATH"\n\s+systemctl restart "\$UNIT_NAME"/, "enabling restarts the Client so a rerun runs the new files");
+});
+
+test("Linux update: the privileged script reruns the public installer on the staged archive, consumes the request first, and always removes the staged file", () => {
+  const apply = path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh");
+  const text = readFileSync(apply, "utf8");
+  assert.doesNotMatch(text, /curl|wget|tar |systemctl|chown|useradd/, "no install logic of its own: the installer is the one owner");
+  for (const exitCode of [0, 2]) {
+    const d = dirs();
+    const state = path.dirname(d.bootstrap);
+    mkdirSync(path.join(state, "update"), { recursive: true });
+    mkdirSync(path.join(d.install, "deploy"), { recursive: true });
+    writeFileSync(d.bootstrap, "REACH_SERVER_URL=ws://127.0.0.1:8787/client\nREACH_CLIENT_ID=x\n");
+    writeFileSync(path.join(state, "update", "client.tgz"), "staged");
+    writeFileSync(path.join(state, "update", "apply"), "");
+    const log = path.join(state, "args.txt");
+    writeFileSync(path.join(d.install, "deploy", "install.sh"), `printf '%s\\n' "$@" >"${log}"\nexit ${exitCode}\n`);
+    const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8" });
+    assert.equal(result.status, exitCode, result.stderr);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["--server-origin", "http://127.0.0.1:8787", "--state-dir", state, "--install-dir", d.install, "--unit-dir", d.units, "--staged", path.join(state, "update", "client.tgz")]);
+    assert.equal(existsSync(path.join(state, "update", "apply")), false, "the request is consumed, so a failure is never retried in a loop");
+    assert.equal(existsSync(path.join(state, "update", "client.tgz")), false, "the staged archive never lingers");
+  }
+});
+
+test("Linux update: public installer --staged is still verified against the manifest, and release archives carry the update scripts", () => {
+  const installer = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "install.sh"), "utf8");
+  assert.match(installer, /--staged\) staged="\$2"/);
+  assert.match(installer, /cp "\$staged" "\$work\/client\.tgz"\nelse\n {2}fetch "\$download_path" "\$work\/client\.tgz"\nfi\nCHECK=/, "a staged archive skips only the download: the size and SHA-256 check runs on it");
+  const release = readFileSync(path.join(import.meta.dirname, "..", "scripts", "release.ts"), "utf8");
+  for (const file of ["install.sh", "apply-update-linux.sh", "install.ps1", "apply-update-windows.ps1"]) assert.ok(release.includes(`"${file}"`), `${file} is packaged in the Client archive`);
+});
+
+test("Windows update (structural only): the installer registers a trigger-less one-shot SYSTEM task whose script lives in the state directory, and the apply script reruns install.ps1 from a copy", () => {
+  const ps = readFileSync(PS1, "utf8");
+  assert.match(ps, /Register-ScheduledTask -TaskName 'REACH Client Update' -Action \$UpdateAction -Principal \$Principal/);
+  assert.doesNotMatch(ps.split("\n").filter((l) => l.includes("'REACH Client Update'")).join("\n"), /-Trigger/, "never started by a trigger: only the Client runs it by name");
+  assert.match(ps, /\$UpdateDir = Join-Path \(Split-Path -Parent \$Bootstrap\) 'update'/);
+  const apply = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-windows.ps1"), "utf8");
+  assert.match(apply, /Copy-Item -LiteralPath \(Join-Path \$InstallDir 'deploy\\install\.ps1'\)/, "the installer runs from a copy: the install directory is moved aside while it works");
+  assert.match(apply, /\$env:REACH_STAGED = \$Staged/);
+  assert.doesNotMatch(apply, /Invoke-WebRequest|HttpWebRequest|Stop-ScheduledTask|Stop-Process/, "no download and no process control of its own");
+  const installer = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "install.ps1"), "utf8");
+  assert.match(installer, /if \(\$Staged\) \{ Copy-Item -LiteralPath \$Staged -Destination \$ArchiveFile \} else \{ Get-Release/, "a staged archive skips only the download; size and SHA-256 are still checked");
+  assert.match(readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "uninstall-windows.ps1"), "utf8"), /Unregister-ScheduledTask -TaskName 'REACH Client Update'/, "the uninstaller removes the update task too");
 });

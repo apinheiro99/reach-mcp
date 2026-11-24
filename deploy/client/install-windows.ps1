@@ -94,5 +94,16 @@ $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Principal = New-ScheduledTaskPrincipal -UserId 'NT AUTHORITY\SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $Settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Force | Out-Null
+# The operator-triggered update: the Client (SYSTEM) cannot replace the files it is running from, and Stopping its own task would end the
+# installer too, so the installer registers a separate one-shot task (no trigger, never started here) that the Client runs by name after it
+# staged a verified archive. Its script is kept in the state directory, outside the install it replaces.
+$UpdateDir = Join-Path (Split-Path -Parent $Bootstrap) 'update'
+New-Item -ItemType Directory -Path $UpdateDir -Force | Out-Null
+$UpdateScript = Join-Path $UpdateDir 'apply-update-windows.ps1'
+Copy-Item -LiteralPath (Join-Path $InstallDir 'deploy\apply-update-windows.ps1') -Destination $UpdateScript -Force
+$UpdateShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$UpdateArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -Bootstrap `"$Bootstrap`" -InstallDir `"$InstallDir`""
+$UpdateAction = New-ScheduledTaskAction -Execute $UpdateShell -Argument $UpdateArguments
+Register-ScheduledTask -TaskName 'REACH Client Update' -Action $UpdateAction -Principal $Principal -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30)) -Force | Out-Null
 if ($Start) { Start-ScheduledTask -TaskName $TaskName }
 Write-Output "installed $InstallDir, scheduled task '$TaskName'"

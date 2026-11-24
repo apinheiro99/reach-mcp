@@ -84,11 +84,16 @@ function stage(target: Target, buildDir: string) {
     mkdirSync(path.join(root, "deploy"));
     copyFileSync(path.join(REPO, "deploy", "client", "install-linux.sh"), path.join(root, "deploy", "install-linux.sh"));
     copyFileSync(path.join(REPO, "deploy", "client", "uninstall-linux.sh"), path.join(root, "deploy", "uninstall-linux.sh"));
+    // The operator-triggered update reruns the public installer (install.sh) from the install itself, through the update script.
+    copyFileSync(path.join(REPO, "deploy", "client", "install.sh"), path.join(root, "deploy", "install.sh"));
+    copyFileSync(path.join(REPO, "deploy", "client", "apply-update-linux.sh"), path.join(root, "deploy", "apply-update-linux.sh"));
   }
   if (target.role === "client" && target.os === "win32") {
     mkdirSync(path.join(root, "deploy"));
     copyFileSync(path.join(REPO, "deploy", "client", "install-windows.ps1"), path.join(root, "deploy", "install-windows.ps1"));
     copyFileSync(path.join(REPO, "deploy", "client", "uninstall-windows.ps1"), path.join(root, "deploy", "uninstall-windows.ps1"));
+    copyFileSync(path.join(REPO, "deploy", "client", "install.ps1"), path.join(root, "deploy", "install.ps1"));
+    copyFileSync(path.join(REPO, "deploy", "client", "apply-update-windows.ps1"), path.join(root, "deploy", "apply-update-windows.ps1"));
     mkdirSync(path.join(root, "runtime"));
     copyFileSync(windowsNode(), path.join(root, "runtime", "node.exe"));
   }

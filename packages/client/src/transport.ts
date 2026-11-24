@@ -8,6 +8,7 @@ import type { RawData } from "ws";
 import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "@reach-mcp/shared/wire";
 import type { Bootstrap } from "./bootstrap.ts";
 import { suggestClientDisplayName } from "./display-name.ts";
+import { UpdateError } from "./updater.ts";
 import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 
 export type TransportState = "stopped" | "connecting" | "handshaking" | "connected" | "backoff" | "terminal_error";
@@ -23,9 +24,14 @@ export type FrameHandler = {
   handle(request: RequestEnvelope): Promise<ResponseEnvelope>;
 };
 
+/** The explicit update the Server asked for: reports its states as it goes and throws UpdateError (a closed reason) when it cannot go on. Without one, the Client does not say it can update and an update frame fails closed. */
+export type UpdateRunner = (report: (state: "staging" | "restarting") => void) => Promise<void>;
+
 export type TransportOptions = {
   /** Receives policy snapshots and requests after the welcome; without one, any such frame fails closed. */
   handler?: FrameHandler;
+  /** Makes this Client update-capable: the hello says so, and the Server's update command runs it. */
+  updater?: UpdateRunner;
   /** Opaque build identifier of this Client, sent as-is in the hello. */
   build: string;
   /** Called once when the Server's admission answer is terminal (see TERMINAL_REJECTS), so the process owner can surface it; never for transient loss. */
@@ -76,6 +82,8 @@ export class ClientTransport {
   #heartbeat: { intervalMs: number; staleMs: number };
   readonly #handshakeTimeoutMs: number;
   readonly #handler: FrameHandler | undefined;
+  readonly #updater: UpdateRunner | undefined;
+  #updating = false;
   readonly #onTerminal: ((error: WireError) => void) | undefined;
   readonly #now: () => number;
   readonly #schedule: Schedule;
@@ -88,6 +96,7 @@ export class ClientTransport {
     this.#backoff = options.backoff ?? DEFAULT_BACKOFF;
     this.#heartbeat = options.heartbeat ?? DEFAULT_HEARTBEAT;
     this.#handler = options.handler;
+    this.#updater = options.updater;
     this.#onTerminal = options.onTerminal;
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     validateTiming(this.#backoff, this.#heartbeat, this.#handshakeTimeoutMs);
@@ -187,7 +196,7 @@ export class ClientTransport {
     this.#answered = true;
     const display = suggestClientDisplayName();
     const suggestedName = display ? { display_name: display } : {};
-    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce), ...suggestedName, ...(this.#bootstrap.machineUuid ? { machine_uuid: this.#bootstrap.machineUuid } : {}) });
+    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce), ...suggestedName, ...(this.#bootstrap.machineUuid ? { machine_uuid: this.#bootstrap.machineUuid } : {}), ...(this.#updater ? { update_capable: true } : {}) });
     socket.send(JSON.stringify(hello));
   }
 
@@ -197,6 +206,7 @@ export class ClientTransport {
     if (!this.#handler || !message?.ok) return this.#failClosed(socket, "unexpected frame after the handshake");
     if (message.data.kind === "rotate_key") return this.#rotateKey(socket, message.data.rotation_id);
     if (message.data.kind === "rotate_committed") return this.#commitRotation(socket, message.data.rotation_id);
+    if (message.data.kind === "update") return this.#update(socket);
     if (message.data.kind === "policy_sync") {
       if (message.data.runtime) this.#applyRuntime(socket, message.data.runtime);
       try {
@@ -215,6 +225,20 @@ export class ClientTransport {
       },
       () => this.#failClosed(socket, "request handler failed"),
     );
+  }
+
+  /** The explicit update: one at a time, states reported on the asking connection, a failure reported with its closed reason and never dropping the socket. A Client that did not say it can update treats the frame as a violation. */
+  #update(socket: WebSocket): void {
+    if (!this.#updater) return this.#failClosed(socket, "update not supported");
+    if (this.#updating) return;
+    this.#updating = true;
+    const send = (frame: object) => socket === this.#socket && this.#state === "connected" && socket.send(JSON.stringify(frame));
+    this.#updater((state) => send({ kind: "update_state", state })).then(
+      () => undefined,
+      (error: unknown) => send({ kind: "update_state", state: "failed", reason: error instanceof UpdateError ? error.reason : "staging" }),
+    ).finally(() => {
+      this.#updating = false;
+    });
   }
 
   /** Rotation step 1: the Bootstrap owner generates a CANDIDATE pair; only its public key goes back. The valid key stays the identity. */
