@@ -188,7 +188,7 @@ test("GitGate is governance-only for REACH: no mirror or publication, branch and
 
 test("jobs that run a real Client get the CI-only machine id prerequisite from one shared template, and no other job does", () => {
   const tpl = block(".real-client-tests");
-  assert.match(tpl, /- npm ci\n\s+- node scripts\/git-ci\/ensure-machine-id\.ts/);
+  assert.match(tpl, /- npm ci( [^\n]*)?\n\s+- node scripts\/git-ci\/ensure-machine-id\.ts/);
   for (const job of ["Automated Tests", "Release Check"]) assert.match(block(job), /- \.real-client-tests/, `${job} runs real Clients`);
   for (const job of ["Public Release Check", "Lint", "Type Check", "Package Check"]) assert.doesNotMatch(block(job), /real-client-tests/);
   assert.doesNotMatch(ci, /machine-id\.ts[\s\S]*machine-id\.ts/, "the prerequisite is wired once, not copied per job");
