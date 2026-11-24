@@ -245,9 +245,12 @@ test("Clients actions: Update Client only when the Server's facts allow it and t
   const clients = uiSource["clients.ts"] as string;
   assert.equal(clients.match(/UI\.button\("Update Client"/g)?.length, 1, "one Update Client action");
   assert.ok(/act\(base \+ "\/update", "Update requested[^"]*"\)/.test(clients), "it calls the Server update endpoint and nothing else");
-  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_available === false \?[^;]*c\.update_capable !== true \?[^;]*c\.update && c\.update\.state !== "failed" \?/.test(clients), "online, update_capable and no in-flight update, each with a truthful reason");
+  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_available === false \?[^;]*c\.update_capable !== true \?[^;]*c\.current_update \? "An update is already in progress"/.test(clients), "online, update_capable and no attempt in flight (a terminal failure allows a retry), each with a truthful reason");
   assert.ok(/update\.disabled = true; update\.title = blocked/.test(clients), "an unavailable update is disabled with its reason");
   assert.ok(/if \(state !== "online"\) \{ rotate\.disabled = true;/.test(clients) && /An incompatible client cannot rotate its key/.test(clients), "an incompatible management-only Client does not offer Rotate Key");
+  assert.ok(/restarting: "Restarting: update result pending"/.test(clients) && !/restarting: "Update applied/.test(clients), "restarting is never labeled applied");
+  assert.ok(/applied: "Update applied"/.test(clients) && /c\.last_update_result \? detail\(lastUpdateText\(c\.last_update_result, !!c\.current_update\)/.test(clients) && /"Previous update "/.test(clients), "the terminal result renders from the Server's own field, as the previous one while a retry runs");
+  assert.ok(!/client_build\s*[!=]==?\s*serverBuild|update_available\s*=[^=]/.test(clients), "the browser compares no build");
   for (const text of ["Update requested\u2026", "Update failed"]) assert.ok(clients.includes(text.replace("\\u2026", "\u2026")), text);
   assert.ok(/api\("POST", path\)/.test(clients) && /r\.json\.problems \|\| \[r\.json\.result/.test(clients), "a Server refusal (409/422) is shown as it is");
 });

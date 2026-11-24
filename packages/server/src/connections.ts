@@ -30,7 +30,7 @@ import { NO_AUDIT, type Audit } from "./audit.ts";
 import { clientRuntimeOf, type RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
 import type { ClientAdmission, ServerConfigStore } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
-import { UpdateLifecycle, type UpdateStatus } from "./update-lifecycle.ts";
+import { UpdateLifecycle, type UpdateStatus, type UpdateView } from "./update-lifecycle.ts";
 
 export type ConnectionOptions = {
   config: ServerConfigStore;
@@ -65,7 +65,7 @@ export type ConnectionOptions = {
 type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; connectedSince: number; lastSeen: number };
 type Handshake = { nonce: string; clientNonce: string | null };
 type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
-export type { UpdateStatus } from "./update-lifecycle.ts";
+export type { UpdateStatus, UpdateView } from "./update-lifecycle.ts";
 export type UpdateResult = "accepted" | "offline" | "current" | "unsupported" | "busy";
 export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
@@ -249,6 +249,11 @@ export class ClientConnectionRegistry {
   /** The build the Client reported on its latest connection, or null when it has never connected since the Server started. */
   lastBuild(clientId: string): string | null {
     return this.#lastBuild.get(clientId) ?? null;
+  }
+
+  /** The attempt in flight and the last terminal result of a Client, known with or without a live session. */
+  updateView(clientId: string): UpdateView {
+    return this.#updates.view(clientId);
   }
 
   status(): SessionStatus[] {
@@ -497,7 +502,7 @@ export class ClientConnectionRegistry {
 
   /** The terminal apply receipt: accepted on any authenticated session, so it survives a reconnect and a Server restart; a repeat changes and logs nothing, a conflict changes nothing. */
   #onUpdateReceipt(session: Session, receipt: UpdateApplyResult): void {
-    const outcome = this.#updates.receipt(session.clientId, session, receipt);
+    const outcome = this.#updates.receipt(session.clientId, receipt);
     if (outcome === "duplicate") return;
     const result = outcome === "recorded" ? (receipt.state === "failed" ? `failed:${receipt.reason}` : receipt.state) : `receipt_${outcome}`;
     this.#recordClientUpdate(session.clientId, result, outcome !== "recorded" || receipt.state === "failed");

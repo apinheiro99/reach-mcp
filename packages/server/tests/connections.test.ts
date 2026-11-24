@@ -794,6 +794,65 @@ test("update lifecycle: after the Server lost its state an authenticated receipt
   await t.done();
 });
 
+test("update view: a terminal result survives the disconnect, and a retry keeps it beside the new attempt until its own terminal result supersedes it", async () => {
+  const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.deepEqual(t.registry.updateView("laptop"), { current: null, last: null });
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(c).length === 1, "the command");
+  const first = updateIdOf(c);
+  updateState(c, first, { state: "staging" });
+  updateState(c, first, { state: "restarting" });
+  await until(() => t.registry.updateView("laptop").current?.state === "restarting", "restarting");
+  assert.equal(t.registry.updateView("laptop").last, null, "restarting is not a result");
+  c.ws.send(JSON.stringify(receiptOf(first, { state: "failed", reason: "apply" })));
+  await until(() => t.registry.updateView("laptop").last?.state === "failed", "failed by the receipt");
+  assert.equal(t.registry.updateView("laptop").current, null, "the receipt ends the attempt");
+  c.ws.close();
+  await c.closed;
+  await until(() => t.registry.status().length === 0, "offline");
+  const offline = t.registry.updateView("laptop");
+  assert.deepEqual([offline.current, offline.last?.update_id, offline.last?.state, offline.last?.reason], [null, first, "failed", "apply"], "the failure is still there with no session");
+  const back = await t.connect({ extra: { update_capable: true } });
+  await until(() => back.frames.length === 3, "back");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a manual retry is allowed after a failure");
+  await until(() => updateFrames(back).length === 1, "the retry command");
+  const second = updateIdOf(back);
+  assert.notEqual(second, first);
+  assert.deepEqual([t.registry.updateView("laptop").current?.update_id, t.registry.updateView("laptop").current?.state, t.registry.updateView("laptop").last?.update_id, t.registry.updateView("laptop").last?.state], [second, "requested", first, "failed"], "the retry never erases the previous failure");
+  back.ws.send(JSON.stringify(receiptOf(first)));
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(t.registry.updateView("laptop").last?.state, "failed", "an old receipt neither supersedes nor erases");
+  updateState(back, second, { state: "staging" });
+  updateState(back, second, { state: "restarting" });
+  back.ws.send(JSON.stringify(receiptOf(second)));
+  await until(() => t.registry.updateView("laptop").last?.state === "applied", "applied by its own receipt");
+  assert.deepEqual([t.registry.updateView("laptop").current, t.registry.updateView("laptop").last?.update_id], [null, second], "the new terminal result supersedes the old one and clears the attempt");
+  await t.done();
+});
+
+test("update view: a failure reported before the handoff is also kept, and a request for the current build changes nothing", async () => {
+  const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(c).length === 1, "the command");
+  const id = updateIdOf(c);
+  updateState(c, id, { state: "staging" });
+  updateState(c, id, { state: "failed", reason: "verification" });
+  await until(() => t.registry.updateView("laptop").last?.reason === "verification", "pre-handoff failure kept");
+  assert.equal(t.registry.updateView("laptop").current, null);
+  c.ws.close();
+  await c.closed;
+  await until(() => t.registry.status().length === 0, "offline");
+  const same = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  await until(() => same.frames.length === 3, "on the server build");
+  assert.equal(t.registry.requestUpdate("laptop"), "current");
+  assert.deepEqual([t.registry.updateView("laptop").current, t.registry.updateView("laptop").last?.reason], [null, "verification"], "the refusal does not touch the terminal history, and the build alone creates no result");
+  await t.done();
+});
+
 test("update lifecycle: progress only moves forward (no staging after restarting, a duplicate changes nothing), restarting may still fail as handoff from the original session", async () => {
   const t = await setup();
   const c = await t.connect({ extra: { update_capable: true } });
