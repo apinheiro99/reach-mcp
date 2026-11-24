@@ -164,7 +164,7 @@ test("Clients API: one safe list with counts that add up; Enable and Disable per
   rt.config.registerPendingClient("box", identity.publicKey, "Friendly box");
   const list = async () => (await (await fetch(`${rt.a}/admin/api/clients`)).json()) as { clients: { client_id: string; display_name?: string; status: string; online: boolean; fingerprint: string | null; last_seen: number | null }[]; counts: Record<string, number> };
   let view = await list();
-  assert.deepEqual(view.counts, { total: 2, enabled: 0, pending: 1, disabled: 1, online: 0, offline: 2 });
+  assert.deepEqual(view.counts, { total: 2, enabled: 0, pending: 1, disabled: 1, online: 0, incompatible: 0, offline: 2 });
   assert.equal(view.counts.pending! + view.counts.enabled! + view.counts.disabled!, view.counts.total, "the statuses always add up");
   const box = view.clients.find((c) => c.client_id === "box")!;
   assert.deepEqual([box.display_name, box.status, box.online], ["Friendly box", "pending", false]);

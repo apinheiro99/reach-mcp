@@ -94,8 +94,10 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     const sessions = connections.status();
     const clients = config.clientSummaries().map((c) => ({ ...c, online: c.status === "enabled" && sessions.some((s) => s.client_id === c.client_id && s.online), compatible: sessions.find((s) => s.client_id === c.client_id)?.compatible ?? null, update_capable: sessions.find((s) => s.client_id === c.client_id)?.update_capable ?? null, update: sessions.find((s) => s.client_id === c.client_id)?.update ?? null, last_seen: connections.lastSeen(c.client_id), client_build: connections.lastBuild(c.client_id) ?? null }));
     const count = (status: string) => clients.filter((c) => c.status === status).length;
-    const online = clients.filter((c) => c.online).length;
-    return { clients, counts: { total: clients.length, enabled: count("enabled"), pending: count("pending"), disabled: count("disabled"), online, offline: clients.length - online } };
+    // Operational state is one partition: a live compatible session is Online, a live incompatible (management-only) one is Incompatible, no live session is Offline.
+    const incompatible = clients.filter((c) => c.online && c.compatible === false).length;
+    const live = clients.filter((c) => c.online).length;
+    return { server_build: deps.serverBuild, clients, counts: { total: clients.length, enabled: count("enabled"), pending: count("pending"), disabled: count("disabled"), online: live - incompatible, incompatible, offline: clients.length - live } };
   };
 
   return (req, res) => {
@@ -145,7 +147,7 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
     }
     if (pathname === "/admin/api/clients") {
       if (method !== "GET") return send(res, 405);
-      return config.isActive() ? send(res, 200, clientsView()) : send(res, 200, { clients: [], counts: { total: 0, enabled: 0, pending: 0, disabled: 0, online: 0, offline: 0 } });
+      return config.isActive() ? send(res, 200, clientsView()) : send(res, 200, { server_build: deps.serverBuild, clients: [], counts: { total: 0, enabled: 0, pending: 0, disabled: 0, online: 0, incompatible: 0, offline: 0 } });
     }
     const rename = DISPLAY_NAME_ROUTE.exec(pathname);
     if (rename) {
