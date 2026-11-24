@@ -1060,6 +1060,8 @@ No independent protocol number, negotiation framework, SemVer layer or version-r
 
 Installation/update is always an explicit operator action. Tooling may resolve or download a release only when the operator explicitly requests it; there is no silent self-update.
 
+RAG-backed design guidance for Client lifecycle work: upgrades should remain explicit, staged and reversible; compatibility, administrative authorization and live connectivity are separate concerns and must not be collapsed into one status; an incompatible authenticated Client should fail closed for normal project operations while preserving only the minimum management channel needed for truthful diagnostics and an operator-triggered recovery/update action. Remote update must reuse the canonical release/manifest ownership, verify the replacement before activation, preserve identity and local authorization state, and leave a recoverable previous installation until the new Client is proven healthy. These principles guide Story #145 implementation and must be revalidated against the canonical RAG (`http://docker-prod-01.lab:8000/mcp`) before code changes.
+
 ---
 
 ## 19. Server packaging / public deployment
@@ -1090,7 +1092,7 @@ REACH CI/runtime/release must not require GitGate, Atlas, SCOPE or another exter
 
 Tag/release jobs are self-contained in the REACH repository and may use direct `git tag` + push through the GitLab CI job token or equivalent repository-native mechanism. SCOPE/GitGate governance may guide development process, but it is not a runtime/build/tagging dependency.
 
-Public GitHub publication is also CI-owned. After a green default-branch pipeline, the `Publish GitHub` job (stage `publish`, between `release` and `deploy`) pushes exactly `CI_COMMIT_SHA` to GitHub `main` and the same green pipeline tag, using credentials and GitHub coordinates read only from the host-local private root (`REACH_PRIVATE_PATH`). `main` is updated with `--force-with-lease` bound to the remote `main` observed just before the push (an empty expectation on first publication), so an unexpected remote advance fails the job instead of being overwritten. Tag, Task-branch and failed pipelines never publish, and a failed publication blocks `Deploy Production`. GitGate is governance-only for REACH (branches, commits, merges, CI gate): `.gitgate.json` declares no mirror or publication.
+Public GitHub publication is also CI-owned. After a green default-branch pipeline, the `Publish GitHub` job (stage `publish`, between `release` and `deploy`) pushes exactly `CI_COMMIT_SHA` to GitHub `main` and the same green pipeline tag, using operator-owned publication material on the `docker-prod` host. The publication root is `REACH_PUBLICATION_PATH` when supplied, otherwise `$HOME/reach-prod/reach-private`; it contains `credentials/github/reach-mcp` plus `config/github.env`. The corresponding public key is registered on the GitHub `reach-mcp` repository as a write-enabled Deploy Key; the private key remains host-local and mode `0600`. `main` is updated with `--force-with-lease` bound to the remote `main` observed just before the push (an empty expectation on first publication), so an unexpected remote advance fails the job instead of being overwritten. Tag, Task-branch and failed pipelines never publish, and a failed publication blocks `Deploy Production`. GitGate is governance-only for REACH (branches, commits, merges, CI gate): `.gitgate.json` declares no mirror or publication.
 
 Do not introduce cosmetic lint bureaucracy.
 
