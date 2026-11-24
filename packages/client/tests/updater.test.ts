@@ -153,6 +153,7 @@ test("transport: the hello says update_capable with an updater, and the command 
     s.on("message", (d) => {
       const f = JSON.parse(d.toString()) as Record<string, unknown>;
       frames.push(f);
+      if (f.kind === "auth_begin") return void s.send(JSON.stringify({ kind: "server_auth", proof: serverProof("auth", String(f.client_nonce), challenge) }));
       if (f.kind !== "hello") return;
       s.send(JSON.stringify({ kind: "welcome", server_build: "srv", compatible: true, proof: serverProof("welcome", String(f.client_nonce), challenge) }));
       s.send(JSON.stringify({ kind: "update" }));
@@ -176,7 +177,7 @@ test("transport: the hello says update_capable with an updater, and the command 
   for (let i = 0; i < 400 && !frames.some((f) => f.state === "failed"); i++) await new Promise((r) => setTimeout(r, 5));
   transport.stop();
   await new Promise<void>((r) => wss.close(() => r()));
-  assert.equal(frames[0]!.update_capable, true);
-  assert.deepEqual(frames.slice(1), [{ kind: "update_state", state: "staging" }, { kind: "update_state", state: "failed", reason: "verification" }]);
+  assert.equal(frames.find((f) => f.kind === "hello")!.update_capable, true);
+  assert.deepEqual(frames.filter((f) => f.kind === "update_state"), [{ kind: "update_state", state: "staging" }, { kind: "update_state", state: "failed", reason: "verification" }]);
   assert.equal(runs, 1, "the second command while one runs is ignored");
 });

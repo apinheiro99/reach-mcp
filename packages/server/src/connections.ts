@@ -10,6 +10,7 @@ import WebSocket from "ws";
 import { newNonce, verifyChallenge, verifyClientAuth } from "@reach-mcp/shared/identity";
 import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 import {
+  ClientAuthBegin,
   ClientHello,
   type ClientUpdateState,
   failureResponse,
@@ -61,6 +62,7 @@ export type ConnectionOptions = {
 
 /** `compatible` false is a management-only session: authenticated and live, but never given policy, requests or key rotation. */
 type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; update: UpdateStatus | null; connectedSince: number; lastSeen: number };
+type Handshake = { nonce: string; clientNonce: string | null };
 type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
 /** Where the one update of a session stands: `requested` until the Client answers, then its own states. `failed` frees the slot; every other state holds it until the session ends. */
 export type UpdateStatus = { state: "requested" | "staging" | "restarting" | "failed"; reason?: UpdateFailure };
@@ -132,7 +134,8 @@ export class ClientConnectionRegistry {
 
   /** Takes over a freshly upgraded socket and challenges it. It is unauthenticated until a valid hello is admitted. */
   accept(socket: WebSocket, remoteAddress: string | undefined): void {
-    const nonce = newNonce();
+    /** The handshake of this socket: its challenge, and the client nonce once a current Client sent `auth_begin` and received the Server proof. */
+    const handshake: Handshake = { nonce: newNonce(), clientNonce: null };
     let session: Session | null = null;
     const cancelHandshake = this.#schedule(() => {
       if (!session) socket.terminate();
@@ -149,10 +152,10 @@ export class ClientConnectionRegistry {
         session.lastSeen = this.#now();
         return this.#onResponse(session, data, isBinary);
       }
-      session = this.#admit(socket, nonce, remoteAddress, data, isBinary);
+      session = this.#onHandshakeFrame(socket, handshake, remoteAddress, data, isBinary);
       if (session) cancelHandshake();
     });
-    socket.send(JSON.stringify({ kind: "challenge", nonce }));
+    socket.send(JSON.stringify({ kind: "challenge", nonce: handshake.nonce }));
   }
 
   /** Sends the current full policy snapshot to one connected, enabled Client. */
@@ -346,8 +349,11 @@ export class ClientConnectionRegistry {
     return null;
   }
 
-  /** Checks the first frame of a socket against its own challenge; returns the new session, or null after refusing it. */
-  #admit(socket: WebSocket, nonce: string, remoteAddress: string | undefined, data: WebSocket.RawData, isBinary: boolean): Session | null {
+  /**
+   * The frames a socket may send before it is admitted. A current Client sends `auth_begin` (only its nonce) first and gets the Server proof back, no
+   * session yet; its hello follows and is checked against that stage. Anything else is the hello of a pre-change Client, which only the legacy rules admit.
+   */
+  #onHandshakeFrame(socket: WebSocket, handshake: Handshake, remoteAddress: string | undefined, data: WebSocket.RawData, isBinary: boolean): Session | null {
     let frame: unknown;
     try {
       if (isBinary) throw new Error("binary");
@@ -355,6 +361,19 @@ export class ClientConnectionRegistry {
     } catch {
       return this.#reject(socket, { code: "BAD_REQUEST", message: "invalid handshake frame" });
     }
+    if ((frame as { kind?: unknown } | null)?.kind !== "auth_begin") return this.#admit(socket, handshake, remoteAddress, frame);
+    const begin = parseWire(ClientAuthBegin, frame);
+    if (!begin.ok) return this.#reject(socket, begin.error);
+    // One begin per socket and only when this Server can prove itself: otherwise the Client would be left unauthenticated, so it is refused without a proof.
+    if (handshake.clientNonce !== null || !this.#options.trust) return this.#reject(socket, { code: "BAD_REQUEST", message: "invalid handshake frame" });
+    handshake.clientNonce = begin.data.client_nonce;
+    socket.send(JSON.stringify({ kind: "server_auth", proof: this.#options.trust.proof("auth", handshake.clientNonce, handshake.nonce) }));
+    return null;
+  }
+
+  /** Checks the hello of a socket against its own challenge and handshake stage; returns the new session, or null after refusing it. */
+  #admit(socket: WebSocket, handshake: Handshake, remoteAddress: string | undefined, frame: unknown): Session | null {
+    const nonce = handshake.nonce;
     const hello = parseWire(ClientHello, frame);
     if (!hello.ok) return this.#reject(socket, hello.error);
     const { client_id: clientId, client_build: build, public_key: publicKey, signature, client_nonce: clientNonce, display_name: displayName, machine_uuid: machineUuid, update_capable: updateCapable } = hello.data;
@@ -364,6 +383,8 @@ export class ClientConnectionRegistry {
     // A registered Client must present a stored key (current or staged) whatever its status; an unknown one proves possession of the key it offers.
     const known = this.#admissionOf(clientId);
     const key = known ? [known.publicKey, known.nextPublicKey].find((k) => k !== null && k === publicKey) : publicKey;
+    // A current hello belongs to a socket whose Server proof was already given over the SAME client nonce; skipping that phase, or changing the nonce, is refused.
+    if ((clientNonce !== undefined || handshake.clientNonce !== null) && clientNonce !== (handshake.clientNonce ?? undefined)) return reject(AUTH_FAILED);
     const proven = key !== undefined && key !== null && (clientNonce !== undefined ? verifyClientAuth(key, nonce, clientNonce, clientId, signature) : verifyChallenge(key, nonce, clientId, signature));
     if (!proven) return reject(AUTH_FAILED);
     // Only a known, Enabled Client may stay connected with an incompatible build (management only); everyone else is refused as before.

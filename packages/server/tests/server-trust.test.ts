@@ -32,7 +32,7 @@ test("a state file that exists but cannot be read is an error, never a reason to
   const file = path.join(tmp(), "server-trust.json");
   const original = new ServerTrustStore(file);
   const text = readFileSync(file, "utf8");
-  for (const bad of ["not json", "{}", JSON.stringify({ ...JSON.parse(text), release_epoch: -1 }), JSON.stringify({ ...JSON.parse(text), private_key: "x" }), JSON.stringify({ ...JSON.parse(text), release_digest: "zz" })]) {
+  for (const bad of ["not json", "{}", JSON.stringify({ ...JSON.parse(text), release_epoch: -1 }), JSON.stringify({ ...JSON.parse(text), signing_key: "x" }), JSON.stringify({ ...JSON.parse(text), release_digest: "zz" })]) {
     writeFileSync(file, bad);
     assert.throws(() => new ServerTrustStore(file), ServerTrustError);
     assert.equal(readFileSync(file, "utf8"), bad, "the broken file is left exactly as it was");
@@ -84,9 +84,10 @@ test("rotation: the old key signs the new one, the chain is retained and followe
 test("nothing observable carries the private key: proofs, envelopes and the public route never include it", () => {
   const file = path.join(tmp(), "server-trust.json");
   const store = new ServerTrustStore(file);
-  const secret = (JSON.parse(readFileSync(file, "utf8")) as { private_key: string }).private_key;
+  const kept = JSON.parse(readFileSync(file, "utf8")) as { signing_key: string };
+  const hidden = kept.signing_key;
   const observable = JSON.stringify([store.proof("welcome", newNonce(), newNonce()), store.envelope(MANIFEST), store.publicKey(), String(store), Object.keys(store)]);
-  assert.ok(!observable.includes(secret));
+  assert.ok(!observable.includes(hidden));
 });
 
 /** An artifact source holding only a manifest. */
@@ -123,7 +124,7 @@ test("release routes: the envelope wraps the exact manifest bytes, the manifest 
   }
 });
 
-// ---- the handshake ----
+// ---- the handshake (ADR-0005 §3: challenge, then the Client's nonce only, then the Server proof, then the hello) ----
 type Frame = { kind: string; nonce?: string; compatible?: boolean; error?: { code: string }; proof?: { server_public_key: string; server_signature: string } };
 async function handshake(options: { trust: boolean; status?: "enabled" | "disabled" }) {
   const dir = tmp();
@@ -138,21 +139,29 @@ async function handshake(options: { trust: boolean; status?: "enabled" | "disabl
   await new Promise<void>((r) => wss.once("listening", () => r()));
   const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
   const sockets: WebSocket[] = [];
-  /** Connects, answers the challenge with `answer(challengeNonce)` and resolves with every frame once the Server answered or closed. */
-  const connect = async (answer: (nonce: string) => unknown) => {
+  /**
+   * Plays a Client: `steps(challenge)` returns the frames to send after the challenge, each either immediately or after the Server's next frame ("after_auth").
+   * Resolves with every frame the Server sent once it admitted, refused or closed.
+   */
+  const connect = async (steps: (challenge: string) => { first: object; afterAuth?: object }) => {
     const ws = new WebSocket(url);
     sockets.push(ws);
     const frames: Frame[] = [];
     ws.on("error", () => undefined);
+    let plan: ReturnType<typeof steps> | null = null;
     ws.on("message", (d) => {
       const f = JSON.parse(d.toString()) as Frame;
       frames.push(f);
-      if (f.kind === "challenge") ws.send(JSON.stringify(answer(f.nonce!)));
+      if (f.kind === "challenge") {
+        plan = steps(f.nonce!);
+        ws.send(JSON.stringify(plan.first));
+      } else if (f.kind === "server_auth" && plan?.afterAuth) ws.send(JSON.stringify(plan.afterAuth));
     });
     // An admitted session stays open, so the answer is complete once a welcome or reject arrived (and the policy that follows a welcome had a moment to), or the socket closed.
     await new Promise<void>((resolve) => {
       ws.once("close", () => resolve());
       ws.on("message", (d) => (/"kind":"(welcome|reject)"/.test(d.toString()) ? setTimeout(resolve, 40) : undefined));
+      setTimeout(resolve, 400);
     });
     return frames;
   };
@@ -165,55 +174,92 @@ async function handshake(options: { trust: boolean; status?: "enabled" | "disabl
 }
 /** A current Client's hello: its own nonce, and the signature over both nonces. */
 const mutualHello = (nonce: string, clientNonce: string, extra: Record<string, unknown> = {}) => ({ ...signedHello(LAPTOP, "laptop", nonce, { client_build: "ok-1", client_nonce: clientNonce, ...extra }), signature: signClientAuth(LAPTOP.key, nonce, clientNonce, "laptop") });
+const begin = (clientNonce: string) => ({ kind: "auth_begin", client_nonce: clientNonce });
+/** The ordinary current flow: nonce only, then (after the Server proof) the hello. */
+const current = (clientNonce: string, extra: Record<string, unknown> = {}) => (challenge: string) => ({ first: begin(clientNonce), afterAuth: mutualHello(challenge, clientNonce, extra) });
 
-test("handshake: a current Client's welcome carries a Server proof that verifies over ITS nonce and the connection's challenge", async () => {
+test("handshake: the Server proves itself over the Client's nonce BEFORE it learns who the Client is, and the admitted welcome carries a second, separate proof", async () => {
   const h = await handshake({ trust: true });
   try {
     const clientNonce = newNonce();
     let challenge = "";
-    const frames = await h.connect((n) => ((challenge = n), mutualHello(n, clientNonce)));
+    const frames = await h.connect((n) => ((challenge = n), current(clientNonce)(n)));
+    assert.deepEqual(frames.map((f) => f.kind).slice(0, 3), ["challenge", "server_auth", "welcome"], "the order on the wire");
+    const auth = frames.find((f) => f.kind === "server_auth")!;
     const welcome = frames.find((f) => f.kind === "welcome")!;
-    assert.ok(welcome.proof, "the proof is present");
-    assert.equal(welcome.proof.server_public_key, h.trust.publicKey());
-    assert.equal(verifyServerAuth(welcome.proof.server_public_key, "welcome", clientNonce, challenge, welcome.proof.server_signature), true);
-    assert.equal(verifyServerAuth(welcome.proof.server_public_key, "welcome", newNonce(), challenge, welcome.proof.server_signature), false, "not valid for another client nonce");
-    assert.equal(verifyServerAuth(welcome.proof.server_public_key, "reject:AUTH_FAILED", clientNonce, challenge, welcome.proof.server_signature), false, "a welcome signature is not a reject");
+    assert.equal(auth.proof!.server_public_key, h.trust.publicKey());
+    assert.equal(verifyServerAuth(auth.proof!.server_public_key, "auth", clientNonce, challenge, auth.proof!.server_signature), true);
+    assert.equal(verifyServerAuth(auth.proof!.server_public_key, "welcome", clientNonce, challenge, auth.proof!.server_signature), false, "the auth signature is not a welcome");
+    assert.equal(verifyServerAuth(welcome.proof!.server_public_key, "welcome", clientNonce, challenge, welcome.proof!.server_signature), true);
+    assert.equal(verifyServerAuth(auth.proof!.server_public_key, "auth", newNonce(), challenge, auth.proof!.server_signature), false, "not valid for another client nonce");
   } finally {
     await h.stop();
   }
 });
 
-test("handshake: a refusal for a current Client is signed too, as its own outcome", async () => {
+test("handshake: the Server answers a nonce-only frame with a proof and admits nobody on it", async () => {
+  const h = await handshake({ trust: true });
+  try {
+    const frames = await h.connect(() => ({ first: begin(newNonce()) }));
+    assert.deepEqual(frames.map((f) => f.kind), ["challenge", "server_auth"], "no welcome, no reject, no session: the Client has not identified itself");
+  } finally {
+    await h.stop();
+  }
+});
+
+test("handshake: a refusal after the hello is signed too, as its own outcome", async () => {
   const h = await handshake({ trust: true, status: "disabled" });
   try {
     const clientNonce = newNonce();
     let challenge = "";
-    const frames = await h.connect((n) => ((challenge = n), mutualHello(n, clientNonce)));
+    const frames = await h.connect((n) => ((challenge = n), current(clientNonce)(n)));
     const reject = frames.find((f) => f.kind === "reject")!;
     assert.equal(reject.error?.code, "CLIENT_DISABLED");
-    assert.ok(reject.proof);
-    assert.equal(verifyServerAuth(reject.proof.server_public_key, "reject:CLIENT_DISABLED", clientNonce, challenge, reject.proof.server_signature), true);
+    assert.equal(verifyServerAuth(reject.proof!.server_public_key, "reject:CLIENT_DISABLED", clientNonce, challenge, reject.proof!.server_signature), true);
   } finally {
     await h.stop();
   }
 });
 
-test("handshake: a hello whose signature does not cover both nonces is AUTH_FAILED, and the refusal is still signed", async () => {
+test("handshake: phase skipping and nonce swapping are refused: a hello without the nonce-only phase, with another nonce, or in the legacy form after it", async () => {
   const h = await handshake({ trust: true });
   try {
-    const clientNonce = newNonce();
-    const frames = await h.connect((n) => ({ ...mutualHello(n, clientNonce), client_nonce: newNonce() }));
-    assert.equal(frames.find((f) => f.kind === "reject")?.error?.code, "AUTH_FAILED", "the nonce the Client states must be the one it signed");
-    assert.equal(frames.some((f) => f.kind === "welcome"), false);
+    const cases: [string, (challenge: string) => { first: object; afterAuth?: object }][] = [
+      ["a current hello with no auth_begin before it", (n) => ({ first: mutualHello(n, newNonce()) })],
+      ["a hello carrying another nonce than the one begun", (n) => ({ first: begin(newNonce()), afterAuth: mutualHello(n, newNonce()) })],
+      ["the legacy hello (no nonce) after a begun handshake", (n) => ({ first: begin(newNonce()), afterAuth: signedHello(LAPTOP, "laptop", n, { client_build: "ok-1" }) })],
+      ["a hello whose signature does not cover both nonces", (n) => { const cn = newNonce(); return { first: begin(cn), afterAuth: { ...mutualHello(n, cn), signature: signedHello(LAPTOP, "laptop", n).signature } }; }],
+    ];
+    for (const [name, plan] of cases) {
+      const frames = await h.connect(plan);
+      assert.equal(frames.find((f) => f.kind === "reject")?.error?.code, "AUTH_FAILED", name);
+      assert.equal(frames.some((f) => f.kind === "welcome"), false, `${name}: never admitted`);
+    }
   } finally {
     await h.stop();
   }
 });
 
-test("handshake: downgrade guard: a compatible Client that sends no nonce is refused when the Server has a trust key", async () => {
+test("handshake: a second auth_begin, or one to a Server with no trust key, is refused without a proof", async () => {
+  const h = await handshake({ trust: true });
+  const bare = await handshake({ trust: false });
+  try {
+    const twice = await h.connect(() => ({ first: begin(newNonce()), afterAuth: begin(newNonce()) }));
+    assert.equal(twice.filter((f) => f.kind === "server_auth").length, 1);
+    assert.equal(twice.find((f) => f.kind === "reject")?.error?.code, "BAD_REQUEST");
+    const noTrust = await bare.connect(() => ({ first: begin(newNonce()) }));
+    assert.equal(noTrust.some((f) => f.kind === "server_auth"), false, "a Server that cannot prove itself never pretends to");
+    assert.equal(noTrust.find((f) => f.kind === "reject")?.proof, undefined);
+  } finally {
+    await h.stop();
+    await bare.stop();
+  }
+});
+
+test("handshake: downgrade guard: a compatible Client that skips the new flow (legacy hello) is refused when the Server has a trust key", async () => {
   const h = await handshake({ trust: true });
   try {
-    const frames = await h.connect((n) => signedHello(LAPTOP, "laptop", n, { client_build: "ok-1" }));
+    const frames = await h.connect((n) => ({ first: signedHello(LAPTOP, "laptop", n, { client_build: "ok-1" }) }));
     assert.equal(frames.find((f) => f.kind === "reject")?.error?.code, "AUTH_FAILED");
     assert.equal(frames.some((f) => f.kind === "welcome"), false);
   } finally {
@@ -221,14 +267,14 @@ test("handshake: downgrade guard: a compatible Client that sends no nonce is ref
   }
 });
 
-test("handshake: a pre-change Client (no nonce, incompatible build) still gets the management-only welcome it can parse: no proof, nothing new on the wire", async () => {
+test("handshake: a pre-change Client (legacy hello, incompatible build, known and Enabled) still gets the management-only welcome it can parse: no proof, no policy", async () => {
   const h = await handshake({ trust: true });
   try {
-    const frames = await h.connect((n) => signedHello(LAPTOP, "laptop", n, { client_build: "old-9" }));
+    const frames = await h.connect((n) => ({ first: signedHello(LAPTOP, "laptop", n, { client_build: "old-9" }) }));
     const welcome = frames.find((f) => f.kind === "welcome");
     assert.ok(welcome, "it is admitted so it can be updated");
     assert.equal(welcome.proof, undefined, "a pre-change Client's strict schema would refuse an added field");
-    assert.equal(frames.some((f) => f.kind === "policy_sync"), false, "and an incompatible session is given no policy");
+    assert.equal(frames.some((f) => f.kind === "policy_sync" || f.kind === "server_auth"), false);
   } finally {
     await h.stop();
   }
@@ -237,7 +283,7 @@ test("handshake: a pre-change Client (no nonce, incompatible build) still gets t
 test("handshake: without a trust key (setup, tests) no proof is sent and the one-way handshake is unchanged", async () => {
   const h = await handshake({ trust: false });
   try {
-    const frames = await h.connect((n) => signedHello(LAPTOP, "laptop", n, { client_build: "ok-1" }));
+    const frames = await h.connect((n) => ({ first: signedHello(LAPTOP, "laptop", n, { client_build: "ok-1" }) }));
     assert.equal(frames.find((f) => f.kind === "welcome")?.proof, undefined);
   } finally {
     await h.stop();

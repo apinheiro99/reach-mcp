@@ -47,12 +47,14 @@ The Client must authenticate the Server before it sends its own proof and before
 
 Contract for the handshake (wire shape is implemented in Task #164):
 
-1. the Client opens the connection with a fresh random `client_nonce`;
-2. the Server answers with its fresh `server_nonce` and a `server_signature`;
-3. the signature covers a protocol label (`reach-v1/server-auth`), `client_nonce`, `server_nonce`, the Server public key and the connection's protocol version, so it cannot be replayed on another connection, protocol or purpose;
-4. the Client verifies it with the pinned key and closes the connection (fail closed, no retry with another key) when it is missing or wrong;
-5. only then the Client signs its existing Ed25519 proof, which now also covers both nonces under its own label (`reach-v1/client-auth`);
-6. the Server verifies the Client and its Enabled state exactly as in ADR-0004.
+1. the Server opens the connection with its fresh `server_nonce` (the `challenge`, as before);
+2. a current Client answers with `auth_begin`: ONLY a fresh `client_nonce`, no `client_id`, key, build or signature, nothing that identifies it;
+3. the Server answers `server_auth`: a signature over the protocol label (`reach-v1/server-auth`), the outcome `auth`, `client_nonce`, `server_nonce`, the Server public key and the protocol context, so it cannot be replayed on another connection, purpose or protocol version. No session exists yet;
+4. the Client verifies it with the pinned key (or follows a rotation chain from it) and closes the connection (fail closed, retried, never terminal) when it is missing or wrong, **before it sends anything that identifies it**;
+5. only then the Client sends its `hello` with the existing Ed25519 proof, which now covers both nonces under its own label (`reach-v1/client-auth`), and repeats the same `client_nonce`;
+6. the Server accepts that hello only on a socket that went through step 3 with the same nonce, verifies the Client and its Enabled state exactly as in ADR-0004, and the `welcome` or `reject` carries a second proof over the same nonces with its own outcome (`welcome` or `reject:<CODE>`).
+
+An answer before step 3 is not authenticated, so a Client never treats it as terminal.
 
 ### 4. Signed release metadata
 
@@ -82,7 +84,7 @@ The Server trust key changes only through a **rotation statement** signed by the
 - a Client switches its pin only when the statement verifies with the currently pinned key and its generation is greater than the one it holds; there is no auto-accept of a new key by hostname or address;
 - the Server keeps serving statements for the generations a Client may have missed, so an offline Client can step through them in order.
 
-If the private trust key is lost or destroyed, no signed statement can exist. Recovery is a recorded operator action: install the new key through the installer path of section 2 on each Client (re-bootstrap). This is deliberate: a fleet must not be able to be taken over by whoever can answer from a given address. The operator keeps a protected backup of the key to avoid it.
+If the private trust key is lost or destroyed, no signed statement can exist. Recovery is a recorded operator action on each Client (re-bootstrap): the installer's explicit recovery (`--recover-trust`, Windows `REACH_RECOVER_TRUST=1`) with the new key supplied out of band; a normal install, rerun or update never replaces a pin. This is deliberate: a fleet must not be able to be taken over by whoever can answer from a given address. The operator keeps a protected backup of the key to avoid it.
 
 ### 7. Existing Clients without a pinned key
 
@@ -116,11 +118,11 @@ One deterministic byte layout serves every signature (`layout` in `packages/shar
 | Release envelope | `reach-v1/release-manifest` | release_epoch (8 bytes), the exact manifest bytes | Server trust key |
 | Trust rotation | `reach-v1/trust-rotation` | generation (8 bytes), previous raw key, new raw key | the key being replaced |
 
-Handshake as built: the Server still opens with `challenge` (a pre-change Client only understands that order), the hello carries `client_nonce` and signs both nonces, and the Server's `welcome` or `reject` carries `proof` = `{ server_public_key, server_signature, server_rotations? }` over the Client's nonce. A pinned Client fails closed on a missing or invalid proof, so a replayed answer, a wrong key or a forged refusal never gets as far as policy, update or a terminal state. A hello without `client_nonce` is accepted only as an incompatible, management-only session (how a pre-change Client is updated); a compatible build that omits it is refused (no downgrade).
+Handshake as built (three phases): `challenge`, then `auth_begin { client_nonce }`, then `server_auth { proof }`, then `hello` (with `client_nonce` and the signature over both nonces), then `welcome` or `reject`, each carrying `proof` = `{ server_public_key, server_signature, server_rotations? }`. The Server keeps the begun nonce per socket and refuses a hello that skips the phase, changes the nonce or falls back to the legacy form (`AUTH_FAILED`), a second `auth_begin` and any `auth_begin` when it has no trust key (`BAD_REQUEST`, no proof). A pre-change Client skips the first two phases and sends the legacy hello: it is accepted only as an incompatible, known and Enabled, management-only session, which is how it is updated, and it is given the old-format welcome without proof; a compatible build on the legacy path is refused (no downgrade).
 
 Routes (service plane): `GET /release/manifest` still serves the exact manifest bytes (installers and pre-change Clients read it), `GET /release/envelope` serves `{ release_epoch, manifest, signature }` (manifest Base64url), `GET /release/trust-key` serves `{ public_key }`. The updater of a current Client reads only the envelope. The Server keeps its state in `server-trust.json` next to its config in the private root (key, epoch, last digest, rotation generation and the last 32 statements).
 
-Installers: Linux writes `REACH_SERVER_TRUST_KEY` into a fresh Bootstrap, adds it to one that lacks it, and replaces it (resetting the epoch, digest and generation lines) only when the Server key changed; an operator-triggered update (`--staged`) never touches an existing pin. Windows PowerShell 5.1 has no trustworthy Ed25519 verifier, so neither installer verifies a signature: first install is explicit trust on first use, and strict verification starts when the installed Client connects. With `REACH_SERVER_TRUST_KEY` supplied out of band the fetched key must match, which authenticates the Server identity at the first runtime connection, not the pre-runtime HTTP download of the archive.
+Installers: a pin is trust state and is never replaced from the unauthenticated http answer. Linux writes `REACH_SERVER_TRUST_KEY` into a fresh Bootstrap and adds it once to one that lacks it. An existing pin that equals the published key is left alone with its epoch, digest and generation; an existing pin that differs makes a normal install, rerun or update **fail before anything changes** and the message names the way out. That way out is the separate, explicit recovery: `--recover-trust` (Windows: `$env:REACH_RECOVER_TRUST='1'`) together with `REACH_SERVER_TRUST_KEY` set out of band to the new key, which must equal the published one; only then the pin is replaced and the epoch, digest and generation lines are removed in the same atomic write. Recovery is refused without that key, with a mismatching key and together with an update (`--staged`). Windows PowerShell 5.1 has no trustworthy Ed25519 verifier, so neither installer verifies a signature: first install is explicit trust on first use, and strict verification starts when the installed Client connects. With `REACH_SERVER_TRUST_KEY` supplied out of band the fetched key must match, which authenticates the Server identity at the first runtime connection, not the pre-runtime HTTP download of the archive.
 
 ## Scenarios Task #164 must prove
 

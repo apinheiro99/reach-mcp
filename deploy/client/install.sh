@@ -15,10 +15,11 @@ DEFAULT_UNIT_DIR=/etc/systemd/system
 
 usage() {
   cat >&2 <<EOF
-usage: install.sh --server-origin http://<host>[:<port>] [--root <abs-dir>] [--state-dir <abs-dir>] [--install-dir <abs-dir>] [--unit-dir <abs-dir>] [--staged <abs-file>] [--allow-whole-disk] [--test-no-system]
+usage: install.sh --server-origin http://<host>[:<port>] [--root <abs-dir>] [--state-dir <abs-dir>] [--install-dir <abs-dir>] [--unit-dir <abs-dir>] [--staged <abs-file>] [--recover-trust] [--allow-whole-disk] [--test-no-system]
   --root         the one physical root the Client may serve; default <state-dir>/root (any directory, including /)
   --allow-whole-disk  required to share / (the whole disk) as the root; without it the installer stops and shows the warning
   --staged       an already downloaded archive (an operator-triggered update stages it); it is still checked against the manifest's size and SHA-256 before anything changes
+  --recover-trust  explicit recovery after the Server key was lost: replaces the pinned Server key and resets its epoch and generation, only when REACH_SERVER_TRUST_KEY (the new key, obtained out of band) is set and equals the key the Server publishes; never with --staged
   --test-no-system  tests only: no account, ownership or systemd change; the unit is written and not started
 EOF
   exit 2
@@ -29,11 +30,12 @@ die() {
   exit 2
 }
 
-staged="" origin="" root="" root_given="" whole_disk="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
+staged="" recover="" origin="" root="" root_given="" whole_disk="" state_dir="$DEFAULT_STATE_DIR" install_dir="$DEFAULT_INSTALL_DIR" unit_dir="$DEFAULT_UNIT_DIR" system=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --test-no-system) system=0; shift; continue ;;
     --allow-whole-disk) whole_disk=1; shift; continue ;;
+    --recover-trust) recover=1; shift; continue ;;
     --server-origin | --root | --state-dir | --install-dir | --unit-dir | --staged) [ $# -ge 2 ] || usage ;;
     *) usage ;;
   esac
@@ -169,6 +171,16 @@ fetch /release/manifest "$work/manifest.json"
 fetch /release/trust-key "$work/trust-key.json"
 server_key="$("$node_bin" -e 'try { const k = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).public_key; if (typeof k === "string" && /^[A-Za-z0-9_-]{43}$/.test(k)) process.stdout.write(k); else process.exit(2); } catch { process.exit(2); }' "$work/trust-key.json")" || die "the Server did not publish a valid trust key"
 if [ -n "${REACH_SERVER_TRUST_KEY:-}" ] && [ "$REACH_SERVER_TRUST_KEY" != "$server_key" ]; then die "the Server trust key differs from REACH_SERVER_TRUST_KEY: nothing was pinned or installed"; fi
+# An existing pin is trust state: a normal install, rerun or update never replaces it from this unauthenticated http answer. Replacing it is the separate,
+# explicit --recover-trust, and only with the new key supplied out of band. Every check here runs before anything is created or changed.
+existing_pin=""
+if [ -f "$state_dir/bootstrap.env" ]; then existing_pin="$(sed -n 's/^REACH_SERVER_TRUST_KEY=//p' "$state_dir/bootstrap.env" | sed -n 1p)"; fi
+if [ -n "$recover" ]; then
+  [ -z "$staged" ] || die "--recover-trust cannot be combined with --staged: an update never changes the pinned Server key"
+  [ -n "${REACH_SERVER_TRUST_KEY:-}" ] || die "--recover-trust needs REACH_SERVER_TRUST_KEY set to the new Server public key, obtained out of band: nothing was changed"
+elif [ -n "$existing_pin" ] && [ "$existing_pin" != "$server_key" ]; then
+  die "the Server publishes a key that differs from the one pinned in $state_dir/bootstrap.env: nothing was changed. If the Server key was really replaced, rerun with --recover-trust and REACH_SERVER_TRUST_KEY set to the new key obtained out of band"
+fi
 
 # Read and validate the manifest, select the one client/linux/<arch> entry. Prints: relative path, sha256, size, build id.
 SELECT='
@@ -236,10 +248,9 @@ if [ -f "$bootstrap" ]; then
     chmod 600 "$bootstrap.tmp.$$"
     mv "$bootstrap.tmp.$$" "$bootstrap"
   fi
-  # The pin is added when missing (a Client installed before pinning) and replaced, with its epoch and generation counters, only when the Server key changed
-  # (re-running the installer is the recovery path after the Server key was lost); an unchanged key leaves the Client's own trust state alone.
-  # An operator-triggered update (--staged) never touches an existing pin: the Client already verified the archive against its pinned key, and the unauthenticated key fetched here must not replace it.
-  if { [ -z "$staged" ] || ! grep -q '^REACH_SERVER_TRUST_KEY=' "$bootstrap"; } && ! grep -qx "REACH_SERVER_TRUST_KEY=$server_key" "$bootstrap"; then
+  # A bootstrap without a pin (a Client installed before pinning) gets it once; with --recover-trust a different pin is replaced and its epoch, digest and generation are reset
+  # together, atomically, because a restarted Server restarts them too. Otherwise an existing pin was proved equal above and nothing about it changes.
+  if { [ -z "$existing_pin" ] || { [ -n "$recover" ] && [ "$existing_pin" != "$server_key" ]; }; }; then
     sed -e '/^REACH_SERVER_TRUST_KEY=/d' -e '/^REACH_RELEASE_EPOCH=/d' -e '/^REACH_RELEASE_DIGEST=/d' -e '/^REACH_ROTATION_GENERATION=/d' "$bootstrap" >"$bootstrap.tmp.$$"
     printf 'REACH_SERVER_TRUST_KEY=%s\n' "$server_key" >>"$bootstrap.tmp.$$"
     chmod 600 "$bootstrap.tmp.$$"

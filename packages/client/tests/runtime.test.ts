@@ -55,7 +55,12 @@ test("the client process exits with the dedicated refused code and a safe diagno
   wss.on("connection", (socket) => {
     const challenge = newNonce();
     socket.send(JSON.stringify({ kind: "challenge", nonce: challenge }));
-    socket.once("message", (data) => socket.send(JSON.stringify({ kind: "reject", error: { code: "INCOMPATIBLE_BUILD", message: "client build is not accepted" }, proof: serverProof("reject:INCOMPATIBLE_BUILD", String((JSON.parse(data.toString()) as { client_nonce?: string }).client_nonce), challenge) })));
+    socket.on("message", (data) => {
+      const frame = JSON.parse(data.toString()) as { kind: string; client_nonce?: string };
+      const nonce = String(frame.client_nonce);
+      if (frame.kind === "auth_begin") return void socket.send(JSON.stringify({ kind: "server_auth", proof: serverProof("auth", nonce, challenge) }));
+      socket.send(JSON.stringify({ kind: "reject", error: { code: "INCOMPATIBLE_BUILD", message: "client build is not accepted" }, proof: serverProof("reject:INCOMPATIBLE_BUILD", nonce, challenge) }));
+    });
   });
   const file = bootstrapFile(`ws://127.0.0.1:${(wss.address() as { port: number }).port}/client`);
   const main = path.join(import.meta.dirname, "..", "src", "main.ts");

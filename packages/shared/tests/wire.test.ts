@@ -328,3 +328,17 @@ test("welcome and reject carry an optional strict proof: key, signature and boun
   for (const b of bad) assert.equal(parseNonceWire(ServerProof, b).ok, false, JSON.stringify(b).slice(0, 60));
   assert.equal(parseNonceWire(NonceReply, { ...welcome, proof: { server_public_key: K43 } }).ok, false, "a partial proof is no proof");
 });
+
+// ---- ADR-0005 §3: the nonce-only first answer and the Server's auth frame ----
+import { ClientAuthBegin, ServerAuth } from "../src/wire/index.ts";
+
+test("auth_begin holds only a nonce and server_auth only a proof; extra or identifying fields are refused", () => {
+  assert.equal(parseNonceWire(ClientAuthBegin, { kind: "auth_begin", client_nonce: K43 }).ok, true);
+  for (const bad of [{ kind: "auth_begin" }, { kind: "auth_begin", client_nonce: "short" }, { kind: "auth_begin", client_nonce: K43, client_id: "laptop" }, { kind: "auth_begin", client_nonce: K43, public_key: K43 }, { kind: "auth_begin", client_nonce: K43, signature: S86 }]) {
+    assert.equal(parseNonceWire(ClientAuthBegin, bad).ok, false, JSON.stringify(bad).slice(0, 70));
+  }
+  const proof = { server_public_key: K43, server_signature: S86 };
+  assert.equal(parseNonceWire(ServerAuth, { kind: "server_auth", proof }).ok, true);
+  assert.equal(parseNonceWire(NonceReply, { kind: "server_auth", proof }).ok, true, "the Client reads it as a handshake reply");
+  for (const bad of [{ kind: "server_auth" }, { kind: "server_auth", proof: { server_public_key: K43 } }, { kind: "server_auth", proof, extra: 1 }]) assert.equal(parseNonceWire(ServerAuth, bad).ok, false);
+});

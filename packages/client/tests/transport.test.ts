@@ -17,7 +17,7 @@ const KEY = generateIdentityKey();
 const CRED = KEY.privateKey;
 const root = mkdtempSync(path.join(tmpdir(), "reach-transport-"));
 
-type Seen = { headers: Record<string, string | string[] | undefined>; url: string; frames: unknown[]; nonce: string };
+type Seen = { headers: Record<string, string | string[] | undefined>; url: string; frames: unknown[]; nonce: string; begin: { client_nonce?: string } | null };
 type Harness = { port: number; seen: Seen[]; sockets: ServerSocket[]; close(): Promise<void> };
 
 const entries = new WeakMap<ServerSocket, Seen>();
@@ -27,16 +27,41 @@ const proofOf = (s: ServerSocket, outcome: string) => {
   return serverProof(outcome, clientNonceOf(entry.frames), entry.nonce);
 };
 
-async function server(onConnection: (socket: ServerSocket, seen: Seen) => void, autoPong = true, challenge = true): Promise<Harness> {
+/** What the test server answers to `auth_begin` (the Client's nonce-only first frame): by default a valid signed server_auth; `null` sends nothing; a function builds the frame. */
+type AuthReply = "valid" | null | ((s: ServerSocket, entry: Seen) => object);
+async function server(onConnection: (socket: ServerSocket, seen: Seen) => void, autoPong = true, challenge = true, authReply: AuthReply = "valid"): Promise<Harness> {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1", autoPong });
   const seen: Seen[] = [];
   const sockets: ServerSocket[] = [];
   wss.on("connection", (socket, req) => {
-    const entry: Seen = { headers: req.headers, url: req.url ?? "", frames: [], nonce: newNonce() };
+    const entry: Seen = { headers: req.headers, url: req.url ?? "", frames: [], nonce: newNonce(), begin: null };
     seen.push(entry);
     sockets.push(socket);
     entries.set(socket, entry);
-    socket.on("message", (data) => entry.frames.push(JSON.parse(data.toString())));
+    // The nonce-only first frame is answered here and never shown to a test's own message handlers or to `frames`: those start at the hello, as before.
+    const isBegin = (data: unknown) => (JSON.parse(String(data)) as { kind?: string }).kind === "auth_begin";
+    const rawOn = socket.on.bind(socket);
+    const rawOnce = socket.once.bind(socket);
+    rawOn("message", (data) => {
+      if (isBegin(data)) {
+        entry.begin = JSON.parse(data.toString()) as { client_nonce?: string };
+        const reply = authReply === "valid" ? { kind: "server_auth", proof: serverProof("auth", String(entry.begin.client_nonce), entry.nonce) } : authReply === null ? null : authReply(socket, entry);
+        if (reply) socket.send(JSON.stringify(reply));
+        return;
+      }
+      entry.frames.push(JSON.parse(data.toString()));
+    });
+    const filtered = (fn: (...a: never[]) => void) => (data: unknown, ...rest: unknown[]) => (isBegin(data) ? undefined : (fn as (...a: unknown[]) => void)(data, ...rest));
+    (socket as unknown as { on: unknown }).on = (event: string, fn: (...a: never[]) => void) => (event === "message" ? rawOn("message", filtered(fn)) : rawOn(event as "close", fn as () => void));
+    (socket as unknown as { once: unknown }).once = (event: string, fn: (...a: never[]) => void) => {
+      if (event !== "message") return rawOnce(event as "close", fn as () => void);
+      let done = false;
+      return rawOn("message", (data, ...rest) => {
+        if (done || isBegin(data)) return;
+        done = true;
+        (fn as (...a: unknown[]) => void)(data, ...rest);
+      });
+    };
     if (challenge) socket.send(JSON.stringify({ kind: "challenge", nonce: entry.nonce }));
     onConnection(socket, entry);
   });
@@ -782,3 +807,79 @@ test("rotation: a Client follows a chain signed by its pinned key to the new key
   }
 });
 const importPrivateKeyOf = (k: { privateKey: string }) => importPrivateKey(k.privateKey);
+
+// ---- ADR-0005 §3: the current Client sends ONLY a nonce until the Server proved itself, and only then its identity ----
+const beginNonce = (entry: Seen) => String(entry.begin?.client_nonce);
+const IDENTITY_FIELDS = ["client_id", "public_key", "signature", "client_build", "machine_uuid", "display_name"];
+
+test("three-phase handshake: auth_begin carries only the nonce, the hello follows the verified server_auth, and both are bound to the same nonce", async () => {
+  const srv = await server((s) => s.once("message", () => welcome(s)));
+  const t = new ClientTransport(boot(srv.port), opts(clock()));
+  try {
+    t.start();
+    await until(() => t.snapshot().state === "connected", "connected");
+    const entry = srv.seen[0]!;
+    assert.deepEqual(Object.keys(entry.begin!).sort(), ["client_nonce", "kind"], "the first answer to the challenge holds nothing but the nonce");
+    const hello = ClientHello.parse(entry.frames[0]);
+    assert.equal(hello.client_nonce, entry.begin!.client_nonce, "the hello continues the same handshake");
+    assert.equal(verifyClientAuth(hello.public_key, entry.nonce, hello.client_nonce!, "laptop-1", hello.signature), true);
+    assert.equal(entry.frames.length, 1, "exactly one identity frame");
+  } finally {
+    t.stop();
+    await srv.close();
+  }
+});
+
+test("three-phase handshake: a missing, forged or mismatched server_auth means NO identity frame is ever sent, and the Client retries without giving up", async () => {
+  const other = generateIdentityKey();
+  const cases: [string, AuthReply][] = [
+    ["no answer at all", null],
+    ["a wrong key", (_s, e) => ({ kind: "server_auth", proof: serverProof("auth", beginNonce(e), e.nonce, { key: other }) })],
+    ["another client nonce", (_s, e) => ({ kind: "server_auth", proof: serverProof("auth", newNonce(), e.nonce) })],
+    ["another challenge", (_s, e) => ({ kind: "server_auth", proof: serverProof("auth", beginNonce(e), newNonce()) })],
+    ["a welcome signature presented as auth", (_s, e) => ({ kind: "server_auth", proof: serverProof("welcome", beginNonce(e), e.nonce) })],
+    ["a tampered signature", (_s, e) => ({ kind: "server_auth", proof: { ...serverProof("auth", beginNonce(e), e.nonce), server_signature: "A".repeat(86) } })],
+    ["a welcome sent before the Server proved itself", (_s, e) => ({ kind: "welcome", server_build: "srv-1", compatible: true, proof: serverProof("welcome", beginNonce(e), e.nonce) })],
+    ["an unsigned refusal", () => ({ kind: "reject", error: { code: "AUTH_FAILED", message: "refused" } })],
+  ];
+  for (const [name, reply] of cases) {
+    const srv = await server(() => undefined, true, true, reply);
+    const c = clock();
+    const terminal: string[] = [];
+    const t = new ClientTransport(boot(srv.port), opts(c, { onTerminal: (e) => terminal.push(e.code), handshakeTimeoutMs: 150 }));
+    try {
+      t.start();
+      await until(() => srv.seen.length > 0 && srv.seen[0]!.begin !== null, `${name}: the Client began`);
+      await new Promise((r) => setTimeout(r, 60));
+      assert.deepEqual(srv.seen.flatMap((e) => e.frames), [], `${name}: not one identity frame was sent (${IDENTITY_FIELDS.join(", ")})`);
+      assert.deepEqual(terminal, [], `${name}: an unauthenticated answer can never make the Client give up`);
+      assert.notEqual(t.snapshot().state, "connected", name);
+    } finally {
+      t.stop();
+      await srv.close();
+    }
+  }
+});
+
+test("three-phase handshake: a second server_auth, or one that arrives before the challenge was answered, fails closed", async () => {
+  const twice = await server((s, e) => s.once("message", () => s.send(JSON.stringify({ kind: "server_auth", proof: serverProof("auth", beginNonce(e), e.nonce) }))));
+  const t = new ClientTransport(boot(twice.port), opts(clock()));
+  try {
+    t.start();
+    await until(() => t.snapshot().lastError?.message === "unexpected server authentication", "the repeated server_auth is a protocol violation");
+    assert.notEqual(t.snapshot().state, "connected");
+  } finally {
+    t.stop();
+    await twice.close();
+  }
+  const early = await server((s) => s.send(JSON.stringify({ kind: "server_auth", proof: serverProof("auth", newNonce(), newNonce()) })), true, false);
+  const u = new ClientTransport(boot(early.port), opts(clock()));
+  try {
+    u.start();
+    await until(() => u.snapshot().lastError !== null && u.snapshot().state !== "connecting", "closed");
+    assert.deepEqual(early.seen.flatMap((e) => e.frames), [], "and nothing identifying was sent");
+  } finally {
+    u.stop();
+    await early.close();
+  }
+});

@@ -11,7 +11,7 @@ import { sha256Hex } from "./auth.ts";
 /** Most rotation statements retained; a Client further behind than this must be re-bootstrapped. Equals the wire schema bound. */
 export const MAX_RETAINED_ROTATIONS = 32;
 
-type TrustState = { private_key: string; release_epoch: number; release_digest: string | null; rotation_generation: number; rotations: TrustRotation[] };
+type TrustState = { signing_key: string; release_epoch: number; release_digest: string | null; rotation_generation: number; rotations: TrustRotation[] };
 
 export type ReleaseEnvelope = { release_epoch: number; manifest: string; signature: string };
 
@@ -28,7 +28,7 @@ export class ServerTrustStore {
   /** Loads the state, or creates it once when the file does not exist. */
   constructor(file: string) {
     this.#file = file;
-    this.#state = existsSync(file) ? ServerTrustStore.#read(file) : { private_key: generateIdentityKey().privateKey, release_epoch: 0, release_digest: null, rotation_generation: 0, rotations: [] };
+    this.#state = existsSync(file) ? ServerTrustStore.#read(file) : { signing_key: generateIdentityKey().privateKey, release_epoch: 0, release_digest: null, rotation_generation: 0, rotations: [] };
     if (!existsSync(file)) {
       mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
       this.#persist();
@@ -38,7 +38,7 @@ export class ServerTrustStore {
   static #read(file: string): TrustState {
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as TrustState;
-      importPrivateKey(parsed.private_key);
+      importPrivateKey(parsed.signing_key);
       const counters = [parsed.release_epoch, parsed.rotation_generation];
       if (!counters.every((n) => Number.isSafeInteger(n) && n >= 0) || !Array.isArray(parsed.rotations) || (parsed.release_digest !== null && !/^[0-9a-f]{64}$/.test(parsed.release_digest))) throw new Error("shape");
       return parsed;
@@ -53,7 +53,7 @@ export class ServerTrustStore {
     renameSync(temporary, this.#file);
   }
 
-  #key = () => importPrivateKey(this.#state.private_key);
+  #key = () => importPrivateKey(this.#state.signing_key);
 
   /** The public half, as pinned by Clients and fetched by the installer. */
   publicKey(): string {
@@ -83,7 +83,7 @@ export class ServerTrustStore {
     const next = generateIdentityKey();
     const generation = this.#state.rotation_generation + 1;
     const statement = signTrustRotation(this.#key(), generation, next.publicKey);
-    this.#state = { ...this.#state, private_key: next.privateKey, rotation_generation: generation, rotations: [...this.#state.rotations, statement].slice(-MAX_RETAINED_ROTATIONS) };
+    this.#state = { ...this.#state, signing_key: next.privateKey, rotation_generation: generation, rotations: [...this.#state.rotations, statement].slice(-MAX_RETAINED_ROTATIONS) };
     this.#persist();
   }
 }
