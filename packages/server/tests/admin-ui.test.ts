@@ -279,3 +279,12 @@ test("Clients API: the view carries the Server build and a counts partition that
   connections.stop();
   await new Promise<void>((r) => server.close(() => r()));
 });
+
+test("shared stats layout fits any number of counters: Clients renders seven cards and .stats has no fixed column count", () => {
+  const owner = uiSource["components.ts"] as string;
+  const clients = uiSource["clients.ts"] as string;
+  assert.equal(clients.match(/UI\.stat\(\{/g)?.length, 7, "Clients renders seven fleet counters");
+  assert.ok(/\.stats\{display:grid;grid-template-columns:repeat\(auto-fit,minmax\(9rem,1fr\)\);gap:var\(--gap\)\}/.test(owner), "the shared grid sizes by content, not by a fixed count");
+  assert.ok(!/\.stats\{[^}]*repeat\(\d/.test(owner) && !/@container[^{]*\{\.stats/.test(owner), "no fixed six-column rule and no per-width column override");
+  assert.ok(!/\.stats\{|\.cl-stats|grid-template-columns/.test(clients), "no Clients-only grid CSS");
+});

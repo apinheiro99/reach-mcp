@@ -69,7 +69,7 @@ export const COMPONENT_CSS = `
 .table tr[data-tone="warn"] td:first-child{box-shadow:inset 2px 0 0 var(--c-warn)}
 .table tr[data-note="head"] td{border-bottom:0}
 .table tr[data-note="body"] td{padding-top:0}
-.stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--gap)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:var(--gap)}
 .toolbar{display:flex;flex-wrap:wrap;align-items:stretch;gap:var(--gap)}
 .toolbar>.search{flex:1 1 16rem}
 .toolbar .input{height:2.9rem;border-radius:var(--radius-card)}
@@ -86,8 +86,6 @@ export const COMPONENT_CSS = `
 .meter{height:.6rem;border-radius:var(--radius-pill);background:var(--c-border);overflow:hidden}
 .meter span{display:block;height:100%;border-radius:var(--radius-pill);background:var(--c-accent)}
 .meter[data-tone="warn"] span{background:var(--c-warn)}.meter[data-tone="bad"] span{background:var(--c-bad)}
-@container (max-width:75rem){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@container (max-width:46rem){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .unavailable{display:flex;align-items:center;gap:var(--sp-2);color:var(--c-muted);font-size:var(--fs-sm);padding:var(--sp-2) 0}
 .unavailable .icon{width:1rem;height:1rem}
 .autosave{display:inline-flex;align-items:center;gap:var(--sp-2);padding:.4rem .9rem;border-radius:var(--radius-pill);border:1px solid var(--c-border-strong);background:var(--c-card);font-size:var(--fs-md);white-space:nowrap}
