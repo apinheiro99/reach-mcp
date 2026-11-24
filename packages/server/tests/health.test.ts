@@ -21,12 +21,12 @@ test("active runtime: /health with the bearer returns the minimal snapshot and n
   assert.equal(health.repository_commit, null);
   assert.equal(health.config_active, true);
   assert.equal(health.clients.connected, 1);
-  assert.deepEqual(Object.keys(health.clients.sessions[0]).sort(), ["client_build", "client_id", "enabled", "last_seen", "online"]);
+  assert.deepEqual(Object.keys(health.clients.sessions[0]).sort(), ["client_build", "client_id", "compatible", "enabled", "last_seen", "online"]);
   assert.equal(health.clients.sessions[0].client_id, "laptop");
   assert.equal(health.clients.sessions[0].online, true);
   assert.equal(typeof health.clients.sessions[0].client_build, "string");
   assert.equal(typeof health.clients.sessions[0].last_seen, "number");
-  assert.deepEqual(health.clients.sessions[1], { client_id: "idle", enabled: true, online: false, client_build: null, last_seen: null }, "a configured but disconnected Client is listed offline");
+  assert.deepEqual(health.clients.sessions[1], { client_id: "idle", enabled: true, online: false, compatible: null, client_build: null, last_seen: null }, "a configured but disconnected Client is listed offline");
   assert.deepEqual(health.requests, { in_flight: 0, completed: 0, failed: 0, timed_out: 0 });
   for (const secret of [PHYSICAL_ROOT, "/srv/", MCP_MARKER, CLIENT_MARKER, "physical_root", "credential", "sha256", "config.json", "127.0.0.1"]) assert.ok(!text.includes(secret), `leaked ${secret}`);
   await rt.close();

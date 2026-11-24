@@ -50,12 +50,13 @@ export type ConnectionOptions = {
   audit?: Audit;
 };
 
-type Session = { clientId: string; socket: WebSocket; build: string; connectedSince: number; lastSeen: number };
+/** `compatible` false is a management-only session: authenticated and live, but never given policy, requests or key rotation. */
+type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; connectedSince: number; lastSeen: number };
 type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
 export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
 
-export type SessionStatus = { client_id: string; client_build: string; connected_since: number; last_seen: number; online: boolean };
+export type SessionStatus = { client_id: string; client_build: string; compatible: boolean; connected_since: number; last_seen: number; online: boolean };
 
 const AUTH_FAILED: WireError = { code: "AUTH_FAILED", message: "authentication failed" };
 const PENDING_APPROVAL: WireError = { code: "PENDING_APPROVAL", message: "client is registered and waits for approval" };
@@ -145,7 +146,7 @@ export class ClientConnectionRegistry {
   syncPolicy(clientId: string): boolean {
     const session = this.#sessions.get(clientId);
     const policies = this.#options.config.effectivePoliciesFor(clientId);
-    if (!session || !policies) return false;
+    if (!session || !session.compatible || !policies) return false;
     return this.#send(session, { kind: "policy_sync", policies, runtime: clientRuntimeOf(this.#settings()) });
   }
 
@@ -182,6 +183,7 @@ export class ClientConnectionRegistry {
   rotateKey(clientId: string): Promise<RotationResult> {
     const session = this.#sessions.get(clientId);
     if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return Promise.resolve("offline");
+    if (!session.compatible) return Promise.resolve("refused");
     if (this.#rotations.has(clientId)) return Promise.resolve("busy");
     const id = this.#newId("rot");
     return new Promise<RotationResult>((resolve) => {
@@ -204,7 +206,7 @@ export class ClientConnectionRegistry {
   }
 
   status(): SessionStatus[] {
-    return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
+    return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, compatible: s.compatible, connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
   }
 
   /** Terminates every stale session. */
@@ -228,6 +230,7 @@ export class ClientConnectionRegistry {
     if (!policies.some((p) => p.project_id === projectId)) return refuse({ code: "NOT_FOUND", message: "unknown project" });
     const session = this.#sessions.get(clientId);
     if (!session || this.#isStale(session) || session.socket.readyState !== WebSocket.OPEN) return refuse({ code: "NOT_FOUND", message: "client is offline" });
+    if (!session.compatible) return refuse(incompatibleBuildError(session.build, this.#options.serverBuild));
     if (this.#pending.size >= this.#maxPending) return refuse({ code: "INTERNAL", message: "too many pending requests" });
     if (this.#pending.has(requestId)) return refuse({ code: "BAD_REQUEST", message: "request id already in flight" });
     const envelope = parseWire(RequestEnvelope, { kind: "request", request_id: requestId, project_id: projectId, operation });
@@ -319,7 +322,9 @@ export class ClientConnectionRegistry {
     const known = this.#admissionOf(clientId);
     const key = known ? [known.publicKey, known.nextPublicKey].find((k) => k !== null && k === publicKey) : publicKey;
     if (key === undefined || key === null || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
-    if (!this.#options.isBuildCompatible(build)) return this.#reject(socket, incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
+    // Only a known, Enabled Client may stay connected with an incompatible build (management only); everyone else is refused as before.
+    const compatible = this.#options.isBuildCompatible(build);
+    if (!compatible && known?.status !== "enabled") return this.#reject(socket, incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
     if (!known) return this.#reject(socket, this.#register(clientId, publicKey, displayName, machineUuid) ? PENDING_APPROVAL : AUTH_FAILED);
     if (!this.#reconcileMachine(clientId, known.machineUuid, machineUuid)) return this.#reject(socket, AUTH_FAILED);
     if (known.status !== "enabled") return this.#reject(socket, known.status === "pending" ? PENDING_APPROVAL : CLIENT_DISABLED);
@@ -331,10 +336,12 @@ export class ClientConnectionRegistry {
       existing.socket.terminate();
     }
     const now = this.#now();
-    const session: Session = { clientId, socket, build, connectedSince: now, lastSeen: now };
+    const session: Session = { clientId, socket, build, compatible, connectedSince: now, lastSeen: now };
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
     this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
+    // The welcome is the exact frame pre-change Clients already parse (their schema is strict and accepts only compatible=true), so an
+    // incompatible Client is never told apart on the wire: the Server-owned `session.compatible` is the only authority and gives it no policy.
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()) });
     this.syncPolicy(clientId);
     return session;
