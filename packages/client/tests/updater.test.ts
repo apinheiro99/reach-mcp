@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { readApplyReceipt } from "../src/apply-receipt.ts";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocketServer } from "ws";
@@ -35,6 +36,7 @@ function setup(over: Over = {}) {
     bootstrap,
     endpoint: "ws://127.0.0.1:8787/client",
     build: over.build ?? "build-1",
+    updateId: "update-1",
     stateDir: dir,
     platform: "linux",
     arch: "x64",
@@ -167,7 +169,7 @@ test("transport: the hello says update_capable with an updater, and the command 
   const transport = new ClientTransport(bootstrap(port), {
     build: "build-1",
     handler: { applyPolicy: () => undefined, handle: () => Promise.reject(new Error("unused")) },
-    updater: async (report) => {
+    updater: async (_updateId, report) => {
       runs++;
       report("staging");
       await new Promise((r) => setTimeout(r, 40));
@@ -212,4 +214,34 @@ test("transport: the latest terminal apply receipt is reported after the welcome
   assert.deepEqual(await run(() => applied), [{ kind: "update_receipt", receipt: applied }]);
   assert.deepEqual(await run(() => null), [], "no receipt on disk: nothing is reported, and reaching the target build is not turned into one");
   assert.deepEqual(await run(undefined), []);
+});
+
+const REQUEST = { schema_version: 1, update_id: "update-1", from_build: "build-1", target_build: "build-2", artifact_sha256: sha(ARCHIVE) };
+
+test("the apply request is durable and exact before the platform is asked, and a failed write never triggers", async () => {
+  const seen: string[] = [];
+  const ok = setup({ trigger: async () => void seen.push(readFileSync(path.join(ok.dir, "update", "apply-request.json"), "utf8")) });
+  await ok.run();
+  assert.deepEqual(seen, [JSON.stringify(REQUEST)], "the trigger found the request already written, in the wrappers' one-line shape");
+  const blocked = setup();
+  mkdirSync(path.join(blocked.dir, "update", "apply-request.json"), { recursive: true });
+  await failsWith(blocked.run(), "staging");
+  assert.equal(blocked.calls.includes("trigger"), false, "no handoff without a durable request");
+});
+
+test("the receipt reader returns the wrapper's canonical result and nothing else", () => {
+  const dir = stateDir();
+  mkdirSync(path.join(dir, "update"));
+  const file = path.join(dir, "update", "apply-result.json");
+  assert.equal(readApplyReceipt(dir), null, "absent");
+  const applied: UpdateApplyResult = { ...REQUEST, state: "applied" } as UpdateApplyResult;
+  writeFileSync(file, `${JSON.stringify(applied)}\n`);
+  assert.deepEqual(readApplyReceipt(dir), applied);
+  const failed = { ...REQUEST, state: "failed", reason: "apply" };
+  writeFileSync(file, JSON.stringify(failed));
+  assert.deepEqual(readApplyReceipt(dir), failed);
+  for (const bad of ["{", JSON.stringify({ ...REQUEST, state: "failed", reason: "handoff" }), JSON.stringify({ ...REQUEST, state: "applied", path: "/x" }), JSON.stringify(REQUEST)]) {
+    writeFileSync(file, bad);
+    assert.equal(readApplyReceipt(dir), null, `invalid is read as nothing: ${bad}`);
+  }
 });
