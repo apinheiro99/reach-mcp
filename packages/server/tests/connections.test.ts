@@ -621,7 +621,10 @@ test("policy snapshots carry the live Client timing so a connected Client can fo
 });
 
 const updateFrames = (client: { frames: Frame[] }) => client.frames.filter((f) => f.kind === "update");
-const updateState = (client: { ws: WebSocket }, state: object) => client.ws.send(JSON.stringify({ kind: "update_state", ...state }));
+const updateState = (client: { ws: WebSocket }, updateId: string, state: object) => client.ws.send(JSON.stringify({ kind: "update_state", update_id: updateId, ...state }));
+const updateIdOf = (client: { frames: Frame[] }) => (updateFrames(client).at(-1) as unknown as { update_id: string }).update_id;
+const SHA = "a".repeat(64);
+const receiptOf = (updateId: string, over: object = {}) => ({ kind: "update_receipt", receipt: { schema_version: 1, update_id: updateId, from_build: "ok-1", target_build: "srv-1", artifact_sha256: SHA, state: "applied", ...over } });
 
 test("update: an update-capable Client gets exactly one command, a second is busy, its states are tracked, and a failure frees the slot", async () => {
   const t = await setup();
@@ -630,16 +633,17 @@ test("update: an update-capable Client gets exactly one command, a second is bus
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   assert.equal(t.registry.requestUpdate("laptop"), "busy", "one update in flight per Client");
   await until(() => updateFrames(c).length === 1, "the command");
-  assert.deepEqual(updateFrames(c)[0], { kind: "update" }, "the command carries nothing");
-  updateState(c, { state: "staging" });
+  assert.deepEqual(Object.keys(updateFrames(c)[0]!).sort(), ["kind", "update_id"], "the command carries only the Server-minted attempt id");
+  updateState(c, updateIdOf(c), { state: "staging" });
   await until(() => t.registry.status()[0]!.update?.state === "staging", "staging");
   assert.equal(t.registry.requestUpdate("laptop"), "busy");
-  updateState(c, { state: "failed", reason: "verification" });
+  updateState(c, updateIdOf(c), { state: "failed", reason: "verification" });
   await until(() => t.registry.status()[0]!.update?.state === "failed", "failed");
-  assert.deepEqual(t.registry.status()[0]!.update, { state: "failed", reason: "verification" });
+  assert.deepEqual([t.registry.status()[0]!.update?.state, t.registry.status()[0]!.update?.reason], ["failed", "verification"]);
   assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a failed update can be asked again");
   await until(() => updateFrames(c).length === 2, "second command");
-  updateState(c, { state: "restarting" });
+  assert.notEqual(updateIdOf(c), (updateFrames(c)[0] as unknown as { update_id: string }).update_id, "a retry is a new attempt with a fresh id");
+  updateState(c, updateIdOf(c), { state: "restarting" });
   await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
   assert.equal(t.registry.requestUpdate("laptop"), "busy");
   await t.done();
@@ -669,7 +673,7 @@ test("update: a state reported without an update asked is ignored, and the slot 
   const t = await setup();
   const c = await t.connect({ extra: { update_capable: true } });
   await until(() => c.frames.length === 3, "admitted");
-  updateState(c, { state: "staging" });
+  updateState(c, "update-never-asked", { state: "staging" });
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(t.registry.status()[0]!.update, null, "nothing was asked, so nothing is tracked");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
@@ -713,5 +717,76 @@ test("update: a Client already on the Server's build is refused as current and n
   assert.equal(stale?.update_available, true, "a Client on another build can be updated");
   await new Promise<void>((r) => server.close(() => r()));
   server.closeAllConnections();
+  await t.done();
+});
+
+test("update lifecycle: a state for another attempt id is ignored", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(c).length === 1, "the command");
+  updateState(c, "update-other", { state: "restarting" });
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(t.registry.status()[0]!.update?.state, "requested", "a state for another id changes nothing");
+  await t.done();
+});
+
+test("update lifecycle: reconnecting on the target build is NOT success; only a matching receipt applies it, a repeat is idempotent, a conflict changes nothing, a retry gets a fresh id", async () => {
+  const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(c).length === 1, "the command");
+  const id = updateIdOf(c);
+  updateState(c, id, { state: "restarting" });
+  await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
+  c.ws.close();
+  await c.closed;
+  await until(() => t.registry.status().length === 0, "session ended");
+  const back = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  await until(() => back.frames.length === 3, "reconnected on the target build");
+  assert.deepEqual([t.registry.status()[0]!.update?.update_id, t.registry.status()[0]!.update?.state], [id, "restarting"], "the target build alone proves nothing: the attempt is still restarting");
+  back.ws.send(JSON.stringify(receiptOf(id)));
+  await until(() => t.registry.status()[0]!.update?.state === "applied", "applied by the receipt");
+  back.ws.send(JSON.stringify(receiptOf(id)));
+  back.ws.send(JSON.stringify(receiptOf(id, { state: "failed", reason: "apply" })));
+  back.ws.send(JSON.stringify(receiptOf(id, { artifact_sha256: "b".repeat(64) })));
+  await new Promise((r) => setTimeout(r, 40));
+  const held = t.registry.status()[0]!.update!;
+  assert.deepEqual([held.update_id, held.state, held.artifact_sha256], [id, "applied", SHA], "a repeat is idempotent and a conflicting receipt for the same id changes nothing");
+  await t.done();
+});
+
+test("update lifecycle: a failed/apply receipt is terminal and allows a manual retry with a fresh id; an old receipt never overrides a newer attempt in flight", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(c).length === 1, "the command");
+  const first = updateIdOf(c);
+  updateState(c, first, { state: "restarting" });
+  await until(() => t.registry.status()[0]!.update?.state === "restarting", "restarting");
+  c.ws.send(JSON.stringify(receiptOf(first, { state: "failed", reason: "apply" })));
+  await until(() => t.registry.status()[0]!.update?.state === "failed", "failed by the receipt");
+  assert.equal(t.registry.status()[0]!.update?.reason, "apply");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted", "failed does not retry by itself, but a human can ask again");
+  await until(() => updateFrames(c).length === 2, "second command");
+  const second = updateIdOf(c);
+  assert.notEqual(second, first);
+  c.ws.send(JSON.stringify(receiptOf(first)));
+  await new Promise((r) => setTimeout(r, 40));
+  assert.deepEqual([t.registry.status()[0]!.update?.update_id, t.registry.status()[0]!.update?.state], [second, "requested"], "the old terminal receipt does not replace the newer attempt");
+  await t.done();
+});
+
+test("update lifecycle: after the Server lost its state an authenticated receipt restores the last terminal result and creates nothing in flight", async () => {
+  const t = await setup();
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  assert.equal(t.registry.status()[0]!.update, null);
+  c.ws.send(JSON.stringify(receiptOf("update-before-restart")));
+  await until(() => t.registry.status()[0]!.update?.state === "applied", "restored");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a restored terminal result holds no slot");
   await t.done();
 });
