@@ -48,7 +48,7 @@ Contract from [ADR-0005](decisions/ADR-0005-server-trust-identity-and-signed-rel
 - The same key authenticates the Server on the WebSocket and signs the release manifest envelope. There is no separate release signing key.
 - `REACH_SERVER_TRUST_KEY` (public key, Base64url) is an optional installer input. When absent, the installer pins the key it fetches from the Server origin it was given (trust on first use, valid only on the V1 local/controlled network). When present it takes precedence and the fetched key must match it.
 - Rotation is an operator action on the Server that publishes a statement signed by the currently pinned key; Clients follow it automatically in generation order. A lost private key has no statement: re-run the installer path on each Client.
-- A pinned Client refuses a handshake or manifest that does not verify with its pinned key, a manifest with a lower `release_epoch`, and the same epoch with a different digest. A rollback is published with a greater epoch.
+- A pinned Client refuses a handshake or manifest that does not verify with its pinned key, an envelope with a lower `release_epoch`, and the same epoch with a different manifest digest. `release_epoch` is part of the Server-signed envelope, never of the manifest, which stays as the release builder produced it. A rollback is published with a greater epoch.
 
 ## Client local state
 

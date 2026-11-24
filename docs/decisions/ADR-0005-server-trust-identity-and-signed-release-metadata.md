@@ -31,8 +31,8 @@ Owners:
 |---|---|
 | Server trust private key, release epoch counter | Server, in `/reach-private` |
 | Pinned Server public key, highest accepted release epoch, rotation generation | Client Bootstrap (the only owner of persistent Client configuration) |
-| Manifest content and artifacts | Release plane (release-manifest tooling and the Server artifact route) |
-| Manifest signature and `release_epoch` assignment | Server, with the trust key, when it serves a release |
+| Exact manifest v2 bytes and artifacts | Release builder (release-manifest tooling); the Server only transports them |
+| Signed envelope, `release_epoch` and signature | Server, with the trust key, when it serves a release |
 | Client identity and admission | unchanged (ADR-0004) |
 
 ### 2. First trust is TOFU, explicitly and only once
@@ -56,13 +56,13 @@ Contract for the handshake (wire shape is implemented in Task #164):
 
 ### 4. Signed release metadata
 
-The release manifest stays the only discovery contract (schema v2 content and fields are unchanged). It is served inside a signed envelope:
+The release manifest stays the only discovery contract. Manifest v2 is produced and verified by the release builder and is **never modified** by the Server: the Server does not add, remove or reorder a field and does not re-serialize it. It is served inside a signed envelope `{ release_epoch, manifest, signature }`:
 
-- `manifest`: the exact manifest bytes, Base64url (the signature is over these bytes, never over a re-serialization);
-- `signature`: Ed25519 over the label `reach-v1/release-manifest` followed by those bytes;
-- the signed manifest content carries `release_epoch` (below).
+- `release_epoch`: the Server-owned freshness counter (section 5); it is outside the manifest;
+- `manifest`: the exact manifest bytes as produced by the release builder, Base64url;
+- `signature`: Ed25519 by the Server trust key over the label `reach-v1/release-manifest`, the canonical encoding of `release_epoch` and those exact manifest bytes. One deterministic, unambiguous representation of this input is mandatory (for example a fixed-width or length-prefixed `release_epoch` so the epoch and the manifest bytes cannot be confused); Task #164 chooses the concrete encoding and documents it. The signature is never computed over a re-serialized manifest.
 
-The Client verifies the signature with the pinned key **before** it trusts any `build_id`, `download_path`, `sha256` or `size_bytes`. SHA-256 and size of the artifact remain mandatory in addition to the signature: the signature authenticates the hashes, the hash authenticates the bytes. A manifest and artifact replaced together fail on the signature.
+The Client verifies the envelope signature with the pinned key and checks the epoch **before** it parses the manifest and **before** it trusts any `build_id`, `download_path`, `sha256` or `size_bytes`. SHA-256 and size of the artifact remain mandatory in addition to the signature: the signature authenticates the hashes, the hash authenticates the bytes. A manifest and artifact replaced together fail on the signature.
 
 The installer scripts verify the envelope against the key they just pinned. That check proves consistency, not first-use authenticity (section 2).
 
@@ -71,7 +71,7 @@ The installer scripts verify the envelope against the key they just pinned. That
 `release_epoch` is a positive integer owned by the Server and persisted in `/reach-private`. It is separate from `build_id`, which stays opaque and compared only by equality; no counter or ordering is derived from a build id.
 
 - The Server increments the epoch whenever the effective release changes. An intentional rollback to an older artifact is published as new metadata with a **greater** epoch, so rollback remains possible.
-- The Client persists the highest accepted epoch in its Bootstrap and refuses a lower one. The same epoch is accepted only for the same authenticated manifest digest; a different digest at the same epoch is refused.
+- The Client persists the highest accepted epoch in its Bootstrap and refuses a lower one. The same epoch is accepted only when the SHA-256 digest of the exact manifest bytes equals the digest previously accepted at that epoch; a different digest at the same epoch is refused. An intentional rollback is the old artifact's unchanged manifest bytes inside a new envelope with a greater epoch.
 - No timestamp or expiry is used as the anti-replay mechanism: it needs a trusted clock and breaks offline Clients.
 
 ### 6. Trust rotation and recovery
@@ -119,7 +119,7 @@ Explicitly **not** addressed:
 - Client Bootstrap: `server_trust_key` (public, Base64url), `release_epoch` (highest accepted), `rotation_generation`.
 - Installer input: optional `REACH_SERVER_TRUST_KEY`.
 - WebSocket handshake: `client_nonce`, `server_nonce`, `server_signature`, and the nonces folded into the Client proof.
-- Release metadata: envelope `{ manifest, signature }`; `release_epoch` inside the manifest; rotation statements `{ new_public_key, rotation_generation, signature }`.
+- Release metadata: envelope `{ release_epoch, manifest, signature }` (the manifest bytes are the unmodified manifest v2; `release_epoch` is not a manifest field); rotation statements `{ new_public_key, rotation_generation, signature }`.
 - Server persistent state under `/reach-private`: trust private key, current `release_epoch`, current `rotation_generation`.
 
 ## Out of scope
