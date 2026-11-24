@@ -19,3 +19,4 @@ ci-summary/
 .DS_Store
 .idea/
 .vscode/
+.npm/

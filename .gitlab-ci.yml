@@ -19,8 +19,16 @@ stages:
 default:
   tags:
     - scope
+  # The npm download cache is keyed by the lockfile: every job reuses it instead of fetching 115 packages again (npm ci itself was ~3 min of every job).
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+    policy: pull-push
   before_script:
-    - npm ci
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
 
 .branch-push-only:
   rules:
@@ -32,7 +40,7 @@ default:
 # Jobs that start a real Client need a native Linux machine id; the one CI-only helper provides it (production resolution is untouched).
 .real-client-tests:
   before_script:
-    - npm ci
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
     - node scripts/git-ci/ensure-machine-id.ts
 
 .validation-summary:
@@ -195,7 +203,7 @@ ci-tag-red:
     - job: "Build Release"
       artifacts: true
   script:
-    - npm ci
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p deploy-evidence
     - node deploy/prod/deploy.ts deploy --release release --state "$REACH_ROOT/state" --private-path "$REACH_PRIVATE_PATH" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --admin-bind "$REACH_ADMIN_BIND" --admin-allow-from "$REACH_ADMIN_ALLOW_FROM" --evidence deploy-evidence/evidence.json
@@ -225,7 +233,7 @@ ci-tag-red:
   extends: .deploy-job
   needs: []
   script:
-    - npm ci
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
     - export REACH_ROOT="$HOME/reach-prod"
     - mkdir -p deploy-evidence
     - node deploy/prod/deploy.ts rollback --state "$REACH_ROOT/state" --private-path "$REACH_PRIVATE_PATH" --tunnel-binary "$REACH_ROOT/bin/tunnel-client" --tunnel-dir "$REACH_ROOT/tunnel" --admin-bind "$REACH_ADMIN_BIND" --admin-allow-from "$REACH_ADMIN_ALLOW_FROM" --evidence deploy-evidence/evidence.json
