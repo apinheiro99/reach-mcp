@@ -47,7 +47,7 @@ async function renderClients(view) {
     const r = await api("POST", path);
     if (r.ok) say("saved", done + " · " + clock());
     else say("error", "Not done: " + ((r.json.problems || [r.json.result || "unexpected error"]).join("; ")));
-    await load();
+    await load(true);
   }
 
   async function saveDisplayName(clientId, displayName) {
@@ -82,7 +82,7 @@ async function renderClients(view) {
       c.fingerprint ? UI.iconButton("copy", "Copy fingerprint", () => navigator.clipboard.writeText(c.fingerprint).then(() => say("saved", "Fingerprint copied · " + clock()))) : "");
     const toggle = UI.toggle(AUTH_LABEL[c.status], c.status === "enabled", (on) => act(base + (on ? "/enable" : "/disable"), on ? "Enabled" : "Disabled"));
     toggle.title = c.status === "enabled" ? "Disable this client" : "Enable this client";
-    const update = UI.button("Update Client", { icon: "refresh", onClick: () => act(base + "/update", "Update requested") });
+    const update = UI.button("Update Client", { icon: "refresh", onClick: () => { update.disabled = true; update.title = "An update is already in progress"; act(base + "/update", "Update requested: the Client downloads, verifies and restarts (about 20 s)"); } });
     const blocked = updateBlock(c);
     if (blocked) { update.disabled = true; update.title = blocked; }
     const rotate = UI.button("Rotate Key", { icon: "refresh", onClick: () => act(base + "/rotate-key", "Key rotated") });
@@ -111,8 +111,9 @@ async function renderClients(view) {
       : UI.el("div", { className: "cl-empty" }, UI.unavailable(ui.data.clients.length ? "No client matches this search" : "No client has registered yet"))] }));
   }
 
-  async function load() {
-    if (ui.editing || tableHost.contains(document.activeElement)) return;
+  // A poll leaves a focused control alone; an action's own reload is forced, because the focused control is the button that was just pressed.
+  async function load(force) {
+    if (ui.editing || (!force && tableHost.contains(document.activeElement))) return;
     const r = await api("GET", "/admin/api/clients");
     if (!r.ok) { say("error", "The Server did not answer"); return; }
     ui.data = r.json;

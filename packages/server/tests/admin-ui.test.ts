@@ -244,8 +244,8 @@ test("Clients status: Online, Offline and Incompatible come from the Server's fa
 test("Clients actions: Update Client only when the Server's facts allow it and through the Server endpoint; Rotate Key needs a compatible online Client", () => {
   const clients = uiSource["clients.ts"] as string;
   assert.equal(clients.match(/UI\.button\("Update Client"/g)?.length, 1, "one Update Client action");
-  assert.ok(/act\(base \+ "\/update", "Update requested"\)/.test(clients), "it calls the Server update endpoint and nothing else");
-  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_capable !== true \?[^;]*c\.update && c\.update\.state !== "failed" \?/.test(clients), "online, update_capable and no in-flight update, each with a truthful reason");
+  assert.ok(/act\(base \+ "\/update", "Update requested[^"]*"\)/.test(clients), "it calls the Server update endpoint and nothing else");
+  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_available === false \?[^;]*c\.update_capable !== true \?[^;]*c\.update && c\.update\.state !== "failed" \?/.test(clients), "online, update_capable and no in-flight update, each with a truthful reason");
   assert.ok(/update\.disabled = true; update\.title = blocked/.test(clients), "an unavailable update is disabled with its reason");
   assert.ok(/if \(state !== "online"\) \{ rotate\.disabled = true;/.test(clients) && /An incompatible client cannot rotate its key/.test(clients), "an incompatible management-only Client does not offer Rotate Key");
   for (const text of ["Update requested\u2026", "Update failed"]) assert.ok(clients.includes(text.replace("\\u2026", "\u2026")), text);
@@ -332,4 +332,13 @@ test("Clients rows: the name is the identity, the id stays searchable in a toolt
   assert.ok(/"Last seen " \+ \(c\.last_seen \? ago\(c\.last_seen\)/.test(clients), "Offline shows the last heartbeat");
   assert.ok(/c\.update_available === false \? "Already up to date"/.test(clients), "the Server's fact disables Update");
   assert.ok(!/client_build\s*[!=]==?\s*serverBuild|serverBuild\s*[!=]==?/.test(clients), "the browser still compares no builds");
+});
+
+test("Clients Update: the press disables the button at once, an action reloads even with focus in the table, and a poll still leaves a focused control alone", () => {
+  const clients = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "clients.ts"), "utf8");
+  assert.ok(/onClick: \(\) => \{ update\.disabled = true;/.test(clients), "the button is disabled the moment it is pressed");
+  assert.ok(/about 20 s/.test(clients), "the operator is told how long it takes");
+  assert.ok(/await load\(true\);\n {2}\}\n\n {2}async function saveDisplayName/.test(clients), "an action forces its reload, so the Server's update state shows at once");
+  assert.ok(/async function load\(force\) \{\n {4}if \(ui\.editing \|\| \(!force && tableHost\.contains\(document\.activeElement\)\)\) return;/.test(clients), "only a poll skips a focused table; typing a name is always protected");
+  assert.ok(/every\(load\)/.test(clients), "the poll itself is unchanged");
 });
