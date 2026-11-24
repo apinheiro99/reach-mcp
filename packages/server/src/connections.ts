@@ -57,7 +57,7 @@ type Session = { clientId: string; socket: WebSocket; build: string; compatible:
 type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
 /** Where the one update of a session stands: `requested` until the Client answers, then its own states. `failed` frees the slot; every other state holds it until the session ends. */
 export type UpdateStatus = { state: "requested" | "staging" | "restarting" | "failed"; reason?: UpdateFailure };
-export type UpdateResult = "accepted" | "offline" | "unsupported" | "busy";
+export type UpdateResult = "accepted" | "offline" | "current" | "unsupported" | "busy";
 export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
 
@@ -208,12 +208,13 @@ export class ClientConnectionRegistry {
   /**
    * The explicit operator command to update one connected, enabled Client to the Server's canonical release build. The frame carries nothing:
    * the Client resolves the release manifest itself. Allowed on an incompatible (management-only) session, because that is exactly the Client
-   * that needs it; refused for a Client that did not say it can update (a pre-change Client has no handler and would drop the socket) and
+   * that needs it; refused for a Client already on the Server's build (nothing to do) and for a Client that did not say it can update (a pre-change Client has no handler and would drop the socket) and
    * while another update of the same Client is in flight. Nothing is queued: an offline Client is refused.
    */
   requestUpdate(clientId: string): UpdateResult {
     const session = this.#sessions.get(clientId);
     if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return this.#recordUpdate(clientId, "offline");
+    if (session.build === this.#options.serverBuild) return this.#recordUpdate(clientId, "current");
     if (!session.updateCapable) return this.#recordUpdate(clientId, "unsupported");
     if (session.update !== null && session.update.state !== "failed") return this.#recordUpdate(clientId, "busy");
     session.update = { state: "requested" };

@@ -11,6 +11,7 @@ import path from "node:path";
 import { ClientConnectionRegistry, createAdminHandler, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { renderAdminPage } from "../src/admin-page.ts";
 import { NAV_ITEMS } from "../src/admin-ui/nav.ts";
+import { REDRAW_JS } from "../src/admin-ui/components.ts";
 import { watchSources } from "../src/admin-ui/dev-reload.ts";
 
 const SRC = path.join(import.meta.dirname, "..", "src");
@@ -243,8 +244,8 @@ test("Clients status: Online, Offline and Incompatible come from the Server's fa
 test("Clients actions: Update Client only when the Server's facts allow it and through the Server endpoint; Rotate Key needs a compatible online Client", () => {
   const clients = uiSource["clients.ts"] as string;
   assert.equal(clients.match(/UI\.button\("Update Client"/g)?.length, 1, "one Update Client action");
-  assert.ok(/act\(base \+ "\/update", "Update requested"\)/.test(clients), "it calls the Server update endpoint and nothing else");
-  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_capable !== true \?[^;]*c\.update && c\.update\.state !== "failed" \?/.test(clients), "online, update_capable and no in-flight update, each with a truthful reason");
+  assert.ok(/act\(base \+ "\/update", "Update requested[^"]*"\)/.test(clients), "it calls the Server update endpoint and nothing else");
+  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_available === false \?[^;]*c\.update_capable !== true \?[^;]*c\.update && c\.update\.state !== "failed" \?/.test(clients), "online, update_capable and no in-flight update, each with a truthful reason");
   assert.ok(/update\.disabled = true; update\.title = blocked/.test(clients), "an unavailable update is disabled with its reason");
   assert.ok(/if \(state !== "online"\) \{ rotate\.disabled = true;/.test(clients) && /An incompatible client cannot rotate its key/.test(clients), "an incompatible management-only Client does not offer Rotate Key");
   for (const text of ["Update requested\u2026", "Update failed"]) assert.ok(clients.includes(text.replace("\\u2026", "\u2026")), text);
@@ -287,4 +288,57 @@ test("shared stats layout fits any number of counters: Clients renders seven car
   assert.ok(/\.stats\{display:grid;grid-template-columns:repeat\(auto-fit,minmax\(9rem,1fr\)\);gap:var\(--gap\)\}/.test(owner), "the shared grid sizes by content, not by a fixed count");
   assert.ok(!/\.stats\{[^}]*repeat\(\d/.test(owner) && !/@container[^{]*\{\.stats/.test(owner), "no fixed six-column rule and no per-width column override");
   assert.ok(!/\.stats\{|\.cl-stats|grid-template-columns/.test(clients), "no Clients-only grid CSS");
+});
+
+// A poll must not send a scrolled list back to the top: the shared redraw keeps the scroll container's position.
+type Scroller = { scrollTop: number; scrollLeft: number };
+const redrawHarness = () => {
+  const redraw = new Function(`${REDRAW_JS}; return redrawKeepingScroll;`)() as (host: unknown, ...nodes: unknown[]) => void;
+  const host = {
+    body: { scrollTop: 0, scrollLeft: 0 } as Scroller | null,
+    querySelector() { return this.body; },
+    replaceChildren() { this.body = this.body === null ? null : { scrollTop: 0, scrollLeft: 0 }; },
+  };
+  return { redraw, host };
+};
+
+test("a periodic refresh keeps the list position: the table scroll container's scrollTop and scrollLeft survive the redraw", () => {
+  const { redraw, host } = redrawHarness();
+  host.body!.scrollTop = 420;
+  host.body!.scrollLeft = 36;
+  const before = host.body;
+  redraw(host, "fresh table");
+  assert.notEqual(host.body, before, "the container really was rebuilt");
+  assert.deepEqual({ top: host.body!.scrollTop, left: host.body!.scrollLeft }, { top: 420, left: 36 });
+  host.body = null;
+  assert.doesNotThrow(() => redraw(host, "empty state"), "no scroll container yet: nothing to restore");
+});
+
+test("Clients and Projects redraw their table through the shared helper, and the refresh interval is untouched", () => {
+  for (const file of ["clients.ts", "projects.ts"]) {
+    const text = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", file), "utf8");
+    assert.match(text, /UI\.redraw\(tableHost, UI\.card\(\{ variant: "table"/, `${file} redraws the table through UI.redraw`);
+    assert.doesNotMatch(text, /tableHost\.replaceChildren\(UI\.card/, `${file} no longer rebuilds the table container directly`);
+  }
+  assert.match(readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "shell.ts"), "utf8"), /setInterval\(\(\) => \{ fn\(\); refreshVersion\(\); \}, 5000\)/);
+});
+
+test("Clients rows: the name is the identity, the id stays searchable in a tooltip, Online counts the session from connected_since, Update is off when the Server says current", () => {
+  const clients = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "clients.ts"), "utf8");
+  assert.ok(/subtitle: c\.machine_uuid && c\.machine_uuid !== c\.client_id \? "UUID " \+ c\.machine_uuid : ""/.test(clients), "only the Machine UUID, discreetly, when there is one");
+  assert.ok(/nameInput\.title = "Client id " \+ c\.client_id/.test(clients), "the id is still one hover away");
+  assert.ok(/\[c\.display_name, c\.client_id, c\.machine_uuid, c\.fingerprint\]/.test(clients), "name, id, Machine UUID and fingerprint stay searchable");
+  assert.ok(/c\.online \? "Connected · " \+ \(c\.connected_since \? since\(c\.connected_since\)/.test(clients), "Online shows how long the session has lasted");
+  assert.ok(/"Last seen " \+ \(c\.last_seen \? ago\(c\.last_seen\)/.test(clients), "Offline shows the last heartbeat");
+  assert.ok(/c\.update_available === false \? "Already up to date"/.test(clients), "the Server's fact disables Update");
+  assert.ok(!/client_build\s*[!=]==?\s*serverBuild|serverBuild\s*[!=]==?/.test(clients), "the browser still compares no builds");
+});
+
+test("Clients Update: the press disables the button at once, an action reloads even with focus in the table, and a poll still leaves a focused control alone", () => {
+  const clients = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "clients.ts"), "utf8");
+  assert.ok(/onClick: \(\) => \{ update\.disabled = true;/.test(clients), "the button is disabled the moment it is pressed");
+  assert.ok(/about 20 s/.test(clients), "the operator is told how long it takes");
+  assert.ok(/await load\(true\);\n {2}\}\n\n {2}async function saveDisplayName/.test(clients), "an action forces its reload, so the Server's update state shows at once");
+  assert.ok(/async function load\(force\) \{\n {4}if \(ui\.editing \|\| \(!force && tableHost\.contains\(document\.activeElement\)\)\) return;/.test(clients), "only a poll skips a focused table; typing a name is always protected");
+  assert.ok(/every\(load\)/.test(clients), "the poll itself is unchanged");
 });

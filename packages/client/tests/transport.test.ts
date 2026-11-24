@@ -431,6 +431,27 @@ test("admitted: slow and fast requests never cross their responses", async () =>
   await srv.close();
 });
 
+test("admitted: a project root inside the local anchor keeps the session, a root wider than the anchor drops it (the reach-mcp-dev flapping)", async () => {
+  const anchored = new ClientDispatcher({ anchors: [readyProject] });
+  const inside = await welcomingServer(() => [policyFrame({ project_id: "reach", physical_root: readyProject, mode: "read_only" })]);
+  const ok = new ClientTransport(boot(inside.port), opts(clock(), { handler: anchored }));
+  ok.start();
+  await until(() => anchored.projects().includes("reach"), "the in-anchor policy was applied");
+  assert.equal(ok.snapshot().state, "connected", "no drop, no reconnect loop");
+  assert.equal(inside.seen.length, 1, "one connection only");
+  ok.stop();
+  await inside.close();
+
+  const wider = new ClientDispatcher({ anchors: [readyProject] });
+  const outside = await welcomingServer(() => [policyFrame({ project_id: "reach", physical_root: path.dirname(readyProject), mode: "read_only" })]);
+  const bad = new ClientTransport(boot(outside.port), opts(clock(), { handler: wider }));
+  bad.start();
+  await until(() => bad.snapshot().state === "backoff", "the wider root is refused and the session dropped");
+  assert.deepEqual(wider.projects(), [], "nothing was applied");
+  bad.stop();
+  await outside.close();
+});
+
 test("admitted: a refused snapshot drops the connection and keeps the last good snapshot; a malformed frame fails closed without echo", async () => {
   const escape = { project_id: "bad", physical_root: path.dirname(root), mode: "read_only" };
   const srv = await welcomingServer(() => [policyFrame(goodPolicy), policyFrame(goodPolicy, escape)]);
