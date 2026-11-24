@@ -295,9 +295,17 @@ test("Linux update: the installer registers the privileged half (a path unit on 
   assert.ok(service.includes(`ExecStart=/bin/sh "${d.install}/deploy/apply-update-linux.sh" --bootstrap "${d.bootstrap}" --install-dir "${d.install}" --unit-dir "${d.units}"`));
   assert.doesNotMatch(pathUnit + service, /curl|wget|http|credential|secret/i, "the units carry no URL and no secret");
   const script = readFileSync(SCRIPT, "utf8");
-  assert.match(script, /systemctl enable "\$UNIT_NAME" "\$UPDATE_PATH"\n\s+systemctl restart "\$UNIT_NAME"/, "enabling restarts the Client so a rerun runs the new files");
+  assert.match(script, /systemctl enable "\$UNIT_NAME" "\$UPDATE_PATH"\n\s+\[ "\$\{REACH_NO_START:-\}" = 1 \] \|\| systemctl restart "\$UNIT_NAME"/, "enabling restarts the Client so a rerun runs the new files, unless the update wrapper owns the final start");
 });
 
+/** A systemctl that records, at the moment the Client is (re)started, whether the terminal result already exists: the order the update must keep. */
+function fakeSystemctl(state: string, exitCode = 0): { env: NodeJS.ProcessEnv; log: string } {
+  const bin = path.join(state, "bin");
+  const log = path.join(state, "systemctl.log");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(path.join(bin, "systemctl"), `#!/bin/sh\nif [ -f "${state}/update/apply-result.json" ]; then seen=result-present; else seen=result-missing; fi\necho "$* $seen" >>"${log}"\nexit ${exitCode}\n`, { mode: 0o755 });
+  return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, log };
+}
 const REQUEST_JSON = '{"schema_version":1,"update_id":"update-1","from_build":"build-1","target_build":"build-2","artifact_sha256":"' + "a".repeat(64) + '"}';
 const APPLIED_JSON = `${REQUEST_JSON.slice(0, -1)},"state":"applied"}\n`;
 const FAILED_JSON = `${REQUEST_JSON.slice(0, -1)},"state":"failed","reason":"apply"}\n`;
@@ -305,7 +313,7 @@ const FAILED_JSON = `${REQUEST_JSON.slice(0, -1)},"state":"failed","reason":"app
 test("Linux update: the privileged script reruns the public installer on the staged archive, consumes the request first, and always removes the staged file", () => {
   const apply = path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh");
   const text = readFileSync(apply, "utf8");
-  assert.doesNotMatch(text, /curl|wget|tar |systemctl|chown|useradd/, "no install logic of its own: the installer is the one owner");
+  assert.doesNotMatch(text.replace("systemctl restart reach-mcp-client.service", ""), /curl|wget|tar |systemctl|chown|useradd/, "no install logic of its own: the installer is the one owner; the wrapper only owns the final Client restart");
   for (const exitCode of [0, 2]) {
     const d = dirs();
     const state = path.dirname(d.bootstrap);
@@ -316,8 +324,9 @@ test("Linux update: the privileged script reruns the public installer on the sta
     writeFileSync(path.join(state, "update", "apply"), "");
     writeFileSync(path.join(state, "update", "apply-request.json"), REQUEST_JSON);
     const log = path.join(state, "args.txt");
-    writeFileSync(path.join(d.install, "deploy", "install.sh"), `printf '%s\\n' "$@" >"${log}"\nexit ${exitCode}\n`);
-    const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8" });
+    writeFileSync(path.join(d.install, "deploy", "install.sh"), `printf '%s\\n' "$@" >"${log}"\nprintf '%s' "$REACH_NO_START" >"${log}.nostart"\nexit ${exitCode}\n`);
+    const systemctl = fakeSystemctl(state);
+    const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8", env: systemctl.env });
     assert.equal(result.status, exitCode, result.stderr);
     assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["--server-origin", "http://127.0.0.1:8787", "--state-dir", state, "--install-dir", d.install, "--unit-dir", d.units, "--staged", path.join(state, "update", "client.tgz")]);
     assert.equal(existsSync(path.join(state, "update", "apply")), false, "the request is consumed, so a failure is never retried in a loop");
@@ -325,6 +334,8 @@ test("Linux update: the privileged script reruns the public installer on the sta
     const resultFile = path.join(state, "update", "apply-result.json");
     assert.equal(readFileSync(resultFile, "utf8"), exitCode === 0 ? APPLIED_JSON : FAILED_JSON, "the wrapper alone authors the exact terminal result");
     assert.equal(existsSync(`${resultFile}.tmp`), false, "no partial result is left behind");
+    assert.equal(readFileSync(`${log}.nostart`, "utf8"), "1", "the installer is told not to start the Client");
+    assert.equal(readFileSync(systemctl.log, "utf8"), "restart reach-mcp-client.service result-present\n", "the Client is restarted exactly once, and only after the terminal result is on disk");
     assert.equal(existsSync(path.join(state, "update", "apply-request.json")), false, "the request is dropped only after the result is committed");
   }
 });
@@ -355,9 +366,32 @@ test("Linux update: a failure before the installer (no staged archive) is still 
   mkdirSync(path.join(state, "update"), { recursive: true });
   writeFileSync(d.bootstrap, "REACH_SERVER_URL=ws://127.0.0.1:8787/client\n");
   writeFileSync(path.join(state, "update", "apply-request.json"), REQUEST_JSON);
-  const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8" });
+  const systemctl = fakeSystemctl(state);
+  const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8", env: systemctl.env });
   assert.equal(result.status, 2, result.stderr);
   assert.equal(readFileSync(path.join(state, "update", "apply-result.json"), "utf8"), FAILED_JSON);
+  assert.equal(readFileSync(systemctl.log, "utf8"), "restart reach-mcp-client.service result-present\n", "a Client that was never stopped is restarted so it reports the failure, after the result is committed");
+});
+
+test("Linux update: when the Client cannot be started after a committed swap, the attempt is failed/apply and the exit is nonzero", () => {
+  const apply = path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh");
+  const d = dirs();
+  const state = path.dirname(d.bootstrap);
+  mkdirSync(path.join(state, "update"), { recursive: true });
+  mkdirSync(path.join(d.install, "deploy"), { recursive: true });
+  writeFileSync(d.bootstrap, "REACH_SERVER_URL=ws://127.0.0.1:8787/client\n");
+  writeFileSync(path.join(state, "update", "client.tgz"), "staged");
+  writeFileSync(path.join(state, "update", "apply-request.json"), REQUEST_JSON);
+  writeFileSync(path.join(d.install, "deploy", "install.sh"), "exit 0\n");
+  const systemctl = fakeSystemctl(state, 1);
+  const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8", env: systemctl.env });
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(readFileSync(path.join(state, "update", "apply-result.json"), "utf8"), FAILED_JSON);
+});
+
+test("Linux install: REACH_NO_START skips only the Client restart; a normal install still restarts it", () => {
+  const script = readFileSync(SCRIPT, "utf8");
+  assert.match(script, /systemctl enable "\$UNIT_NAME" "\$UPDATE_PATH"\n\s+\[ "\$\{REACH_NO_START:-\}" = 1 \] \|\| systemctl restart "\$UNIT_NAME"\n\s+systemctl start "\$UPDATE_PATH"/);
 });
 
 test("Linux update: public installer --staged is still verified against the manifest, and release archives carry the update scripts", () => {
@@ -376,14 +410,21 @@ test("Windows update (structural only): the installer registers a trigger-less o
   const apply = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-windows.ps1"), "utf8");
   assert.match(apply, /Copy-Item -LiteralPath \(Join-Path \$InstallDir 'deploy\\install\.ps1'\)/, "the installer runs from a copy: the install directory is moved aside while it works");
   assert.match(apply, /\$env:REACH_STAGED = \$Staged/);
-  assert.doesNotMatch(apply, /Invoke-WebRequest|HttpWebRequest|Stop-ScheduledTask|Stop-Process/, "no download and no process control of its own");
+  assert.doesNotMatch(apply.replace("Stop-ScheduledTask -TaskName 'REACH Client' -ErrorAction SilentlyContinue", ""), /Invoke-WebRequest|HttpWebRequest|Stop-ScheduledTask|Stop-Process/, "no download and no process control of its own beyond the final Client restart");
   const shape = (text: string) => text.match(/\^\\\{"schema_version":1[^\n']*\\\}\$/)?.[0];
   const linux = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh"), "utf8");
   assert.ok(shape(apply) !== undefined && shape(apply) === shape(linux), "both wrappers accept exactly the same canonical request line");
   assert.match(apply, /Request\.Substring\(0, \$Request\.Length - 1\) \+ ",`"state`":`"\$State`"\$Tail\}`n"/, "the result is the request text closed with the outcome, as on Linux: no hand-built JSON");
+  assert.ok(apply.indexOf("Write-Result 'applied' ''") < apply.lastIndexOf("Restart-Client"), "Windows: the applied result is committed before the Client task is started");
+  assert.ok(apply.indexOf("Write-Result 'failed'") < apply.indexOf("try { Restart-Client } catch { }"), "Windows: the failed result is committed before the old Client is restarted");
+  assert.match(apply, /\$env:REACH_NO_START = '1'/, "Windows: the installer is told not to start the Client");
+  assert.equal([...apply.matchAll(/Start-ScheduledTask/g)].length, 1, "Windows: the wrapper's single Client start is the one after the commit");
+  const lowLevel = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "install-windows.ps1"), "utf8");
+  assert.equal([...lowLevel.matchAll(/Start-ScheduledTask/g)].length, 3, "Windows: every installer start is guarded");
+  for (const line of lowLevel.split("\n").filter((l) => l.includes("Start-ScheduledTask"))) assert.match(line, /-not \$NoStart/, "Windows: no Client start in the installer when the update wrapper owns it");
   assert.doesNotMatch(apply, /ConvertTo-Json/, "no second JSON writer that could diverge from Linux");
   assert.match(apply, /\$Stream\.Flush\(\$true\)[\s\S]*\[IO\.File\]::Replace\(\$Temp, \$ResultFile, \$null\)/, "flushed to disk, then replaced atomically");
-  assert.match(apply, /\} catch \{\n {2}Write-Result 'failed' ',"reason":"apply"'\n {2}throw\n\}[\s\S]*\nWrite-Result 'applied' ''\n$/, "failed is written on any error before exiting nonzero; applied only after the installer finished and cleanup ran");
+  assert.match(apply, /\} catch \{\n {2}\$Failure = \$_\n\} finally \{[\s\S]*\nif \(\$null -ne \$Failure\) \{\n {2}Write-Result 'failed' ',"reason":"apply"'[\s\S]*throw \$Failure\n\}\nWrite-Result 'applied' ''\n/, "failed is committed on any error before the nonzero exit and before the Client restarts; applied only after the installer finished and cleanup ran");
   const installer = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "install.ps1"), "utf8");
   assert.match(installer, /if \(\$Staged\) \{ Copy-Item -LiteralPath \$Staged -Destination \$ArchiveFile \} else \{ Get-Release/, "a staged archive skips only the download; size and SHA-256 are still checked");
   assert.match(readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "uninstall-windows.ps1"), "utf8"), /Unregister-ScheduledTask -TaskName 'REACH Client Update'/, "the uninstaller removes the update task too");

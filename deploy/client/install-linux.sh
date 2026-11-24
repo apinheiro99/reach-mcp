@@ -181,10 +181,11 @@ mv "$unit_dir/$UPDATE_PATH.tmp" "$unit_dir/$UPDATE_PATH"
 mv "$unit_dir/$UPDATE_SERVICE.tmp" "$unit_dir/$UPDATE_SERVICE"
 
 # A running Client keeps its old files in memory, so a rerun (an update) restarts it onto the new install; a first install simply starts it.
+# The update wrapper sets REACH_NO_START=1: it commits the terminal apply result first and only then restarts the Client, so the new process can never connect before its receipt exists.
 if [ "$enable" = 1 ]; then
   systemctl daemon-reload
   systemctl enable "$UNIT_NAME" "$UPDATE_PATH"
-  systemctl restart "$UNIT_NAME"
+  [ "${REACH_NO_START:-}" = 1 ] || systemctl restart "$UNIT_NAME"
   systemctl start "$UPDATE_PATH"
 fi
 echo "installed $install_dir, unit $unit"

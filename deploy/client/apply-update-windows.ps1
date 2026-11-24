@@ -29,7 +29,14 @@ function Write-Result([string]$State, [string]$Tail) {
   Remove-Item -LiteralPath $RequestFile -Force
 }
 
+# The Client is (re)started only after its result is committed, so the new process always finds its receipt: a restart also makes a Client that was never stopped report it.
+function Restart-Client {
+  Stop-ScheduledTask -TaskName 'REACH Client' -ErrorAction SilentlyContinue
+  Start-ScheduledTask -TaskName 'REACH Client' -ErrorAction Stop
+}
+
 $Work = Join-Path ([IO.Path]::GetTempPath()) ("reach-update-" + [Guid]::NewGuid().ToString('N'))
+$Failure = $null
 try {
   if (-not (Test-Path -LiteralPath $Staged -PathType Leaf)) { throw 'no staged archive' }
   $Url = (Get-Content -LiteralPath $Bootstrap | Where-Object { $_ -like 'REACH_SERVER_URL=*' } | Select-Object -First 1)
@@ -41,14 +48,21 @@ try {
   $env:REACH_STATE_DIR = $StateDir
   $env:REACH_INSTALL_DIR = $InstallDir
   $env:REACH_STAGED = $Staged
+  $env:REACH_NO_START = '1'
   $Shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
   & $Shell -NoProfile -ExecutionPolicy Bypass -File $Installer
   if ($LASTEXITCODE -ne 0) { throw 'the installer failed; the current install was left in place' }
 } catch {
-  Write-Result 'failed' ',"reason":"apply"'
-  throw
+  $Failure = $_
 } finally {
   Remove-Item -LiteralPath $Staged -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
 }
+if ($null -ne $Failure) {
+  Write-Result 'failed' ',"reason":"apply"'
+  try { Restart-Client } catch { }
+  throw $Failure
+}
 Write-Result 'applied' ''
+# `applied` means the verified swap is committed and the start was requested; if the start itself is refused the attempt is `failed`, still before any new Client could connect.
+try { Restart-Client } catch { Write-Result 'failed' ',"reason":"apply"'; throw }

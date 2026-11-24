@@ -45,10 +45,15 @@ write_result() {
   mv -f "$result_file.tmp" "$result_file"
   rm -f "$request_file"
 }
+# The Client is (re)started only after its result is committed, so the new process always finds its receipt: a restart also makes a Client that was never stopped report it.
+restart_client() {
+  systemctl restart reach-mcp-client.service
+}
 fail() {
   echo "apply-update-linux: $1" >&2
   write_result failed ',"reason":"apply"'
-  exit 2
+  restart_client || true
+  exit "${2:-2}"
 }
 
 [ -f "$staged" ] || fail "no staged archive"
@@ -59,9 +64,8 @@ case "$url" in
 esac
 trap 'rm -f "$staged"' EXIT
 code=0
-sh "$install_dir/deploy/install.sh" --server-origin "$origin" --state-dir "$state_dir" --install-dir "$install_dir" --unit-dir "$unit_dir" --staged "$staged" || code=$?
-if [ "$code" -ne 0 ]; then
-  write_result failed ',"reason":"apply"'
-  exit "$code"
-fi
+REACH_NO_START=1 sh "$install_dir/deploy/install.sh" --server-origin "$origin" --state-dir "$state_dir" --install-dir "$install_dir" --unit-dir "$unit_dir" --staged "$staged" || code=$?
+[ "$code" -eq 0 ] || fail "the installer failed; the current install was left in place" "$code"
 write_result applied ""
+# `applied` means the verified swap is committed and the start was requested; if the start itself is refused the attempt is `failed`, still before any new Client could connect.
+restart_client || { echo "apply-update-linux: the Client could not be started" >&2; write_result failed ',"reason":"apply"'; exit 2; }

@@ -57,6 +57,8 @@ if (Get-ChildItem -LiteralPath $Stage -Recurse -Force | Where-Object { $_.LinkTy
 # A running Client holds its files open: stop the task and any node.exe started from this install before the swap, and bring it back if the swap fails.
 $Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 $WasRunning = ($null -ne $Existing) -and ($Existing.State -eq 'Running')
+# The update wrapper sets REACH_NO_START=1: it commits the terminal apply result first and only then restarts the Client, so the new process can never connect before its receipt exists.
+$NoStart = $env:REACH_NO_START -eq '1'
 if ($null -ne $Existing) { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
 Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $p = $_.Path; $p -and $p.StartsWith($InstallDir + '\', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue
 $Deadline = (Get-Date).AddSeconds(15)
@@ -66,14 +68,14 @@ while ((Get-Date) -lt $Deadline -and (Get-Process -Name node -ErrorAction Silent
 if (Test-Path -LiteralPath $InstallDir) {
   try { Move-Item -LiteralPath $InstallDir -Destination $Old }
   catch {
-    if ($WasRunning) { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
+    if ($WasRunning -and -not $NoStart) { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
     throw "could not move the current install aside; it was left in place: $($_.Exception.Message)"
   }
 }
 try { Move-Item -LiteralPath (Join-Path $Stage $Top) -Destination $InstallDir }
 catch {
   if (Test-Path -LiteralPath $Old) { Move-Item -LiteralPath $Old -Destination $InstallDir }
-  if ($WasRunning) { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
+  if ($WasRunning -and -not $NoStart) { Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue }
   throw 'could not move the new install into place; the previous install was restored'
 }
 Remove-Item -LiteralPath $Stage -Recurse -Force
@@ -105,5 +107,5 @@ $UpdateShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powers
 $UpdateArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$UpdateScript`" -Bootstrap `"$Bootstrap`" -InstallDir `"$InstallDir`""
 $UpdateAction = New-ScheduledTaskAction -Execute $UpdateShell -Argument $UpdateArguments
 Register-ScheduledTask -TaskName 'REACH Client Update' -Action $UpdateAction -Principal $Principal -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30)) -Force | Out-Null
-if ($Start) { Start-ScheduledTask -TaskName $TaskName }
+if ($Start -and -not $NoStart) { Start-ScheduledTask -TaskName $TaskName }
 Write-Output "installed $InstallDir, scheduled task '$TaskName'"
