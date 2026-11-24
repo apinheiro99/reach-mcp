@@ -60,7 +60,7 @@ Protected local Client state owns only machine-local material:
 - `client_id`;
 - Ed25519 private key;
 - physical root anchors;
-- `server_trust_key` (the pinned Server public key), the highest accepted `release_epoch` and the `rotation_generation`.
+- `REACH_SERVER_TRUST_KEY` (the pinned Server public key), `REACH_RELEASE_EPOCH` with `REACH_RELEASE_DIGEST` (the highest accepted release epoch and the digest of its manifest bytes) and `REACH_ROTATION_GENERATION`, all written through the Bootstrap's one atomic writer.
 
 The Server stores only the matching public key and Server-owned logical configuration. A Client from before pinning has none of the three trust fields; it pins once on its first signed-handshake connection and is strict afterwards.
 
