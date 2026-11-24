@@ -82,6 +82,24 @@ try {
 
   $ManifestFile = Join-Path $Work 'manifest.json'
   Get-Release '/release/manifest' $ManifestFile
+  # Trust on first use (ADR-0005): the Server public key becomes the Client's pin. It travels over the same plain http as the rest, so it is not authenticated by itself;
+  # REACH_SERVER_TRUST_KEY (obtained out of band) turns it into an expected value that must match. No signature is verified here: PowerShell 5.1 has no trustworthy Ed25519.
+  $TrustFile = Join-Path $Work 'trust-key.json'
+  Get-Release '/release/trust-key' $TrustFile
+  try { $ServerKey = (Get-Content -LiteralPath $TrustFile -Raw | ConvertFrom-Json).public_key } catch { Fail 'the Server did not publish a valid trust key' }
+  if ($ServerKey -isnot [string] -or $ServerKey -cnotmatch '^[A-Za-z0-9_-]{43}$') { Fail 'the Server did not publish a valid trust key' }
+  if ("$env:REACH_SERVER_TRUST_KEY" -ne '' -and "$env:REACH_SERVER_TRUST_KEY" -cne $ServerKey) { Fail 'the Server trust key differs from REACH_SERVER_TRUST_KEY: nothing was pinned or installed' }
+  # An existing pin is trust state: a normal install, rerun or update never replaces it from this unauthenticated http answer. Replacing it is the separate, explicit
+  # $env:REACH_RECOVER_TRUST='1', and only with the new key supplied out of band. Every check here runs before anything is created or changed.
+  $Recover = "$env:REACH_RECOVER_TRUST" -eq '1'
+  $ExistingPin = ''
+  if (Test-Path -LiteralPath $Bootstrap -PathType Leaf) { $PinMatch = [Text.RegularExpressions.Regex]::Match([IO.File]::ReadAllText($Bootstrap), '(?m)^REACH_SERVER_TRUST_KEY=(\S+)\r?$'); if ($PinMatch.Success) { $ExistingPin = $PinMatch.Groups[1].Value } }
+  if ($Recover) {
+    if ($Staged) { Fail 'REACH_RECOVER_TRUST cannot be combined with an update: an update never changes the pinned Server key' }
+    if ("$env:REACH_SERVER_TRUST_KEY" -eq '') { Fail 'REACH_RECOVER_TRUST needs REACH_SERVER_TRUST_KEY set to the new Server public key, obtained out of band: nothing was changed' }
+  } elseif ($ExistingPin -ne '' -and $ExistingPin -cne $ServerKey) {
+    Fail 'the Server publishes a key that differs from the one pinned in the bootstrap: nothing was changed. If the Server key was really replaced, set $env:REACH_RECOVER_TRUST=''1'' and REACH_SERVER_TRUST_KEY to the new key obtained out of band, then rerun'
+  }
   try { $Manifest = Get-Content -LiteralPath $ManifestFile -Raw | ConvertFrom-Json } catch { Fail 'the release manifest is not valid JSON' }
   if ($Manifest.schema_version -ne 2) { Fail "unsupported release manifest schema_version $($Manifest.schema_version) (need 2)" }
   $Hits = @($Manifest.artifacts | Where-Object { $_.role -eq 'client' -and $_.os -eq 'win32' -and $_.arch -eq 'x64' })
@@ -128,10 +146,17 @@ try {
     # A rerun keeps the identity and the root; only the endpoint follows the origin given now.
     $Text = [IO.File]::ReadAllText($Bootstrap)
     $Updated = [Text.RegularExpressions.Regex]::Replace($Text, '(?m)^REACH_SERVER_URL=.*$', "REACH_SERVER_URL=$Endpoint")
+    # A bootstrap without a pin (installed before pinning) gets it once; with recovery a different pin is replaced and its epoch, digest and generation are reset together.
+    # Otherwise an existing pin was proved equal above and nothing about it changes.
+    if ($ExistingPin -eq '' -or ($Recover -and $ExistingPin -cne $ServerKey)) {
+      $Updated = [Text.RegularExpressions.Regex]::Replace($Updated, '(?m)^(REACH_SERVER_TRUST_KEY|REACH_RELEASE_EPOCH|REACH_RELEASE_DIGEST|REACH_ROTATION_GENERATION)=.*\r?\n?', '')
+      if ($Updated.Length -gt 0 -and -not $Updated.EndsWith("`n")) { $Updated += "`n" }
+      $Updated += "REACH_SERVER_TRUST_KEY=$ServerKey`n"
+    }
     if ($Updated -ne $Text) { [IO.File]::WriteAllText($Bootstrap, $Updated, $Utf8) }
   } else {
     $RootJson = $Root.Replace('\', '\\')
-    [IO.File]::WriteAllText($Bootstrap, "REACH_SERVER_URL=$Endpoint`nREACH_ROOTS=[`"$RootJson`"]`n", $Utf8)
+    [IO.File]::WriteAllText($Bootstrap, "REACH_SERVER_URL=$Endpoint`nREACH_ROOTS=[`"$RootJson`"]`nREACH_SERVER_TRUST_KEY=$ServerKey`n", $Utf8)
   }
 
   # A child process with a Bypass policy: a default Windows client refuses to run a .ps1 file, even though iex of this text is allowed.

@@ -9,6 +9,7 @@ import path from "node:path";
 import { BootstrapError } from "../src/bootstrap.ts";
 import { parseClientArgs, startClient } from "../src/runtime.ts";
 import { CliError } from "@reach-mcp/shared/cli";
+import { SERVER_KEY, serverProof } from "./proof-fixture.ts";
 
 const KEY = generateIdentityKey();
 const CREDENTIAL = KEY.privateKey;
@@ -16,7 +17,7 @@ const CREDENTIAL = KEY.privateKey;
 function bootstrapFile(endpoint: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), "reach-client-rt-"));
   const file = path.join(dir, "bootstrap.env");
-  writeFileSync(file, `REACH_SERVER_URL=${endpoint}\nREACH_CLIENT_ID=laptop\nREACH_CLIENT_IDENTITY_KEY=${CREDENTIAL}\nREACH_ROOTS=${JSON.stringify([dir])}\n`);
+  writeFileSync(file, `REACH_SERVER_URL=${endpoint}\nREACH_CLIENT_ID=laptop\nREACH_CLIENT_IDENTITY_KEY=${CREDENTIAL}\nREACH_SERVER_TRUST_KEY=${SERVER_KEY.publicKey}\nREACH_ROOTS=${JSON.stringify([dir])}\n`);
   chmodSync(file, 0o600);
   return file;
 }
@@ -52,8 +53,14 @@ test("the client process exits with the dedicated refused code and a safe diagno
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
   wss.on("connection", (socket) => {
-    socket.send(JSON.stringify({ kind: "challenge", nonce: newNonce() }));
-    socket.once("message", () => socket.send(JSON.stringify({ kind: "reject", error: { code: "INCOMPATIBLE_BUILD", message: "client build is not accepted" } })));
+    const challenge = newNonce();
+    socket.send(JSON.stringify({ kind: "challenge", nonce: challenge }));
+    socket.on("message", (data) => {
+      const frame = JSON.parse(data.toString()) as { kind: string; client_nonce?: string };
+      const nonce = String(frame.client_nonce);
+      if (frame.kind === "auth_begin") return void socket.send(JSON.stringify({ kind: "server_auth", proof: serverProof("auth", nonce, challenge) }));
+      socket.send(JSON.stringify({ kind: "reject", error: { code: "INCOMPATIBLE_BUILD", message: "client build is not accepted" }, proof: serverProof("reject:INCOMPATIBLE_BUILD", nonce, challenge) }));
+    });
   });
   const file = bootstrapFile(`ws://127.0.0.1:${(wss.address() as { port: number }).port}/client`);
   const main = path.join(import.meta.dirname, "..", "src", "main.ts");

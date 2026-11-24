@@ -50,6 +50,85 @@ export function verifyChallenge(publicKey: string, nonce: string, clientId: stri
   }
 }
 
+// Domain-separated signatures of the Server trust chain (ADR-0005). Every signed message has ONE deterministic layout: the label and each
+// field, in the documented order, as a 4-byte big-endian length followed by the bytes. Nothing is JSON, so no re-serialization can change a signature.
+export const SIGN_LABELS = { serverAuth: "reach-v1/server-auth", clientAuth: "reach-v1/client-auth", releaseManifest: "reach-v1/release-manifest", trustRotation: "reach-v1/trust-rotation" } as const;
+/** The fixed protocol context folded into the Server authentication, so a signature cannot be reused for another purpose or protocol version. */
+export const SERVER_AUTH_CONTEXT = "reach-ws-1";
+
+const field = (value: Buffer | string): Buffer => {
+  const bytes = typeof value === "string" ? Buffer.from(value, "utf8") : value;
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.length);
+  return Buffer.concat([length, bytes]);
+};
+/** An unsigned counter (release epoch, rotation generation) as 8 big-endian bytes; only positive safe integers exist. */
+const counter = (value: number): Buffer => {
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError("counter must be a positive safe integer");
+  const bytes = Buffer.alloc(8);
+  bytes.writeBigUInt64BE(BigInt(value));
+  return bytes;
+};
+const rawKey = (publicKey: string): Buffer => Buffer.from(publicKey, "base64url");
+/** The one canonical byte layout every trust signature covers; exported so the layout itself is test-pinned. */
+export const layout = (label: string, parts: readonly (Buffer | string)[]): Buffer => Buffer.concat([field(label), ...parts.map(field)]);
+
+const signLayout = (key: KeyObject, label: string, parts: readonly (Buffer | string)[]): string => sign(null, layout(label, parts), key).toString("base64url");
+
+/** True only for a canonical public key and canonical signature that verify over this layout. Never throws. */
+function verifyLayout(publicKey: string, label: string, parts: readonly (Buffer | string)[], signature: string): boolean {
+  try {
+    const raw = rawKey(publicKey);
+    if (raw.length !== 32 || raw.toString("base64url") !== publicKey) return false;
+    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: publicKey }, format: "jwk" });
+    const sig = Buffer.from(signature, "base64url");
+    return sig.length === 64 && sig.toString("base64url") === signature && verify(null, layout(label, parts), key, sig);
+  } catch {
+    return false;
+  }
+}
+
+/** Server -> Client: layout = label, outcome ("welcome" or "reject:<CODE>"), client_nonce, server_nonce, raw Server public key, context. */
+const serverAuthParts = (outcome: string, clientNonce: string, serverNonce: string, serverKey: string) => [outcome, clientNonce, serverNonce, rawKey(serverKey), SERVER_AUTH_CONTEXT];
+export const signServerAuth = (key: KeyObject, outcome: string, clientNonce: string, serverNonce: string): string => signLayout(key, SIGN_LABELS.serverAuth, serverAuthParts(outcome, clientNonce, serverNonce, publicKeyOf(key)));
+export const verifyServerAuth = (serverKey: string, outcome: string, clientNonce: string, serverNonce: string, signature: string): boolean => verifyLayout(serverKey, SIGN_LABELS.serverAuth, serverAuthParts(outcome, clientNonce, serverNonce, serverKey), signature);
+
+/** Client -> Server: layout = label, server_nonce, client_nonce, client_id (the hello answer that also binds the Client's own fresh nonce). */
+export const signClientAuth = (key: KeyObject, serverNonce: string, clientNonce: string, clientId: string): string => signLayout(key, SIGN_LABELS.clientAuth, [serverNonce, clientNonce, clientId]);
+export const verifyClientAuth = (publicKey: string, serverNonce: string, clientNonce: string, clientId: string, signature: string): boolean => verifyLayout(publicKey, SIGN_LABELS.clientAuth, [serverNonce, clientNonce, clientId], signature);
+
+/** The release envelope: layout = label, release_epoch (8 bytes big-endian), the EXACT manifest bytes. */
+export const signReleaseEnvelope = (key: KeyObject, releaseEpoch: number, manifest: Buffer): string => signLayout(key, SIGN_LABELS.releaseManifest, [counter(releaseEpoch), manifest]);
+export const verifyReleaseEnvelope = (serverKey: string, releaseEpoch: number, manifest: Buffer, signature: string): boolean => {
+  try {
+    return verifyLayout(serverKey, SIGN_LABELS.releaseManifest, [counter(releaseEpoch), manifest], signature);
+  } catch {
+    return false;
+  }
+};
+
+/** A trust rotation statement signed by the key being replaced: layout = label, generation (8 bytes), raw previous key, raw new key. */
+export type TrustRotation = { generation: number; new_public_key: string; signature: string };
+export const signTrustRotation = (previousKey: KeyObject, generation: number, newPublicKey: string): TrustRotation => ({ generation, new_public_key: newPublicKey, signature: signLayout(previousKey, SIGN_LABELS.trustRotation, [counter(generation), rawKey(publicKeyOf(previousKey)), rawKey(newPublicKey)]) });
+
+/**
+ * The key a Client may trust after a Server proof: the presented key itself when it is the pin, otherwise the end of a chain of rotation statements
+ * that starts at the pin, each signed by the key before it with a strictly greater generation than the Client holds. Anything else is null.
+ */
+export function followTrustRotations(pinnedKey: string, pinnedGeneration: number, presentedKey: string, rotations: readonly TrustRotation[]): { key: string; generation: number } | null {
+  if (presentedKey === pinnedKey) return { key: pinnedKey, generation: pinnedGeneration };
+  let key = pinnedKey;
+  let generation = pinnedGeneration;
+  for (const step of [...rotations].sort((a, b) => a.generation - b.generation)) {
+    if (step.generation <= generation) continue;
+    if (step.generation !== generation + 1 || !verifyLayout(key, SIGN_LABELS.trustRotation, [counter(step.generation), rawKey(key), rawKey(step.new_public_key)], step.signature)) return null;
+    key = step.new_public_key;
+    generation = step.generation;
+    if (key === presentedKey) return { key, generation };
+  }
+  return null;
+}
+
 /** The canonical, non-secret fingerprint of a public key: "ed25519:" and the SHA-256 of its raw 32 bytes in lowercase hex. */
 export const publicKeyFingerprint = (publicKey: string): string => `ed25519:${createHash("sha256").update(Buffer.from(publicKey, "base64url")).digest("hex")}`;
 

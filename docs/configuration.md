@@ -46,8 +46,10 @@ Contract from [ADR-0005](decisions/ADR-0005-server-trust-identity-and-signed-rel
 
 - The Server owns one persistent Ed25519 trust key under the deployment-provided persistent root (`/reach-private`), together with the current `release_epoch` and `rotation_generation`. The private key never leaves that root, and it is part of what the operator backs up: losing it forces a re-bootstrap of every Client.
 - The same key authenticates the Server on the WebSocket and signs the release manifest envelope. There is no separate release signing key.
-- `REACH_SERVER_TRUST_KEY` (public key, Base64url) is an optional installer input. When absent, the installer pins the key it fetches from the Server origin it was given (trust on first use, valid only on the V1 local/controlled network). When present it takes precedence and the fetched key must match it.
-- Rotation is an operator action on the Server that publishes a statement signed by the currently pinned key; Clients follow it automatically in generation order. A lost private key has no statement: re-run the installer path on each Client.
+- `REACH_SERVER_TRUST_KEY` (public key, Base64url) is an optional installer input. When absent, the installer pins the key it fetches from the Server origin it was given on a first install (trust on first use, valid only on the V1 local/controlled network). When present the fetched key must match it. An existing pin is never replaced by a normal install, rerun or update.
+- The state is one file, `server-trust.json`, next to the Server config in the private root, written atomically with mode 0600 and never regenerated when it exists (an unreadable file stops the Server instead of replacing the key). The release epoch advances only when the served manifest bytes change, never on a request or a restart.
+- Routes: `/release/manifest` (exact bytes, unchanged), `/release/envelope` (`{ release_epoch, manifest, signature }`) and `/release/trust-key` (`{ public_key }`).
+- Rotation is an operator action on the Server that publishes a statement signed by the currently pinned key; Clients follow it automatically in generation order. A lost private key has no statement: run the installer's explicit recovery on each Client (`--recover-trust` / `REACH_RECOVER_TRUST=1`, with `REACH_SERVER_TRUST_KEY` set to the new key out of band); a normal rerun never replaces a pin.
 - A pinned Client refuses a handshake or manifest that does not verify with its pinned key, an envelope with a lower `release_epoch`, and the same epoch with a different manifest digest. `release_epoch` is part of the Server-signed envelope, never of the manifest, which stays as the release builder produced it. A rollback is published with a greater epoch.
 
 ## Client local state
@@ -58,7 +60,7 @@ Protected local Client state owns only machine-local material:
 - `client_id`;
 - Ed25519 private key;
 - physical root anchors;
-- `server_trust_key` (the pinned Server public key), the highest accepted `release_epoch` and the `rotation_generation`.
+- `REACH_SERVER_TRUST_KEY` (the pinned Server public key), `REACH_RELEASE_EPOCH` with `REACH_RELEASE_DIGEST` (the highest accepted release epoch and the digest of its manifest bytes) and `REACH_ROTATION_GENERATION`, all written through the Bootstrap's one atomic writer.
 
 The Server stores only the matching public key and Server-owned logical configuration. A Client from before pinning has none of the three trust fields; it pins once on its first signed-handshake connection and is strict afterwards.
 
