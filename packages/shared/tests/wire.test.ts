@@ -300,10 +300,21 @@ test("update frames: the command carries only the Server-minted id, a state is o
   assert.deepEqual(PreHandoffFailure.options, UPDATE_FAILURES.filter((r) => r !== "apply"), "`apply` is the wrapper's reason and the Client never reports it as a state");
   for (const bad of [{ kind: "update_state", state: "staging" }, { kind: "update_state", update_id: "u", state: "failed" }, { kind: "update_state", update_id: "u", state: "failed", reason: "apply" }, { kind: "update_state", update_id: "u", state: "failed", reason: "C:\\some\\path" }, { kind: "update_state", update_id: "u", state: "restarting", reason: "manifest" }, { kind: "update_state", update_id: "u", state: "applied" }, { kind: "update_state", update_id: "u", state: "done" }]) assert.equal(ClientUpdateState.safeParse(bad).success, false);
   assert.equal(SessionMessage.safeParse({ kind: "update_state", update_id: "u", state: "staging" }).success, true);
-  assert.equal(SessionMessage.safeParse({ kind: "update_state", state: "staging" }).success, false);
+  // The first generation (Client 000061, commit a5c5b507) has no update_id: its exact grammar is a separate strict pair, never a relaxed v2 schema.
+  const { LegacyServerUpdate, LegacyClientUpdateState } = await import("../src/wire/index.ts");
+  assert.equal(ClientUpdateState.safeParse({ kind: "update_state", state: "staging" }).success, false, "v2 still requires update_id");
+  assert.equal(LegacyServerUpdate.safeParse({ kind: "update" }).success, true);
+  assert.equal(LegacyServerUpdate.safeParse({ kind: "update", update_id: "u" }).success, false, "the legacy parser is strict: the v2 command is a violation for it");
+  assert.equal(LegacyClientUpdateState.safeParse({ kind: "update_state", state: "staging" }).success, true);
+  assert.equal(LegacyClientUpdateState.safeParse({ kind: "update_state", update_id: "u", state: "staging" }).success, false);
+  assert.equal(LegacyClientUpdateState.safeParse({ kind: "update_state", state: "failed", reason: "apply" }).success, false);
+  assert.equal(PostWelcomeMessage.safeParse({ kind: "update" }).success, false, "a current Client never accepts the legacy command");
   const hello = { kind: "hello", client_id: "laptop-1", client_build: "b1", public_key: "A".repeat(43), signature: "B".repeat(86) };
   assert.equal(ClientHello.safeParse(hello).success, ClientHello.safeParse({ ...hello, update_capable: true }).success, "the field is optional, so a pre-change hello still parses");
   assert.equal(ClientHello.safeParse({ ...hello, update_capable: false }).success, false);
+  assert.equal(ClientHello.safeParse({ ...hello, update_capable: true, update_protocol: 2 }).success, true, "the current protocol is announced explicitly");
+  assert.equal(ClientHello.safeParse({ ...hello, update_capable: true, update_protocol: 3 }).success, false);
+  assert.equal(ClientHello.safeParse({ ...hello, update_capable: true, update_protocol: 1 }).success, false, "legacy is the absence of the capability, never announced");
 });
 
 test("update apply request and receipt: one closed logical schema for Linux and Windows, applied or failed/apply only, no secret, path or timestamp", async () => {

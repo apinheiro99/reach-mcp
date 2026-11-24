@@ -9,6 +9,8 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ClientConnectionRegistry, createAdminHandler, hashCredential, ProposalStore, ServerConfigStore, type ConnectionOptions } from "../src/index.ts";
 import { DESKTOP, LAPTOP, newIdentity, signedHello, type TestIdentity } from "./identity-fixture.ts";
+import { z } from "zod";
+import { PostWelcomeMessage } from "@reach-mcp/shared/wire";
 
 /** An editable view's client without the two read-only facts the edit schema does not accept. */
 const editableClient = (view: object): Record<string, unknown> => {
@@ -628,7 +630,7 @@ const receiptOf = (updateId: string, over: object = {}) => ({ kind: "update_rece
 
 test("update: an update-capable Client gets exactly one command, a second is busy, its states are tracked, and a failure frees the slot", async () => {
   const t = await setup();
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   assert.equal(t.registry.requestUpdate("laptop"), "busy", "one update in flight per Client");
@@ -652,7 +654,7 @@ test("update: an update-capable Client gets exactly one command, a second is bus
 
 test("update: an incompatible (management-only) Client may be updated while every project operation stays blocked; non-capable and offline Clients are refused explicitly", async () => {
   const t = await setup();
-  const old = await t.connect({ build: "old-9", extra: { update_capable: true } });
+  const old = await t.connect({ build: "old-9", extra: { update_capable: true, update_protocol: 2 } });
   await until(() => old.frames.some((f) => f.kind === "welcome"), "welcome");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(old).length === 1, "command on the incompatible session");
@@ -672,7 +674,7 @@ test("update: an incompatible (management-only) Client may be updated while ever
 
 test("update: a state reported without an update asked is ignored, and the slot ends with the session", async () => {
   const t = await setup();
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   updateState(c, "update-never-asked", { state: "staging" });
   await new Promise((r) => setTimeout(r, 30));
@@ -681,7 +683,7 @@ test("update: a state reported without an update asked is ignored, and the slot 
   c.ws.close();
   await c.closed;
   await until(() => t.registry.status().length === 0, "session ended");
-  const again = await t.connect({ extra: { update_capable: true } });
+  const again = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => again.frames.length === 3, "reconnected");
   assert.equal(t.registry.status()[0]!.update, null, "a new session starts with no update in flight");
   await t.done();
@@ -689,7 +691,7 @@ test("update: a state reported without an update asked is ignored, and the slot 
 
 test("update: a Client already on the Server's build is refused as current and nothing is sent; the Admin view says so and keeps connected_since apart from the heartbeat", async () => {
   const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
-  const c = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  const c = await t.connect({ build: "srv-1", extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.requestUpdate("laptop"), "current");
   await new Promise((r) => setTimeout(r, 30));
@@ -712,7 +714,7 @@ test("update: a Client already on the Server's build is refused as current and n
   assert.ok(second.last_seen! > first.last_seen!, "last_seen is the heartbeat");
   const post = await fetch(`${base}/laptop/update`, { method: "POST" });
   assert.deepEqual([post.status, await post.json()], [409, { ok: false, result: "current" }], "the endpoint refuses explicitly");
-  const old = await t.connect({ id: "desktop", identity: DESKTOP, build: "ok-0", extra: { update_capable: true } });
+  const old = await t.connect({ id: "desktop", identity: DESKTOP, build: "ok-0", extra: { update_capable: true, update_protocol: 2 } });
   await until(() => old.frames.length === 3, "second admitted");
   const stale = ((await (await fetch(base)).json()) as { clients: { client_id: string; update_available: boolean | null }[] }).clients.find((x) => x.client_id === "desktop");
   assert.equal(stale?.update_available, true, "a Client on another build can be updated");
@@ -723,7 +725,7 @@ test("update: a Client already on the Server's build is refused as current and n
 
 test("update lifecycle: a state for another attempt id is ignored", async () => {
   const t = await setup();
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(c).length === 1, "the command");
@@ -735,7 +737,7 @@ test("update lifecycle: a state for another attempt id is ignored", async () => 
 
 test("update lifecycle: reconnecting on the target build is NOT success; only a matching receipt applies it, a repeat is idempotent, a conflict changes nothing, a retry gets a fresh id", async () => {
   const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(c).length === 1, "the command");
@@ -746,7 +748,7 @@ test("update lifecycle: reconnecting on the target build is NOT success; only a 
   c.ws.close();
   await c.closed;
   await until(() => t.registry.status().length === 0, "session ended");
-  const back = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  const back = await t.connect({ build: "srv-1", extra: { update_capable: true, update_protocol: 2 } });
   await until(() => back.frames.length === 3, "reconnected on the target build");
   assert.deepEqual([t.registry.status()[0]!.update?.update_id, t.registry.status()[0]!.update?.state], [id, "restarting"], "the target build alone proves nothing: the attempt is still restarting");
   back.ws.send(JSON.stringify(receiptOf(id)));
@@ -762,7 +764,7 @@ test("update lifecycle: reconnecting on the target build is NOT success; only a 
 
 test("update lifecycle: a failed/apply receipt is terminal and allows a manual retry with a fresh id; an old receipt never overrides a newer attempt in flight", async () => {
   const t = await setup();
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(c).length === 1, "the command");
@@ -785,7 +787,7 @@ test("update lifecycle: a failed/apply receipt is terminal and allows a manual r
 
 test("update lifecycle: after the Server lost its state an authenticated receipt restores the last terminal result and creates nothing in flight", async () => {
   const t = await setup();
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.status()[0]!.update, null);
   c.ws.send(JSON.stringify(receiptOf("update-before-restart")));
@@ -796,7 +798,7 @@ test("update lifecycle: after the Server lost its state an authenticated receipt
 
 test("update view: a terminal result survives the disconnect, and a retry keeps it beside the new attempt until its own terminal result supersedes it", async () => {
   const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.deepEqual(t.registry.updateView("laptop"), { current: null, last: null });
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
@@ -814,7 +816,7 @@ test("update view: a terminal result survives the disconnect, and a retry keeps 
   await until(() => t.registry.status().length === 0, "offline");
   const offline = t.registry.updateView("laptop");
   assert.deepEqual([offline.current, offline.last?.update_id, offline.last?.state, offline.last?.reason], [null, first, "failed", "apply"], "the failure is still there with no session");
-  const back = await t.connect({ extra: { update_capable: true } });
+  const back = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => back.frames.length === 3, "back");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted", "a manual retry is allowed after a failure");
   await until(() => updateFrames(back).length === 1, "the retry command");
@@ -834,7 +836,7 @@ test("update view: a terminal result survives the disconnect, and a retry keeps 
 
 test("update view: a failure reported before the handoff is also kept, and a request for the current build changes nothing", async () => {
   const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(c).length === 1, "the command");
@@ -846,7 +848,7 @@ test("update view: a failure reported before the handoff is also kept, and a req
   c.ws.close();
   await c.closed;
   await until(() => t.registry.status().length === 0, "offline");
-  const same = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  const same = await t.connect({ build: "srv-1", extra: { update_capable: true, update_protocol: 2 } });
   await until(() => same.frames.length === 3, "on the server build");
   assert.equal(t.registry.requestUpdate("laptop"), "current");
   assert.deepEqual([t.registry.updateView("laptop").current, t.registry.updateView("laptop").last?.reason], [null, "verification"], "the refusal does not touch the terminal history, and the build alone creates no result");
@@ -855,7 +857,7 @@ test("update view: a failure reported before the handoff is also kept, and a req
 
 test("update lifecycle: progress only moves forward (no staging after restarting, a duplicate changes nothing), restarting may still fail as handoff from the original session", async () => {
   const t = await setup();
-  const c = await t.connect({ extra: { update_capable: true } });
+  const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
   await until(() => c.frames.length === 3, "admitted");
   assert.equal(t.registry.requestUpdate("laptop"), "accepted");
   await until(() => updateFrames(c).length === 1, "the command");
@@ -882,7 +884,7 @@ test("update lifecycle: progress only moves forward (no staging after restarting
 test("update lifecycle: requested and staging die with their session and allow a retry; restarting survives the session and keeps the Client busy", async () => {
   const t = await setup();
   const reconnect = async () => {
-    const c = await t.connect({ extra: { update_capable: true } });
+    const c = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
     await until(() => c.frames.length === 3, "admitted");
     return c;
   };
@@ -914,5 +916,81 @@ test("update lifecycle: requested and staging die with their session and allow a
   assert.equal(t.registry.status()[0]!.update?.state, "restarting", "the handed-off attempt survived the reconnect");
   assert.equal(t.registry.requestUpdate("laptop"), "busy", "and it keeps the Client busy until its receipt");
   assert.equal(back.frames.filter((f) => f.kind === "update").length, 0, "no second command was sent");
+  await t.done();
+});
+
+// Exact first-generation grammar (Client build 000061, commit a5c5b507): the command is {kind:"update"} and the progress frames carry no update_id.
+const LEGACY_PARSER = z.strictObject({ kind: z.literal("update") });
+const legacyState = (client: { ws: WebSocket }, state: object) => client.ws.send(JSON.stringify({ kind: "update_state", ...state }));
+const legacyStatus = (t: { registry: { migrationView(id: string): { state: string; active: boolean } | null } }) => t.registry.migrationView("laptop");
+
+test("update compat: the Server speaks the generation the hello negotiated, never one chosen by build, and the legacy command parses in the exact 000061 grammar", async () => {
+  const t = await setup();
+  const old = await t.connect({ extra: { update_capable: true } });
+  await until(() => old.frames.length === 3, "admitted");
+  assert.equal(t.registry.status()[0]!.update_protocol, 1);
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  await until(() => updateFrames(old).length === 1, "the command");
+  assert.ok(LEGACY_PARSER.safeParse(updateFrames(old)[0]).success, "the exact first-generation parser accepts the command");
+  assert.equal(PostWelcomeMessage.safeParse(updateFrames(old)[0]).success, false, "a current Client never accepts the legacy command");
+  assert.equal(LEGACY_PARSER.safeParse({ kind: "update", update_id: "u-1" }).success, false, "the bug: the correlated v2 command is a violation for the first-generation parser");
+  assert.equal(t.registry.updateView("laptop").current, null, "the v2 lifecycle is untouched");
+  await t.done();
+});
+
+test("update compat: legacy progress is migration progress only, labeled and never a receipt-backed result; a restart that returns on v2 and the canonical build only completes the migration", async () => {
+  const t = await setup({ isBuildCompatible: (b) => b.startsWith("ok-") || b === "srv-1" });
+  const old = await t.connect({ build: "ok-1", extra: { update_capable: true } });
+  await until(() => old.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  assert.equal(t.registry.requestUpdate("laptop"), "busy");
+  legacyState(old, { state: "staging" });
+  await until(() => legacyStatus(t)?.state === "staging", "staging");
+  legacyState(old, { state: "restarting" });
+  await until(() => legacyStatus(t)?.state === "restarting", "restarting");
+  old.ws.close();
+  await until(() => t.registry.status().length === 0, "disconnect");
+  assert.equal(legacyStatus(t)?.state, "restarting", "a restart is expected to end the session");
+  const back = await t.connect({ build: "srv-1", extra: { update_capable: true, update_protocol: 2 } });
+  await until(() => back.frames.length === 3, "back on the new build");
+  assert.deepEqual([legacyStatus(t)?.state, legacyStatus(t)?.active], ["completed", false]);
+  assert.deepEqual(t.registry.updateView("laptop"), { current: null, last: null }, "the migration never writes a receipt-backed result");
+  await t.done();
+});
+
+test("update compat: a migration that does not come back as v2 on the canonical build is not completed, and one dropped before staging says so", async () => {
+  const t = await setup();
+  const old = await t.connect({ build: "ok-1", extra: { update_capable: true } });
+  await until(() => old.frames.length === 3, "admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  old.ws.close();
+  await until(() => t.registry.status().length === 0, "disconnect");
+  assert.deepEqual([legacyStatus(t)?.state, legacyStatus(t)?.active], ["interrupted", false], "an accepted command that never progressed is visible");
+  const again = await t.connect({ build: "ok-1", extra: { update_capable: true } });
+  await until(() => again.frames.length === 3, "admitted again");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted", "no automatic retry, but a manual one is allowed");
+  legacyState(again, { state: "staging" });
+  legacyState(again, { state: "restarting" });
+  await until(() => legacyStatus(t)?.state === "restarting", "restarting");
+  again.ws.close();
+  await until(() => t.registry.status().length === 0, "disconnect 2");
+  const same = await t.connect({ build: "ok-1", extra: { update_capable: true } });
+  await until(() => same.frames.length === 3, "same build back");
+  assert.equal(legacyStatus(t)?.state, "interrupted", "reconnecting on the old build is not a completion");
+  await t.done();
+});
+
+test("update compat: each grammar belongs to its negotiated session; the other one closes the socket", async () => {
+  const t = await setup();
+  const v2 = await t.connect({ extra: { update_capable: true, update_protocol: 2 } });
+  await until(() => v2.frames.length === 3, "v2 admitted");
+  legacyState(v2, { state: "staging" });
+  await v2.closed;
+  const old = await t.connect({ extra: { update_capable: true } });
+  await until(() => old.frames.length === 3, "legacy admitted");
+  assert.equal(t.registry.requestUpdate("laptop"), "accepted");
+  updateState(old, "u-1", { state: "staging" });
+  await old.closed;
+  assert.equal(legacyStatus(t)?.state, "interrupted");
   await t.done();
 });

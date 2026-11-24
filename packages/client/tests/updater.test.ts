@@ -181,6 +181,7 @@ test("transport: the hello says update_capable with an updater, and the command 
   transport.stop();
   await new Promise<void>((r) => wss.close(() => r()));
   assert.equal(frames.find((f) => f.kind === "hello")!.update_capable, true);
+  assert.equal(frames.find((f) => f.kind === "hello")!.update_protocol, 2, "the current Client announces the receipt-capable update protocol explicitly");
   assert.deepEqual(frames.filter((f) => f.kind === "update_state"), [{ kind: "update_state", update_id: "update-1", state: "staging" }, { kind: "update_state", update_id: "update-1", state: "failed", reason: "verification" }], "every state carries the id the Server minted");
   assert.equal(runs, 1, "the second command while one runs is ignored");
 });

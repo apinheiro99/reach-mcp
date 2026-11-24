@@ -245,7 +245,8 @@ test("Clients actions: Update Client only when the Server's facts allow it and t
   const clients = uiSource["clients.ts"] as string;
   assert.equal(clients.match(/UI\.button\("Update Client"/g)?.length, 1, "one Update Client action");
   assert.ok(/act\(base \+ "\/update", "Update requested[^"]*"\)/.test(clients), "it calls the Server update endpoint and nothing else");
-  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_available === false \?[^;]*c\.update_capable !== true \?[^;]*c\.current_update \? "An update is already in progress"/.test(clients), "online, update_capable and no attempt in flight (a terminal failure allows a retry), each with a truthful reason");
+  assert.ok(/updateBlock = \(c\) => \(!c\.online \?[^;]*c\.update_available === false \?[^;]*c\.update_capable !== true \?[^;]*c\.current_update[^;]*"An update is already in progress"/.test(clients), "online, update_capable and no attempt in flight (a terminal failure allows a retry), each with a truthful reason");
+  assert.ok(/MIGRATION_TEXT = [^;]*completed: "Migration completed \(not a receipt-backed update\)"/.test(clients) && /c\.legacy_migration \? detail\(migrationText/.test(clients) && !/completed: "Update applied/.test(clients), "a first-generation migration is labeled as such and its completion is never shown as an applied update");
   assert.ok(/update\.disabled = true; update\.title = blocked/.test(clients), "an unavailable update is disabled with its reason");
   assert.ok(/if \(state !== "online"\) \{ rotate\.disabled = true;/.test(clients) && /An incompatible client cannot rotate its key/.test(clients), "an incompatible management-only Client does not offer Rotate Key");
   assert.ok(/restarting: "Restarting: update result pending"/.test(clients) && !/restarting: "Update applied/.test(clients), "restarting is never labeled applied");
