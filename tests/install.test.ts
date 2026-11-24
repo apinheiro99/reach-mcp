@@ -3,7 +3,9 @@
 // runs here, so native execution on a Windows host remains an explicit evidence limit.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -337,4 +339,75 @@ test("Windows update (structural only): the installer registers a trigger-less o
   const installer = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "install.ps1"), "utf8");
   assert.match(installer, /if \(\$Staged\) \{ Copy-Item -LiteralPath \$Staged -Destination \$ArchiveFile \} else \{ Get-Release/, "a staged archive skips only the download; size and SHA-256 are still checked");
   assert.match(readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "uninstall-windows.ps1"), "utf8"), /Unregister-ScheduledTask -TaskName 'REACH Client Update'/, "the uninstaller removes the update task too");
+});
+
+// ---- ADR-0005: the installers pin the Server public key on first use; an out-of-band key must match; an update never replaces a pin ----
+const KEY_A = "A".repeat(43);
+const KEY_B = "B".repeat(43);
+
+/** A stand-in Server: a valid schema-v2 manifest and a configurable trust-key answer; the archive route is deliberately absent, so a run that gets past the pin check stops at the download. */
+async function standInServer(trustKeyBody: string, status = 200) {
+  const manifest = JSON.stringify({ schema_version: 2, client: { build_id: "b-1" }, artifacts: [{ role: "client", os: "linux", arch: "x64", download_path: "/release/artifacts/reach-client-linux-x64.tgz", sha256: "0".repeat(64), size_bytes: 10 }, { role: "client", os: "linux", arch: "arm64", download_path: "/release/artifacts/reach-client-linux-arm64.tgz", sha256: "0".repeat(64), size_bytes: 10 }] });
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(req.url ?? "");
+    if (req.url === "/release/manifest") return void res.writeHead(200, { "content-type": "application/json" }).end(manifest);
+    if (req.url === "/release/trust-key") return void res.writeHead(status).end(trustKeyBody);
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  return { port: (server.address() as AddressInfo).port, seen, close: () => new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r()))) };
+}
+const runInstaller = (port: number, env: Record<string, string>) =>
+  new Promise<{ code: number | null; stderr: string; state: string }>((resolve) => {
+    const state = path.join(base, `pin-state-${Math.random().toString(36).slice(2)}`);
+    execFile("sh", [path.join(CLIENT_DIR, "install.sh"), "--server-origin", `http://127.0.0.1:${port}`, "--state-dir", state, "--install-dir", path.join(base, "pin-install"), "--unit-dir", path.join(base, "pin-units"), "--test-no-system"], { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env } }, (error, _out, stderr) => resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr, state }));
+  });
+
+test("installer pin (executed): a key that differs from REACH_SERVER_TRUST_KEY stops the install before anything is created or downloaded", async () => {
+  const srv = await standInServer(JSON.stringify({ public_key: KEY_A }));
+  try {
+    const r = await runInstaller(srv.port, { REACH_SERVER_TRUST_KEY: KEY_B });
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr, /differs from REACH_SERVER_TRUST_KEY: nothing was pinned or installed/);
+    assert.equal(existsSync(r.state), false, "no state directory");
+    assert.ok(!srv.seen.some((u) => u.includes("/artifacts/")), "no artifact was requested");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("installer pin (executed): a Server that publishes no valid trust key stops the install; a matching out-of-band key goes on to the download", async () => {
+  for (const [name, body, status] of [["garbage", "not json", 200], ["bad shape", JSON.stringify({ public_key: "short" }), 200], ["absent", "", 404]] as const) {
+    const srv = await standInServer(body, status);
+    try {
+      const r = await runInstaller(srv.port, {});
+      assert.notEqual(r.code, 0, name);
+      assert.ok(/trust key/.test(r.stderr) || /could not download/.test(r.stderr), `${name}: ${r.stderr.slice(0, 120)}`);
+      assert.ok(!srv.seen.some((u) => u.includes("/artifacts/")), `${name}: nothing was downloaded`);
+    } finally {
+      await srv.close();
+    }
+  }
+  const ok = await standInServer(JSON.stringify({ public_key: KEY_A }));
+  try {
+    const r = await runInstaller(ok.port, { REACH_SERVER_TRUST_KEY: KEY_A });
+    assert.ok(ok.seen.includes("/release/trust-key"), "the key is fetched");
+    assert.doesNotMatch(r.stderr, /REACH_SERVER_TRUST_KEY|trust key/, "a matching key is accepted and the run proceeds past the pin check");
+  } finally {
+    await ok.close();
+  }
+});
+
+test("installer pin (structural): the pin is written on a fresh install, added or replaced on a rerun with its counters reset, and never touched by an operator-triggered update", () => {
+  const sh = strip("install.sh");
+  assert.ok(sh.indexOf("fetch /release/trust-key") > sh.indexOf("fetch /release/manifest") && sh.indexOf("fetch /release/trust-key") < sh.indexOf("SELECT="), "fetched with the manifest, before anything is selected or changed");
+  assert.match(sh, /REACH_SERVER_TRUST_KEY=%s\\n' "\$ws" "\$root" "\$server_key"/, "a fresh bootstrap carries the pin");
+  for (const counter of ["REACH_SERVER_TRUST_KEY", "REACH_RELEASE_EPOCH", "REACH_RELEASE_DIGEST", "REACH_ROTATION_GENERATION"]) assert.ok(sh.includes(`/^${counter}=/d`), `a replaced pin resets ${counter}`);
+  assert.match(sh, /\[ -z "\$staged" \] \|\| ! grep -q '\^REACH_SERVER_TRUST_KEY=' "\$bootstrap"/, "--staged keeps an existing pin");
+  const ps = strip("install.ps1");
+  assert.ok(ps.includes("/release/trust-key") && ps.includes("differs from REACH_SERVER_TRUST_KEY"), "Windows fetches the key and checks the out-of-band one");
+  assert.ok(ps.includes("REACH_SERVER_TRUST_KEY=$ServerKey"), "Windows writes the pin");
+  assert.match(ps, /\(-not \$Staged -or -not \$HasPin\)/, "an update never replaces a Windows pin");
+  assert.doesNotMatch(ps, /Ed25519|ConvertFrom-SecureString|System\.Security\.Cryptography\.(ECDsa|RSA)/, "no signature verifier is invented in PowerShell 5.1: first install is explicit trust on first use");
 });

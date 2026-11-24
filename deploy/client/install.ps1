@@ -82,6 +82,13 @@ try {
 
   $ManifestFile = Join-Path $Work 'manifest.json'
   Get-Release '/release/manifest' $ManifestFile
+  # Trust on first use (ADR-0005): the Server public key becomes the Client's pin. It travels over the same plain http as the rest, so it is not authenticated by itself;
+  # REACH_SERVER_TRUST_KEY (obtained out of band) turns it into an expected value that must match. No signature is verified here: PowerShell 5.1 has no trustworthy Ed25519.
+  $TrustFile = Join-Path $Work 'trust-key.json'
+  Get-Release '/release/trust-key' $TrustFile
+  try { $ServerKey = (Get-Content -LiteralPath $TrustFile -Raw | ConvertFrom-Json).public_key } catch { Fail 'the Server did not publish a valid trust key' }
+  if ($ServerKey -isnot [string] -or $ServerKey -cnotmatch '^[A-Za-z0-9_-]{43}$') { Fail 'the Server did not publish a valid trust key' }
+  if ("$env:REACH_SERVER_TRUST_KEY" -ne '' -and "$env:REACH_SERVER_TRUST_KEY" -cne $ServerKey) { Fail 'the Server trust key differs from REACH_SERVER_TRUST_KEY: nothing was pinned or installed' }
   try { $Manifest = Get-Content -LiteralPath $ManifestFile -Raw | ConvertFrom-Json } catch { Fail 'the release manifest is not valid JSON' }
   if ($Manifest.schema_version -ne 2) { Fail "unsupported release manifest schema_version $($Manifest.schema_version) (need 2)" }
   $Hits = @($Manifest.artifacts | Where-Object { $_.role -eq 'client' -and $_.os -eq 'win32' -and $_.arch -eq 'x64' })
@@ -128,10 +135,18 @@ try {
     # A rerun keeps the identity and the root; only the endpoint follows the origin given now.
     $Text = [IO.File]::ReadAllText($Bootstrap)
     $Updated = [Text.RegularExpressions.Regex]::Replace($Text, '(?m)^REACH_SERVER_URL=.*$', "REACH_SERVER_URL=$Endpoint")
+    # The pin is added when missing and replaced, with its epoch and generation counters, only when the Server key changed; an unchanged key leaves the Client's own trust state alone.
+    # An operator-triggered update ($Staged) never touches an existing pin: the Client already verified the archive against its pinned key.
+    $HasPin = $Updated -cmatch '(?m)^REACH_SERVER_TRUST_KEY='
+    if ((-not $Staged -or -not $HasPin) -and $Updated -cnotmatch "(?m)^REACH_SERVER_TRUST_KEY=$([Text.RegularExpressions.Regex]::Escape($ServerKey))\r?$") {
+      $Updated = [Text.RegularExpressions.Regex]::Replace($Updated, '(?m)^(REACH_SERVER_TRUST_KEY|REACH_RELEASE_EPOCH|REACH_RELEASE_DIGEST|REACH_ROTATION_GENERATION)=.*\r?\n?', '')
+      if ($Updated.Length -gt 0 -and -not $Updated.EndsWith("`n")) { $Updated += "`n" }
+      $Updated += "REACH_SERVER_TRUST_KEY=$ServerKey`n"
+    }
     if ($Updated -ne $Text) { [IO.File]::WriteAllText($Bootstrap, $Updated, $Utf8) }
   } else {
     $RootJson = $Root.Replace('\', '\\')
-    [IO.File]::WriteAllText($Bootstrap, "REACH_SERVER_URL=$Endpoint`nREACH_ROOTS=[`"$RootJson`"]`n", $Utf8)
+    [IO.File]::WriteAllText($Bootstrap, "REACH_SERVER_URL=$Endpoint`nREACH_ROOTS=[`"$RootJson`"]`nREACH_SERVER_TRUST_KEY=$ServerKey`n", $Utf8)
   }
 
   # A child process with a Bypass policy: a default Windows client refuses to run a .ps1 file, even though iex of this text is allowed.

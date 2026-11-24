@@ -1,6 +1,6 @@
 # ADR-0005 — One Server trust key: Server authentication, signed release metadata, freshness and rotation
 
-**Status:** Accepted (contract only; runtime is implemented by Task #164 of Story #153)
+**Status:** Accepted. Contract by Task #163; implemented by Task #164 of Story #153 (see "Implemented encoding and routes")
 
 ## Context
 
@@ -105,6 +105,23 @@ Explicitly **not** addressed:
 - confidentiality of traffic: HTTP/WS carry no encryption in V1;
 - denial of service by an on-path actor.
 
+## Implemented encoding and routes (Task #164)
+
+One deterministic byte layout serves every signature (`layout` in `packages/shared/src/identity.ts`): the label, then each field, every one as a 4-byte big-endian length followed by its bytes. Counters are 8 bytes big-endian and keys are the raw 32 bytes; nonces, outcomes and the client_id are their UTF-8 text. Nothing is JSON.
+
+| Signature | Label | Fields, in order | Signed by |
+|---|---|---|---|
+| Server authentication | `reach-v1/server-auth` | outcome (`welcome` or `reject:<CODE>`), client_nonce, server_nonce, Server public key, context `reach-ws-1` | Server trust key |
+| Client authentication | `reach-v1/client-auth` | server_nonce, client_nonce, client_id | Client key |
+| Release envelope | `reach-v1/release-manifest` | release_epoch (8 bytes), the exact manifest bytes | Server trust key |
+| Trust rotation | `reach-v1/trust-rotation` | generation (8 bytes), previous raw key, new raw key | the key being replaced |
+
+Handshake as built: the Server still opens with `challenge` (a pre-change Client only understands that order), the hello carries `client_nonce` and signs both nonces, and the Server's `welcome` or `reject` carries `proof` = `{ server_public_key, server_signature, server_rotations? }` over the Client's nonce. A pinned Client fails closed on a missing or invalid proof, so a replayed answer, a wrong key or a forged refusal never gets as far as policy, update or a terminal state. A hello without `client_nonce` is accepted only as an incompatible, management-only session (how a pre-change Client is updated); a compatible build that omits it is refused (no downgrade).
+
+Routes (service plane): `GET /release/manifest` still serves the exact manifest bytes (installers and pre-change Clients read it), `GET /release/envelope` serves `{ release_epoch, manifest, signature }` (manifest Base64url), `GET /release/trust-key` serves `{ public_key }`. The updater of a current Client reads only the envelope. The Server keeps its state in `server-trust.json` next to its config in the private root (key, epoch, last digest, rotation generation and the last 32 statements).
+
+Installers: Linux writes `REACH_SERVER_TRUST_KEY` into a fresh Bootstrap, adds it to one that lacks it, and replaces it (resetting the epoch, digest and generation lines) only when the Server key changed; an operator-triggered update (`--staged`) never touches an existing pin. Windows PowerShell 5.1 has no trustworthy Ed25519 verifier, so neither installer verifies a signature: first install is explicit trust on first use, and strict verification starts when the installed Client connects. With `REACH_SERVER_TRUST_KEY` supplied out of band the fetched key must match, which authenticates the Server identity at the first runtime connection, not the pre-runtime HTTP download of the archive.
+
 ## Scenarios Task #164 must prove
 
 1. a valid signed handshake passes; a forged handshake or one signed with a wrong key fails closed;
@@ -119,7 +136,7 @@ Explicitly **not** addressed:
 - Client Bootstrap: `server_trust_key` (public, Base64url), `release_epoch` (highest accepted), `rotation_generation`.
 - Installer input: optional `REACH_SERVER_TRUST_KEY`.
 - WebSocket handshake: `client_nonce`, `server_nonce`, `server_signature`, and the nonces folded into the Client proof.
-- Release metadata: envelope `{ release_epoch, manifest, signature }` (the manifest bytes are the unmodified manifest v2; `release_epoch` is not a manifest field); rotation statements `{ new_public_key, rotation_generation, signature }`.
+- Release metadata: envelope `{ release_epoch, manifest, signature }` (the manifest bytes are the unmodified manifest v2; `release_epoch` is not a manifest field); Bootstrap lines `REACH_SERVER_TRUST_KEY`, `REACH_RELEASE_EPOCH`, `REACH_RELEASE_DIGEST`, `REACH_ROTATION_GENERATION`; rotation statements `{ new_public_key, rotation_generation, signature }`.
 - Server persistent state under `/reach-private`: trust private key, current `release_epoch`, current `rotation_generation`.
 
 ## Out of scope

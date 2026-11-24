@@ -164,6 +164,12 @@ fetch() {
 
 fetch /release/manifest "$work/manifest.json"
 
+# Trust on first use (ADR-0005): the Server public key goes into the bootstrap as the Client's pin. Fetched over the same plain http as everything
+# here, so it is NOT authenticated by itself; REACH_SERVER_TRUST_KEY (obtained out of band) turns it into an expected value that must match.
+fetch /release/trust-key "$work/trust-key.json"
+server_key="$("$node_bin" -e 'try { const k = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).public_key; if (typeof k === "string" && /^[A-Za-z0-9_-]{43}$/.test(k)) process.stdout.write(k); else process.exit(2); } catch { process.exit(2); }' "$work/trust-key.json")" || die "the Server did not publish a valid trust key"
+if [ -n "${REACH_SERVER_TRUST_KEY:-}" ] && [ "$REACH_SERVER_TRUST_KEY" != "$server_key" ]; then die "the Server trust key differs from REACH_SERVER_TRUST_KEY: nothing was pinned or installed"; fi
+
 # Read and validate the manifest, select the one client/linux/<arch> entry. Prints: relative path, sha256, size, build id.
 SELECT='
 const fs = require("node:fs");
@@ -230,9 +236,18 @@ if [ -f "$bootstrap" ]; then
     chmod 600 "$bootstrap.tmp.$$"
     mv "$bootstrap.tmp.$$" "$bootstrap"
   fi
+  # The pin is added when missing (a Client installed before pinning) and replaced, with its epoch and generation counters, only when the Server key changed
+  # (re-running the installer is the recovery path after the Server key was lost); an unchanged key leaves the Client's own trust state alone.
+  # An operator-triggered update (--staged) never touches an existing pin: the Client already verified the archive against its pinned key, and the unauthenticated key fetched here must not replace it.
+  if { [ -z "$staged" ] || ! grep -q '^REACH_SERVER_TRUST_KEY=' "$bootstrap"; } && ! grep -qx "REACH_SERVER_TRUST_KEY=$server_key" "$bootstrap"; then
+    sed -e '/^REACH_SERVER_TRUST_KEY=/d' -e '/^REACH_RELEASE_EPOCH=/d' -e '/^REACH_RELEASE_DIGEST=/d' -e '/^REACH_ROTATION_GENERATION=/d' "$bootstrap" >"$bootstrap.tmp.$$"
+    printf 'REACH_SERVER_TRUST_KEY=%s\n' "$server_key" >>"$bootstrap.tmp.$$"
+    chmod 600 "$bootstrap.tmp.$$"
+    mv "$bootstrap.tmp.$$" "$bootstrap"
+  fi
 else
   # The restrictive umask is only for the bootstrap: it must not leak into the low-level installer, whose extracted tree the service user has to read.
-  (umask 077; printf 'REACH_SERVER_URL=%s\nREACH_ROOTS=["%s"]\n' "$ws" "$root" >"$bootstrap")
+  (umask 077; printf 'REACH_SERVER_URL=%s\nREACH_ROOTS=["%s"]\nREACH_SERVER_TRUST_KEY=%s\n' "$ws" "$root" "$server_key" >"$bootstrap")
 fi
 if [ "$system" = 1 ]; then chown -R "$SERVICE_USER:$SERVICE_USER" "$state_dir"; fi
 

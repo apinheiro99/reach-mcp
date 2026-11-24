@@ -2,10 +2,11 @@
 // build compatibility and one-active-identity, so a rejection is only ever obeyed, never second-guessed or worked around.
 // Liveness uses ws ping/pong control frames. The Server opens every connection with a fresh challenge; the Client answers
 // once with its public key and an Ed25519 signature, and nothing built here (state, error, log) ever holds the private key.
+import { followTrustRotations, newNonce, verifyServerAuth } from "@reach-mcp/shared/identity";
 import { RUNTIME_DEFAULTS, type ClientRuntime } from "@reach-mcp/shared/runtime-settings";
 import WebSocket from "ws";
 import type { RawData } from "ws";
-import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type WireError } from "@reach-mcp/shared/wire";
+import { ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type ServerProof, type WireError } from "@reach-mcp/shared/wire";
 import type { Bootstrap } from "./bootstrap.ts";
 import { suggestClientDisplayName } from "./display-name.ts";
 import { UpdateError } from "./updater.ts";
@@ -36,6 +37,8 @@ export type TransportOptions = {
   build: string;
   /** Called once when the Server's admission answer is terminal (see TERMINAL_REJECTS), so the process owner can surface it; never for transient loss. */
   onTerminal?: (error: WireError) => void;
+  /** Called when the Server key was pinned for the first time (a Client from before pinning) or moved by a verified rotation, so the process owner can log it. */
+  onPin?: (event: "first" | "rotated") => void;
   /** Delays in ms; `jitter` is the fraction (0..1) a delay may shrink or grow. */
   backoff?: { initialMs: number; maxMs: number; jitter: number };
   /** Ping every `intervalMs`; the connection is stale when nothing came back for `staleMs`. */
@@ -70,6 +73,8 @@ export class ClientTransport {
   #lastHealthyAt: number | null = null;
   #attempts = 0;
   #answered = false;
+  /** This connection's own fresh nonce and the Server's challenge: the Server proof must be signed over both. */
+  #nonces: { client: string; server: string } | null = null;
   /** The candidate identity of the one rotation in flight; dropped on every reconnect. */
   #rotation: { id: string; commit: () => void } | null = null;
   #socket: WebSocket | null = null;
@@ -85,6 +90,7 @@ export class ClientTransport {
   readonly #updater: UpdateRunner | undefined;
   #updating = false;
   readonly #onTerminal: ((error: WireError) => void) | undefined;
+  readonly #onPin: ((event: "first" | "rotated") => void) | undefined;
   readonly #now: () => number;
   readonly #schedule: Schedule;
   readonly #random: () => number;
@@ -98,6 +104,7 @@ export class ClientTransport {
     this.#handler = options.handler;
     this.#updater = options.updater;
     this.#onTerminal = options.onTerminal;
+    this.#onPin = options.onPin;
     this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     validateTiming(this.#backoff, this.#heartbeat, this.#handshakeTimeoutMs);
     this.#now = options.now ?? Date.now;
@@ -131,6 +138,7 @@ export class ClientTransport {
   #connect(): void {
     this.#state = "connecting";
     this.#answered = false;
+    this.#nonces = null;
     this.#rotation = null;
     const socket = this.#createSocket(this.#bootstrap.endpoint);
     this.#socket = socket;
@@ -169,6 +177,8 @@ export class ClientTransport {
     if (!reply.ok) return this.#failClosed(socket, "invalid handshake reply");
     if (reply.data.kind === "challenge") return this.#answerChallenge(socket, reply.data.nonce);
     if (reply.data.kind === "welcome" && !this.#answered) return this.#failClosed(socket, "welcome before the challenge was answered");
+    // Nothing the Server says after the challenge is believed before its proof verifies against the pinned key (ADR-0005).
+    if (!this.#serverAuthenticated(reply.data.kind === "welcome" ? "welcome" : `reject:${reply.data.error.code}`, reply.data.proof)) return this.#failClosed(socket, "server authentication failed");
     this.#stopHandshake();
     if (reply.data.kind === "welcome") {
       this.#state = "connected";
@@ -190,13 +200,37 @@ export class ClientTransport {
     }
   }
 
+  /**
+   * Verifies the Server's proof over this connection's two nonces. A pinned Client accepts the pinned key, or a key reached through a chain of rotation
+   * statements signed by the pinned key with greater generations, and then moves its pin. A Client from before pinning pins the key a valid proof presents,
+   * exactly once (the documented migration window); after that it is strict. A missing or invalid proof is never accepted.
+   */
+  #serverAuthenticated(outcome: string, proof: ServerProof | undefined): boolean {
+    const nonces = this.#nonces;
+    if (!proof || !nonces) return false;
+    const trust = this.#bootstrap.trust();
+    const accepted = trust.serverKey === null ? { key: proof.server_public_key, generation: trust.rotationGeneration } : followTrustRotations(trust.serverKey, trust.rotationGeneration, proof.server_public_key, proof.server_rotations ?? []);
+    if (!accepted || !verifyServerAuth(accepted.key, outcome, nonces.client, nonces.server, proof.server_signature)) return false;
+    if (accepted.key !== trust.serverKey) {
+      try {
+        this.#bootstrap.pinServerKey(accepted.key, accepted.generation);
+      } catch {
+        return false; // a pin that cannot be persisted would be forgotten at the next start
+      }
+      this.#onPin?.(trust.serverKey === null ? "first" : "rotated");
+    }
+    return true;
+  }
+
   /** The one answer to the connection's challenge: identity, public key and the signature. A second challenge is a protocol violation. */
   #answerChallenge(socket: WebSocket, nonce: string): void {
     if (this.#answered) return this.#failClosed(socket, "unexpected second challenge");
     this.#answered = true;
+    const clientNonce = newNonce();
+    this.#nonces = { client: clientNonce, server: nonce };
     const display = suggestClientDisplayName();
     const suggestedName = display ? { display_name: display } : {};
-    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce), ...suggestedName, ...(this.#bootstrap.machineUuid ? { machine_uuid: this.#bootstrap.machineUuid } : {}), ...(this.#updater ? { update_capable: true } : {}) });
+    const hello = ClientHello.parse({ kind: "hello", client_id: this.#bootstrap.clientId, client_build: this.#build, public_key: this.#bootstrap.publicKey(), signature: this.#bootstrap.sign(nonce, clientNonce), client_nonce: clientNonce, ...suggestedName, ...(this.#bootstrap.machineUuid ? { machine_uuid: this.#bootstrap.machineUuid } : {}), ...(this.#updater ? { update_capable: true } : {}) });
     socket.send(JSON.stringify(hello));
   }
 

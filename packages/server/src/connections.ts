@@ -7,7 +7,7 @@
 // A request is never sent twice.
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import { newNonce, verifyChallenge } from "@reach-mcp/shared/identity";
+import { newNonce, verifyChallenge, verifyClientAuth } from "@reach-mcp/shared/identity";
 import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 import {
   ClientHello,
@@ -21,6 +21,7 @@ import {
   ResponseEnvelope,
   SessionMessage,
   type Operation,
+  type ServerProof,
   type UpdateFailure,
   type WireError,
 } from "@reach-mcp/shared/wire";
@@ -45,6 +46,12 @@ export type ConnectionOptions = {
   requestTimeoutMs?: number;
   /** Most requests awaiting a response at once, across all Clients. */
   maxPendingRequests?: number;
+  /**
+   * The Server trust key (ADR-0005). With it, every welcome and reject for a Client that sent its own nonce carries a signed proof, and a hello
+   * WITHOUT that nonce (a pre-change Client) is admitted only as an incompatible, management-only session, which is how it gets updated. Without it
+   * (tests, setup) no proof is sent and the one-way handshake of ADR-0004 applies.
+   */
+  trust?: { proof(outcome: string, clientNonce: string, serverNonce: string): ServerProof };
   now?: () => number;
   schedule?: Schedule;
   /** Operational log and audit trail; the registry emits its own lifecycle events directly. Default: none. */
@@ -63,6 +70,7 @@ type Pending = { session: Session; mutation: boolean; settle: (response: Respons
 
 export type SessionStatus = { client_id: string; client_build: string; compatible: boolean; update_capable: boolean; update: UpdateStatus | null; connected_since: number; last_seen: number; online: boolean };
 
+const withProof = (proof: ServerProof | undefined) => (proof ? { proof } : {});
 const AUTH_FAILED: WireError = { code: "AUTH_FAILED", message: "authentication failed" };
 const PENDING_APPROVAL: WireError = { code: "PENDING_APPROVAL", message: "client is registered and waits for approval" };
 const CLIENT_DISABLED: WireError = { code: "CLIENT_DISABLED", message: "client is disabled" };
@@ -331,9 +339,9 @@ export class ClientConnectionRegistry {
     return true;
   }
 
-  #reject(socket: WebSocket, error: WireError, serverBuild?: string): null {
+  #reject(socket: WebSocket, error: WireError, serverBuild?: string, proof?: ServerProof): null {
     this.#logger.log("WARNING", "connections", `client refused code=${error.code}`);
-    socket.send(JSON.stringify({ kind: "reject", ...(serverBuild ? { server_build: serverBuild } : {}), error }));
+    socket.send(JSON.stringify({ kind: "reject", ...(serverBuild ? { server_build: serverBuild } : {}), error, ...(proof ? { proof } : {}) }));
     socket.close();
     return null;
   }
@@ -349,20 +357,26 @@ export class ClientConnectionRegistry {
     }
     const hello = parseWire(ClientHello, frame);
     if (!hello.ok) return this.#reject(socket, hello.error);
-    const { client_id: clientId, client_build: build, public_key: publicKey, signature, display_name: displayName, machine_uuid: machineUuid, update_capable: updateCapable } = hello.data;
+    const { client_id: clientId, client_build: build, public_key: publicKey, signature, client_nonce: clientNonce, display_name: displayName, machine_uuid: machineUuid, update_capable: updateCapable } = hello.data;
+    // The Server proves itself over the Client's own nonce, so a recorded answer cannot be replayed to another connection.
+    const proofFor = (outcome: string): ServerProof | undefined => (clientNonce !== undefined ? this.#options.trust?.proof(outcome, clientNonce, nonce) : undefined);
+    const reject = (error: WireError, serverBuild?: string): null => this.#reject(socket, error, serverBuild, proofFor(`reject:${error.code}`));
     // A registered Client must present a stored key (current or staged) whatever its status; an unknown one proves possession of the key it offers.
     const known = this.#admissionOf(clientId);
     const key = known ? [known.publicKey, known.nextPublicKey].find((k) => k !== null && k === publicKey) : publicKey;
-    if (key === undefined || key === null || !verifyChallenge(key, nonce, clientId, signature)) return this.#reject(socket, AUTH_FAILED);
+    const proven = key !== undefined && key !== null && (clientNonce !== undefined ? verifyClientAuth(key, nonce, clientNonce, clientId, signature) : verifyChallenge(key, nonce, clientId, signature));
+    if (!proven) return reject(AUTH_FAILED);
     // Only a known, Enabled Client may stay connected with an incompatible build (management only); everyone else is refused as before.
     const compatible = this.#options.isBuildCompatible(build);
-    if (!compatible && known?.status !== "enabled") return this.#reject(socket, incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
-    if (!known) return this.#reject(socket, this.#register(clientId, publicKey, displayName, machineUuid) ? PENDING_APPROVAL : AUTH_FAILED);
-    if (!this.#reconcileMachine(clientId, known.machineUuid, machineUuid)) return this.#reject(socket, AUTH_FAILED);
-    if (known.status !== "enabled") return this.#reject(socket, known.status === "pending" ? PENDING_APPROVAL : CLIENT_DISABLED);
+    // A compatible Client that never contributed a nonce would be a downgrade of the mutual handshake: refused when the Server has a trust key.
+    if (compatible && clientNonce === undefined && this.#options.trust) return reject(AUTH_FAILED);
+    if (!compatible && known?.status !== "enabled") return reject(incompatibleBuildError(build, this.#options.serverBuild), this.#options.serverBuild);
+    if (!known) return reject(this.#register(clientId, publicKey, displayName, machineUuid) ? PENDING_APPROVAL : AUTH_FAILED);
+    if (!this.#reconcileMachine(clientId, known.machineUuid, machineUuid)) return reject(AUTH_FAILED);
+    if (known.status !== "enabled") return reject(known.status === "pending" ? PENDING_APPROVAL : CLIENT_DISABLED);
     if (known.nextPublicKey === publicKey) this.#promoteKey(clientId);
     const existing = this.#sessions.get(clientId);
-    if (existing && !this.#isStale(existing)) return this.#reject(socket, { code: "DUPLICATE_CLIENT", message: "client is already connected" });
+    if (existing && !this.#isStale(existing)) return reject({ code: "DUPLICATE_CLIENT", message: "client is already connected" });
     if (existing) {
       this.#drop(existing);
       existing.socket.terminate();
@@ -374,7 +388,7 @@ export class ClientConnectionRegistry {
     this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
     // The welcome is the exact frame pre-change Clients already parse (their schema is strict and accepts only compatible=true), so an
     // incompatible Client is never told apart on the wire: the Server-owned `session.compatible` is the only authority and gives it no policy.
-    this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()) });
+    this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()), ...withProof(proofFor("welcome")) });
     this.syncPolicy(clientId);
     return session;
   }

@@ -303,3 +303,28 @@ test("update frames: the command carries nothing, a state is one of three, a fai
   assert.equal(ClientHello.safeParse(hello).success, ClientHello.safeParse({ ...hello, update_capable: true }).success, "the field is optional, so a pre-change hello still parses");
   assert.equal(ClientHello.safeParse({ ...hello, update_capable: false }).success, false);
 });
+
+// ---- ADR-0005: the client nonce and the Server proof are strict, fail-closed shapes ----
+import { ClientHello as NonceHello, HandshakeReply as NonceReply, ServerProof, parseWire as parseNonceWire } from "../src/wire/index.ts";
+
+const K43 = "A".repeat(43);
+const S86 = "B".repeat(86);
+const helloBase = { kind: "hello", client_id: "laptop", client_build: "b-1", public_key: K43, signature: S86 };
+
+test("hello: client_nonce is a 32-byte base64url nonce; a malformed one is refused and the legacy hello without it still parses", () => {
+  assert.equal(parseNonceWire(NonceHello, { ...helloBase, client_nonce: K43 }).ok, true);
+  assert.equal(parseNonceWire(NonceHello, helloBase).ok, true, "the pre-change hello (an incompatible, management-only Client)");
+  for (const bad of ["short", `${K43}=`, 7, null]) assert.equal(parseNonceWire(NonceHello, { ...helloBase, client_nonce: bad }).ok, false);
+});
+
+test("welcome and reject carry an optional strict proof: key, signature and bounded rotation statements, no extra field", () => {
+  const proof = { server_public_key: K43, server_signature: S86 };
+  const welcome = { kind: "welcome", server_build: "b-1", compatible: true };
+  assert.equal(parseNonceWire(NonceReply, { ...welcome, proof }).ok, true);
+  assert.equal(parseNonceWire(NonceReply, welcome).ok, true, "the proof is absent for a pre-change Client");
+  assert.equal(parseNonceWire(NonceReply, { kind: "reject", error: { code: "AUTH_FAILED", message: "no" }, proof }).ok, true);
+  assert.equal(parseNonceWire(ServerProof, { ...proof, server_rotations: [{ generation: 1, new_public_key: K43, signature: S86 }] }).ok, true);
+  const bad = [{ ...proof, extra: 1 }, { server_public_key: K43 }, { server_signature: S86 }, { ...proof, server_public_key: "short" }, { ...proof, server_signature: "short" }, { ...proof, server_rotations: [{ generation: 0, new_public_key: K43, signature: S86 }] }, { ...proof, server_rotations: [{ generation: 1.5, new_public_key: K43, signature: S86 }] }, { ...proof, server_rotations: Array.from({ length: 33 }, (_, i) => ({ generation: i + 1, new_public_key: K43, signature: S86 })) }];
+  for (const b of bad) assert.equal(parseNonceWire(ServerProof, b).ok, false, JSON.stringify(b).slice(0, 60));
+  assert.equal(parseNonceWire(NonceReply, { ...welcome, proof: { server_public_key: K43 } }).ok, false, "a partial proof is no proof");
+});

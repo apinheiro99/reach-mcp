@@ -7,11 +7,13 @@
 import type { KeyObject } from "node:crypto";
 import { readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { generateIdentityKey, importPrivateKey, publicKeyFromPrivate, signChallenge } from "@reach-mcp/shared/identity";
-import { ClientId } from "@reach-mcp/shared/wire";
+import { generateIdentityKey, importPrivateKey, publicKeyFromPrivate, signClientAuth } from "@reach-mcp/shared/identity";
+import { ClientId, PublicKey } from "@reach-mcp/shared/wire";
 import { currentMachineUuid } from "./machine-identity.ts";
 
 export const BOOTSTRAP_KEYS = ["REACH_SERVER_URL", "REACH_CLIENT_ID", "REACH_CLIENT_IDENTITY_KEY", "REACH_ROOTS"] as const;
+/** The Server trust state the Client owns (ADR-0005): the pinned Server public key, the highest accepted release epoch with its manifest digest, and the rotation generation. Absent on a Client from before pinning. */
+export const TRUST_KEYS = ["REACH_SERVER_TRUST_KEY", "REACH_RELEASE_EPOCH", "REACH_RELEASE_DIGEST", "REACH_ROTATION_GENERATION"] as const;
 const IDENTITY_KEYS = ["REACH_CLIENT_ID", "REACH_CLIENT_IDENTITY_KEY"] as const;
 
 export type BootstrapOptions = {
@@ -35,6 +37,9 @@ export class BootstrapError extends Error {
   }
 }
 
+/** The trust fields a Bootstrap holds; `serverKey` null means no pin yet (a Client from before pinning). */
+export type ServerTrust = { serverKey: string | null; releaseEpoch: number; releaseDigest: string | null; rotationGeneration: number };
+
 export type PublicBootstrap = { endpoint: string; clientId: string; anchors: readonly string[] };
 
 /** Holds the private key in a private field: JSON, inspect and spread of this object never show it. */
@@ -46,8 +51,10 @@ export class Bootstrap {
   machineUuid: string | undefined;
   #identityKey: KeyObject;
   readonly #file: string | undefined;
+  #trust: ServerTrust;
 
-  constructor(endpoint: string, clientId: string, identityKey: KeyObject, anchors: readonly string[], file?: string) {
+  constructor(endpoint: string, clientId: string, identityKey: KeyObject, anchors: readonly string[], file?: string, trust: ServerTrust = { serverKey: null, releaseEpoch: 0, releaseDigest: null, rotationGeneration: 0 }) {
+    this.#trust = trust;
     this.endpoint = endpoint;
     this.clientId = clientId;
     this.#identityKey = identityKey;
@@ -76,9 +83,37 @@ export class Bootstrap {
     return publicKeyFromPrivate(this.#identityKey);
   }
 
-  /** Proves possession of the private key for one Server challenge; the key itself is never exposed. */
-  sign(nonce: string): string {
-    return signChallenge(this.#identityKey, nonce, this.clientId);
+  /** Proves possession of the private key for one Server challenge, bound to this connection's own client nonce; the key itself is never exposed. */
+  sign(serverNonce: string, clientNonce: string): string {
+    return signClientAuth(this.#identityKey, serverNonce, clientNonce, this.clientId);
+  }
+
+  /** The pinned Server key, the highest accepted release epoch and digest, and the rotation generation. */
+  trust(): Readonly<ServerTrust> {
+    return this.#trust;
+  }
+
+  /** Pins the Server key (first pin of a Client from before pinning, or the end of a verified rotation chain) and stores it with its generation. */
+  pinServerKey(serverKey: string, rotationGeneration: number): void {
+    this.#store({ ...this.#trust, serverKey, rotationGeneration }, { REACH_SERVER_TRUST_KEY: serverKey, REACH_ROTATION_GENERATION: String(rotationGeneration) });
+  }
+
+  /** Records the highest release epoch and manifest digest this Client accepted. Called only after the signed envelope verified. */
+  acceptRelease(releaseEpoch: number, releaseDigest: string): void {
+    this.#store({ ...this.#trust, releaseEpoch, releaseDigest }, { REACH_RELEASE_EPOCH: String(releaseEpoch), REACH_RELEASE_DIGEST: releaseDigest });
+  }
+
+  /** Writes the changed lines (every other line kept, mode 0600, temporary file and rename) and only then makes the new state the active one. */
+  #store(next: ServerTrust, lines: Record<string, string>): void {
+    if (this.#file) {
+      let text = readFileSync(this.#file, "utf8");
+      for (const [key, value] of Object.entries(lines)) {
+        const pattern = new RegExp(`^(\\s*${key}\\s*=).*$`, "m");
+        text = pattern.test(text) ? text.replace(pattern, (_, head: string) => `${head}${value}`) : `${text.endsWith("\n") || text === "" ? text : `${text}\n`}${key}=${value}\n`;
+      }
+      writeBootstrapText(this.#file, text);
+    }
+    this.#trust = next;
   }
 
   publicView(): PublicBootstrap {
@@ -94,7 +129,7 @@ function parseLines(text: string, problems: string[]): Map<string, string> {
     const eq = line.indexOf("=");
     const key = eq > 0 ? line.slice(0, eq).trim() : "";
     if (!key) return void problems.push(`line ${index + 1}: expected KEY=VALUE`);
-    if (!(BOOTSTRAP_KEYS as readonly string[]).includes(key)) return void problems.push(`line ${index + 1}: unknown key`);
+    if (!(BOOTSTRAP_KEYS as readonly string[]).includes(key) && !(TRUST_KEYS as readonly string[]).includes(key)) return void problems.push(`line ${index + 1}: unknown key`);
     if (values.has(key)) return void problems.push(`duplicate key ${key}`);
     values.set(key, line.slice(eq + 1).trim());
   });
@@ -146,6 +181,21 @@ function canonicalAnchors(value: string, problems: string[]): string[] {
   return anchors;
 }
 
+/** The optional trust lines; a malformed value is a problem naming the key, never the value. A Client from before pinning has none of them. */
+function parseTrust(values: Map<string, string>, problems: string[]): ServerTrust {
+  const count = (key: string, allowZero: boolean): number => {
+    const raw = values.get(key);
+    if (raw === undefined) return 0;
+    if (!(allowZero ? /^(0|[1-9][0-9]{0,15})$/ : /^[1-9][0-9]{0,15}$/).test(raw)) problems.push(`${key} is invalid`);
+    return Number(raw);
+  };
+  const serverKey = values.get("REACH_SERVER_TRUST_KEY") ?? null;
+  if (serverKey !== null) checkSchema("REACH_SERVER_TRUST_KEY", PublicKey, serverKey, problems);
+  const digest = values.get("REACH_RELEASE_DIGEST") ?? null;
+  if (digest !== null && !/^[0-9a-f]{64}$/.test(digest)) problems.push("REACH_RELEASE_DIGEST is invalid");
+  return { serverKey, releaseEpoch: count("REACH_RELEASE_EPOCH", false), releaseDigest: digest, rotationGeneration: count("REACH_ROTATION_GENERATION", true) };
+}
+
 /** Parses bootstrap text; `permissionProblem` is the result of the file-mode check, folded into the same report. */
 export function parseBootstrap(text: string, options: BootstrapOptions = {}, permissionProblem?: string, file?: string): Bootstrap {
   const problems: string[] = permissionProblem ? [permissionProblem] : [];
@@ -162,9 +212,10 @@ export function parseBootstrap(text: string, options: BootstrapOptions = {}, per
       problems.push("REACH_CLIENT_IDENTITY_KEY is invalid");
     }
   }
+  const trust = parseTrust(values, problems);
   const anchors = values.has("REACH_ROOTS") ? canonicalAnchors(get("REACH_ROOTS"), problems) : [];
   if (problems.length > 0 || !identityKey) throw new BootstrapError(problems);
-  return new Bootstrap(get("REACH_SERVER_URL"), get("REACH_CLIENT_ID"), identityKey, anchors, file);
+  return new Bootstrap(get("REACH_SERVER_URL"), get("REACH_CLIENT_ID"), identityKey, anchors, file, trust);
 }
 
 export function loadBootstrap(file: string, options: BootstrapOptions = {}): Bootstrap {

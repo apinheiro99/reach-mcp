@@ -22,7 +22,7 @@ export type RunningClient = { transport: ClientTransport; stop(): void };
 export function startClient(args: ClientArgs, onTerminal?: (error: WireError) => void): RunningClient {
   const bootstrap = loadBootstrap(args.bootstrap, { allowInsecureWs: args.allowInsecureWs, createIdentity: true });
   const dispatcher = new ClientDispatcher({ anchors: bootstrap.anchors });
-  const transport = new ClientTransport(bootstrap, { build: args.build, handler: dispatcher, updater: (report) => runUpdate({ endpoint: bootstrap.endpoint, build: args.build, stateDir: path.dirname(args.bootstrap) }, report), ...(onTerminal ? { onTerminal } : {}) });
+  const transport = new ClientTransport(bootstrap, { build: args.build, handler: dispatcher, updater: (report) => runUpdate({ bootstrap, endpoint: bootstrap.endpoint, build: args.build, stateDir: path.dirname(args.bootstrap) }, report), ...(onTerminal ? { onTerminal } : {}) });
   transport.start();
   return { transport, stop: () => transport.stop() };
 }

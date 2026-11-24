@@ -2,7 +2,7 @@
 // the handshake; there is no protocol number, no SemVer parsing and no negotiation: the Server either accepts the
 // client build or rejects it with INCOMPATIBLE_BUILD. Identity is an Ed25519 key owned by the Client: the Server opens
 // every connection with a fresh challenge, the Client answers once with its public key and a signature, and nothing is
-// signed again after the welcome.
+// signed again after the welcome. The hello of a current Client also carries its own fresh nonce, and the Server's welcome or reject then carries a signed proof over both nonces (ADR-0005): a Client that pinned the Server key accepts nothing without it.
 import { z } from "zod";
 import { WireError } from "./errors.ts";
 import { ClientRuntime } from "../runtime-settings.ts";
@@ -14,15 +14,22 @@ import { PolicySync } from "./policy.ts";
 export const ServerChallenge = z.strictObject({ kind: z.literal("challenge"), nonce: Nonce });
 export type ServerChallenge = z.infer<typeof ServerChallenge>;
 
+/** One trust rotation statement signed by the Server key it replaces (ADR-0005); the generation is a positive integer that only grows. */
+export const TrustRotationStatement = z.strictObject({ generation: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER), new_public_key: PublicKey, signature: Signature });
+
+/** The Server's proof of identity on the handshake answer: its public key, a signature over the Client's fresh nonce, and the rotation statements a Client behind the current key needs. Present only for a Client that sent its own nonce. */
+export const ServerProof = z.strictObject({ server_public_key: PublicKey, server_signature: Signature, server_rotations: z.array(TrustRotationStatement).max(32).optional() });
+export type ServerProof = z.infer<typeof ServerProof>;
+
 /** Client -> Server, once per connection: identity, public key and the signature of the challenge. A first valid hello from an unknown client_id registers it as Pending; it gets no access until a human enables it. */
-export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional(), update_capable: z.literal(true).optional() });
+export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, client_nonce: Nonce.optional(), display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional(), update_capable: z.literal(true).optional() });
 export type ClientHello = z.infer<typeof ClientHello>;
 
-export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true), runtime: ClientRuntime.optional() });
+export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true), runtime: ClientRuntime.optional(), proof: ServerProof.optional() });
 export type ServerWelcome = z.infer<typeof ServerWelcome>;
 
 /** A refused handshake: authentication, duplicate identity or incompatible build, always as the compact error. */
-export const ServerReject = z.strictObject({ kind: z.literal("reject"), server_build: BuildId.optional(), error: WireError });
+export const ServerReject = z.strictObject({ kind: z.literal("reject"), server_build: BuildId.optional(), error: WireError, proof: ServerProof.optional() });
 export type ServerReject = z.infer<typeof ServerReject>;
 
 export const HandshakeReply = z.discriminatedUnion("kind", [ServerChallenge, ServerWelcome, ServerReject]);

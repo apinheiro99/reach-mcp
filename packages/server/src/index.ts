@@ -7,6 +7,7 @@ export { createHttpServer, type HttpServerDeps } from "./http-server.ts";
 export { buildHealth, type HealthDeps, type HealthSnapshot } from "./health.ts";
 export { createAdminHandler, type AdminDeps } from "./admin.ts";
 export { createReleaseHandler } from "./release.ts";
+export { ServerTrustStore } from "./server-trust.ts";
 export { createInstallHandler, installerFacts } from "./install-discovery.ts";
 export { ProposalStore, type DecisionResult, type DiffEntry, type ProposalDeps, type ProposalSummary, type ProposeResult } from "./proposals.ts";
 export { RotatingTextWriter, oneLine, type LogSettings, type RotatingTextDeps } from "./rotating-text.ts";

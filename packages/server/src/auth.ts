@@ -6,6 +6,8 @@ import type { ServerConfigStore } from "./config.ts";
 
 /** Canonical lowercase hex SHA-256 of a credential. Not reversible; the plaintext is never kept. */
 export const hashCredential = (credential: string): string => createHash("sha256").update(credential, "utf8").digest("hex");
+/** The SHA-256 of raw bytes (a release manifest), as lowercase hex: the same single hashing owner, for data that is not a credential. */
+export const sha256Hex = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
 /** Constant-time comparison of two SHA-256 hex digests. */
 export const sameDigest = (a: string, b: string): boolean => a.length === 64 && b.length === 64 && timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));

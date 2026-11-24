@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { acceptEffectivePolicy, BootstrapError, loadBootstrap, parseBootstrap } from "../src/index.ts";
 import { EffectiveProjectPolicy } from "@reach-mcp/shared/wire";
-import { generateIdentityKey, machineUuid, verifyChallenge } from "@reach-mcp/shared/identity";
+import { generateIdentityKey, machineUuid, verifyClientAuth } from "@reach-mcp/shared/identity";
 import { FsError } from "@reach-mcp/shared/filesystem";
 
 const KEY = generateIdentityKey();
@@ -43,7 +43,7 @@ test("a valid file loads; comments and blanks are fine; the public view omits th
   assert.equal(b.clientId, "laptop-1");
   assert.deepEqual(b.anchors, [anchor, evil]);
   assert.equal(b.publicKey(), KEY.publicKey);
-  assert.equal(verifyChallenge(KEY.publicKey, "n".repeat(43), "laptop-1", b.sign("n".repeat(43))), true, "it signs without exposing the key");
+  assert.equal(verifyClientAuth(KEY.publicKey, "n".repeat(43), "c".repeat(43), "laptop-1", b.sign("n".repeat(43), "c".repeat(43))), true, "it signs without exposing the key");
   for (const dump of [JSON.stringify(b), JSON.stringify(b.publicView()), String(Object.keys(b)), JSON.stringify({ ...b })]) assert.ok(!dump.includes(CRED));
 });
 
@@ -183,7 +183,7 @@ test("prepareRotation: a candidate pair changes nothing until commit, then repla
   assert.equal(after.replace(newKey, CRED), text, "every other line, comment and id is untouched");
   assert.equal(statSync(f).mode & 0o077, 0, "still private");
   assert.equal(loadBootstrap(f).publicKey(), next, "a restart loads the rotated identity");
-  assert.equal(verifyChallenge(next, "N".repeat(43), "laptop-1", boot.sign("N".repeat(43))), true, "signatures now come from the new key");
+  assert.equal(verifyClientAuth(next, "N".repeat(43), "C".repeat(43), "laptop-1", boot.sign("N".repeat(43), "C".repeat(43))), true, "signatures now come from the new key");
   assert.throws(() => parseBootstrap(text, {}, undefined).prepareRotation(), (e: unknown) => e instanceof BootstrapError && !String(e).includes(CRED), "a bootstrap with no file cannot rotate");
 });
 
@@ -220,4 +220,50 @@ test("loadBootstrap reports the Machine UUID of this machine for correlation, ke
   const unreadable = loadBootstrap(f, { readNativeMachineId: () => { throw new Error("denied"); } });
   assert.equal(unreadable.machineUuid, undefined);
   assert.equal(unreadable.clientId, "laptop-1");
+});
+
+// ---- ADR-0005: the Bootstrap owns the pinned Server key, the highest accepted release epoch and digest, and the rotation generation ----
+const SERVER_PIN = generateIdentityKey().publicKey;
+const DIGEST = "d".repeat(64);
+
+test("trust lines are optional (a Client from before pinning has none), parsed strictly, and never echo a bad value", () => {
+  const none = parseBootstrap(file());
+  assert.deepEqual(none.trust(), { serverKey: null, releaseEpoch: 0, releaseDigest: null, rotationGeneration: 0 });
+  const full = parseBootstrap(`${file()}\nREACH_SERVER_TRUST_KEY=${SERVER_PIN}\nREACH_RELEASE_EPOCH=7\nREACH_RELEASE_DIGEST=${DIGEST}\nREACH_ROTATION_GENERATION=0\n`);
+  assert.deepEqual(full.trust(), { serverKey: SERVER_PIN, releaseEpoch: 7, releaseDigest: DIGEST, rotationGeneration: 0 });
+  for (const line of ["REACH_SERVER_TRUST_KEY=short", "REACH_RELEASE_EPOCH=0", "REACH_RELEASE_EPOCH=-1", "REACH_RELEASE_EPOCH=1.5", "REACH_RELEASE_EPOCH=abc", "REACH_RELEASE_DIGEST=ZZ", "REACH_ROTATION_GENERATION=-1"]) {
+    assert.throws(() => parseBootstrap(`${file()}\n${line}\n`), (e: unknown) => e instanceof BootstrapError && !String(e).includes(line.split("=")[1]!), line);
+  }
+  assert.throws(() => parseBootstrap(`${file()}\nREACH_SERVER_TRUST_KEY=${SERVER_PIN}\nREACH_SERVER_TRUST_KEY=${SERVER_PIN}\n`), BootstrapError, "duplicates are refused like every other key");
+});
+
+test("pinning and accepting a release rewrite only their own lines, atomically, keeping every other line and the file private", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "reach-trust-bs-"));
+  const f = path.join(dir, "bootstrap.env");
+  const text = `# keep me\n${file()}\n`;
+  writeFileSync(f, text, { mode: 0o600 });
+  const b = loadBootstrap(f, { allowInsecureWs: true });
+  b.pinServerKey(SERVER_PIN, 0);
+  b.acceptRelease(3, DIGEST);
+  const after = readFileSync(f, "utf8");
+  assert.ok(after.startsWith(text.trimEnd()), "every earlier line, comment and the private key are untouched");
+  assert.equal(statSync(f).mode & 0o077, 0);
+  assert.deepEqual(loadBootstrap(f, { allowInsecureWs: true }).trust(), { serverKey: SERVER_PIN, releaseEpoch: 3, releaseDigest: DIGEST, rotationGeneration: 0 }, "a restart sees it");
+  const next = generateIdentityKey().publicKey;
+  b.pinServerKey(next, 1);
+  b.acceptRelease(4, "e".repeat(64));
+  const again = readFileSync(f, "utf8");
+  for (const key of ["REACH_SERVER_TRUST_KEY", "REACH_RELEASE_EPOCH", "REACH_RELEASE_DIGEST", "REACH_ROTATION_GENERATION"]) assert.equal(again.match(new RegExp(`^${key}=`, "gm"))?.length, 1, `${key} appears once, replaced in place`);
+  assert.equal(loadBootstrap(f, { allowInsecureWs: true }).trust().serverKey, next);
+  assert.ok(!JSON.stringify(b).includes(CRED) && !JSON.stringify(b.publicView()).includes(CRED), "the private key is still never visible");
+});
+
+test("a pin that cannot be written leaves the active trust state unchanged", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "reach-trust-bs-"));
+  const f = path.join(dir, "bootstrap.env");
+  writeFileSync(f, file(), { mode: 0o600 });
+  const b = loadBootstrap(f, { allowInsecureWs: true });
+  rmSync(f);
+  assert.throws(() => b.pinServerKey(SERVER_PIN, 0));
+  assert.equal(b.trust().serverKey, null, "memory never runs ahead of the file");
 });
