@@ -114,8 +114,22 @@ export const COMPONENT_CSS = `
 :where(a,button,input,select,summary):focus-visible{outline:none;box-shadow:var(--focus-ring)}
 `;
 
+// Replacing a data host rebuilds its scroll container, which would send a list the user scrolled back to the top on every poll: the
+// shared owner captures the container's position first and restores it on the new one (null scroll container: nothing to keep).
+export const REDRAW_JS = `
+function redrawKeepingScroll(host, ...nodes) {
+  const old = host.querySelector(".card-body");
+  const top = old ? old.scrollTop : 0;
+  const left = old ? old.scrollLeft : 0;
+  host.replaceChildren(...nodes);
+  const fresh = host.querySelector(".card-body");
+  if (fresh) { fresh.scrollTop = top; fresh.scrollLeft = left; }
+}
+`;
+
+
 // Browser side of the same owner. Plain script, no framework. The icon set is closed: a view asks for a name from this map.
-export const COMPONENT_JS = `
+export const COMPONENT_JS = REDRAW_JS + `
 const ICONS = {
   home: "M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10",
   users: "M9 11a3 3 0 100-6 3 3 0 000 6zM3 20v-1a5 5 0 0110 0v1M17 11a2.5 2.5 0 100-5M16 14.2A4.5 4.5 0 0121 19v1",
@@ -148,6 +162,7 @@ const ICONS = {
   refresh: "M20 11a8 8 0 00-14.5-4M4 4v4h4M4 13a8 8 0 0014.5 4M20 20v-4h-4"
 };
 const UI = {
+  redraw: redrawKeepingScroll,
   el(tag, props, ...kids) { const n = Object.assign(document.createElement(tag), props || {}); n.append(...kids); return n; },
   icon(name) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");

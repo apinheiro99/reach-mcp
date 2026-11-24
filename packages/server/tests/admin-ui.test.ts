@@ -11,6 +11,7 @@ import path from "node:path";
 import { ClientConnectionRegistry, createAdminHandler, ProposalStore, ServerConfigStore } from "../src/index.ts";
 import { renderAdminPage } from "../src/admin-page.ts";
 import { NAV_ITEMS } from "../src/admin-ui/nav.ts";
+import { REDRAW_JS } from "../src/admin-ui/components.ts";
 import { watchSources } from "../src/admin-ui/dev-reload.ts";
 
 const SRC = path.join(import.meta.dirname, "..", "src");
@@ -287,4 +288,37 @@ test("shared stats layout fits any number of counters: Clients renders seven car
   assert.ok(/\.stats\{display:grid;grid-template-columns:repeat\(auto-fit,minmax\(9rem,1fr\)\);gap:var\(--gap\)\}/.test(owner), "the shared grid sizes by content, not by a fixed count");
   assert.ok(!/\.stats\{[^}]*repeat\(\d/.test(owner) && !/@container[^{]*\{\.stats/.test(owner), "no fixed six-column rule and no per-width column override");
   assert.ok(!/\.stats\{|\.cl-stats|grid-template-columns/.test(clients), "no Clients-only grid CSS");
+});
+
+// A poll must not send a scrolled list back to the top: the shared redraw keeps the scroll container's position.
+type Scroller = { scrollTop: number; scrollLeft: number };
+const redrawHarness = () => {
+  const redraw = new Function(`${REDRAW_JS}; return redrawKeepingScroll;`)() as (host: unknown, ...nodes: unknown[]) => void;
+  const host = {
+    body: { scrollTop: 0, scrollLeft: 0 } as Scroller | null,
+    querySelector() { return this.body; },
+    replaceChildren() { this.body = this.body === null ? null : { scrollTop: 0, scrollLeft: 0 }; },
+  };
+  return { redraw, host };
+};
+
+test("a periodic refresh keeps the list position: the table scroll container's scrollTop and scrollLeft survive the redraw", () => {
+  const { redraw, host } = redrawHarness();
+  host.body!.scrollTop = 420;
+  host.body!.scrollLeft = 36;
+  const before = host.body;
+  redraw(host, "fresh table");
+  assert.notEqual(host.body, before, "the container really was rebuilt");
+  assert.deepEqual({ top: host.body!.scrollTop, left: host.body!.scrollLeft }, { top: 420, left: 36 });
+  host.body = null;
+  assert.doesNotThrow(() => redraw(host, "empty state"), "no scroll container yet: nothing to restore");
+});
+
+test("Clients and Projects redraw their table through the shared helper, and the refresh interval is untouched", () => {
+  for (const file of ["clients.ts", "projects.ts"]) {
+    const text = readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", file), "utf8");
+    assert.match(text, /UI\.redraw\(tableHost, UI\.card\(\{ variant: "table"/, `${file} redraws the table through UI.redraw`);
+    assert.doesNotMatch(text, /tableHost\.replaceChildren\(UI\.card/, `${file} no longer rebuilds the table container directly`);
+  }
+  assert.match(readFileSync(path.join(import.meta.dirname, "..", "src", "admin-ui", "shell.ts"), "utf8"), /setInterval\(\(\) => \{ fn\(\); refreshVersion\(\); \}, 5000\)/);
 });

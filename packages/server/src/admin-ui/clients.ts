@@ -103,7 +103,7 @@ async function renderClients(view) {
       UI.stat({ icon: "alert", value: n.incompatible, label: "Incompatible", tone: "warn" }),
       UI.stat({ icon: "wifi-off", value: n.offline, label: "Offline" })]));
     const shown = ui.data.clients.filter((c) => matchesFilter(c, ui.filter) && matchesSearch(c, ui.search));
-    tableHost.replaceChildren(UI.card({ variant: "table", children: [shown.length
+    UI.redraw(tableHost, UI.card({ variant: "table", children: [shown.length
       ? UI.table(["Client", "Status", "Public Key (Fingerprint)", "Actions"], shown.map(row))
       : UI.el("div", { className: "cl-empty" }, UI.unavailable(ui.data.clients.length ? "No client matches this search" : "No client has registered yet"))] }));
   }
