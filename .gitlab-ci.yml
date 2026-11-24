@@ -82,7 +82,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.ts "Tests: Repository" npm run test:root
+    - 'node scripts/validation-summary.ts "Tests: Repository" npm run test:root'
 
 # wire, identity, path policy, readers and writers
 "Tests: Shared":
@@ -92,7 +92,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.ts "Tests: Shared" npm test --workspace packages/shared
+    - 'node scripts/validation-summary.ts "Tests: Shared" npm test --workspace packages/shared'
 
 # the Client transport, runtime and updater
 "Tests: Client":
@@ -102,7 +102,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.ts "Tests: Client" npm test --workspace packages/client
+    - 'node scripts/validation-summary.ts "Tests: Client" npm test --workspace packages/client'
 
 # the Server, Admin UI, connections and MCP
 "Tests: Server":
@@ -112,7 +112,7 @@ default:
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.ts "Tests: Server" npm test --workspace packages/server
+    - 'node scripts/validation-summary.ts "Tests: Server" npm test --workspace packages/server'
 
 "Package Check":
   extends:
