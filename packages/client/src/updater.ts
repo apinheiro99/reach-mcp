@@ -8,7 +8,9 @@ import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { verifyReleaseEnvelope } from "@reach-mcp/shared/identity";
 import type { UpdateFailure } from "@reach-mcp/shared/wire";
+import type { ServerTrust } from "./bootstrap.ts";
 
 export const UPDATE_DIR = "update";
 /** Linux: creating this file in the update directory is the request the installer's path unit acts on. */
@@ -18,7 +20,12 @@ export const WINDOWS_UPDATE_TASK = "REACH Client Update";
 
 export type UpdateReport = (state: "staging" | "restarting") => void;
 
+/** What the updater needs from the Bootstrap, the only owner of the Client's persistent trust state. */
+export type ReleaseTrust = { trust(): Readonly<ServerTrust>; acceptRelease(releaseEpoch: number, releaseDigest: string): void };
+
 export type UpdaterOptions = {
+  /** The pinned Server key and the highest accepted release epoch and digest; the envelope must verify against them before the manifest is read. */
+  bootstrap: ReleaseTrust;
   /** The Server's Client endpoint from the bootstrap (ws://host:port/client); the release origin is derived from it, never configured. */
   endpoint: string;
   /** The Client's own build id: an update to the same build is refused as `current`, not repeated. */
@@ -40,7 +47,6 @@ export class UpdateError extends Error {
   }
 }
 
-const MANIFEST_MAX_BYTES = 1_000_000;
 const ARTIFACT_MAX_BYTES = 1_000_000_000;
 const DOWNLOAD_PATH = /^\/release\/artifacts\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -69,6 +75,39 @@ export function fetchBytes(url: string, maxBytes: number): Promise<Buffer> {
     request.on("timeout", () => request.destroy(new Error("timeout")));
     request.on("error", reject);
   });
+}
+
+const ENVELOPE_MAX_BYTES = 2_000_000;
+const B64URL = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Verifies the Server-signed release envelope {release_epoch, manifest, signature} against the pinned key and returns the exact manifest text, or throws
+ * UpdateError("manifest"). The signature covers the epoch and the exact manifest bytes, so nothing is parsed before it holds. A lower epoch is refused, and the
+ * same epoch only with the same manifest digest; the accepted epoch and digest are persisted before the manifest is used, never after a failed check.
+ */
+export function openReleaseEnvelope(envelopeText: string, bootstrap: ReleaseTrust): string {
+  const fail = () => new UpdateError("manifest");
+  const held = bootstrap.trust();
+  let envelope: { release_epoch?: unknown; manifest?: unknown; signature?: unknown };
+  try {
+    envelope = JSON.parse(envelopeText);
+  } catch {
+    throw fail();
+  }
+  const { release_epoch: epoch, manifest, signature } = envelope;
+  if (held.serverKey === null || typeof epoch !== "number" || !Number.isSafeInteger(epoch) || epoch < 1 || typeof manifest !== "string" || !B64URL.test(manifest) || typeof signature !== "string") throw fail();
+  const bytes = Buffer.from(manifest, "base64url");
+  if (bytes.toString("base64url") !== manifest || !verifyReleaseEnvelope(held.serverKey, epoch, bytes, signature)) throw fail();
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (epoch < held.releaseEpoch || (epoch === held.releaseEpoch && held.releaseDigest !== null && held.releaseDigest !== digest)) throw fail();
+  if (epoch !== held.releaseEpoch || digest !== held.releaseDigest) {
+    try {
+      bootstrap.acceptRelease(epoch, digest);
+    } catch {
+      throw fail();
+    }
+  }
+  return bytes.toString("utf8");
 }
 
 type Selected = { download_path: string; sha256: string; size_bytes: number; build: string };
@@ -115,7 +154,8 @@ export async function runUpdate(options: UpdaterOptions, report: UpdateReport): 
   const trigger = options.trigger ?? platformTrigger;
   const origin = releaseOrigin(options.endpoint);
   report("staging");
-  const selected = selectClientArtifact(await get(`${origin}/release/manifest`, MANIFEST_MAX_BYTES).then((b) => b.toString("utf8"), () => Promise.reject(new UpdateError("manifest"))), platform, arch);
+  const envelope = await get(`${origin}/release/envelope`, ENVELOPE_MAX_BYTES).then((b) => b.toString("utf8"), () => Promise.reject(new UpdateError("manifest")));
+  const selected = selectClientArtifact(openReleaseEnvelope(envelope, options.bootstrap), platform, arch);
   if (selected.build === options.build) throw new UpdateError("current");
   const bytes = await get(`${origin}${selected.download_path}`, selected.size_bytes).catch(() => Promise.reject(new UpdateError("artifact")));
   if (bytes.length !== selected.size_bytes || createHash("sha256").update(bytes).digest("hex") !== selected.sha256) throw new UpdateError("verification");

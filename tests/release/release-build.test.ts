@@ -24,6 +24,8 @@ const BUILD_ID = "release-test-1";
 const COMMIT = "b".repeat(40);
 let base: string;
 let out: string;
+const TRUST_KEY = "Pz53sYHZ4kHoO02fxKlnkb6azspgoI6IsGVnUht6BSE";
+const trustKeyRoute = (url: string | undefined) => url === "/release/trust-key" ? JSON.stringify({ public_key: TRUST_KEY }) : null;
 let manifest: Untrusted;
 const names = { linux: "reach-client-linux-x64.tgz", windows: "reach-client-win32-x64.zip", server: "reach-server-linux-x64.tgz" };
 
@@ -293,6 +295,7 @@ test("install.sh rejects a bad origin, a cross-origin or unsupported setup and a
   const bad = async (manifestFor: () => Untrusted, archive: Buffer) => {
     const server = createServer((req, res) => {
       if (req.url === "/release/manifest") return res.end(JSON.stringify(manifestFor()));
+      if (trustKeyRoute(req.url)) return res.end(trustKeyRoute(req.url));
       if (req.url!.startsWith("/release/artifacts/")) return res.end(archive);
       res.writeHead(404).end();
     });
@@ -344,7 +347,8 @@ test("the real one-line install: the Server's own install.sh and manifest-select
     const first = run();
     assert.equal(first.status, 0, first.stderr);
     const bootstrap = path.join(m.state, "bootstrap.env");
-    assert.equal(readFileSync(bootstrap, "utf8"), `REACH_SERVER_URL=ws://127.0.0.1:${port[1]}/client\nREACH_ROOTS=["${m.state}/root"]\n`, "only the endpoint and a narrow root, no identity before first start");
+    assert.match(readFileSync(bootstrap, "utf8"), /^REACH_SERVER_TRUST_KEY=[A-Za-z0-9_-]{43}$/m, "the Server public key is pinned");
+    assert.equal(readFileSync(bootstrap, "utf8").replace(/^REACH_SERVER_TRUST_KEY=.*\n/m, ""), `REACH_SERVER_URL=ws://127.0.0.1:${port[1]}/client\nREACH_ROOTS=["${m.state}/root"]\n`, "only the endpoint, the pin and a narrow root, no identity before first start");
     assert.equal(statSync(bootstrap).mode & 0o777, 0o600);
     assert.notEqual(`${m.state}/root`, "/");
     const unit = readFileSync(path.join(m.units, "reach-mcp-client.service"), "utf8");
@@ -412,6 +416,7 @@ test("the Windows Client archive carries the pinned Node runtime and its low-lev
 const serveRelease = async () => {
   const server = createServer((req, res) => {
     if (req.url === "/release/manifest") return res.end(JSON.stringify(manifest));
+    if (trustKeyRoute(req.url)) return res.end(trustKeyRoute(req.url));
     const artifact = manifest.artifacts.find((a: Untrusted) => a.download_path === req.url);
     if (artifact) return res.end(readFileSync(path.join(out, "artifacts", artifact.name)));
     res.writeHead(404).end();

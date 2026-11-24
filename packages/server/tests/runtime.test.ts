@@ -151,7 +151,10 @@ test("Server and Client runtimes: unknown Client waits Pending, Enable admits it
   const rotated = readFileSync(file, "utf8");
   const newKey = /REACH_CLIENT_IDENTITY_KEY=(\S+)/.exec(rotated)![1]!;
   assert.notEqual(newKey, oldKey);
-  assert.equal(rotated.replace(newKey, oldKey), stored, "only the private key line changed");
+  const withoutTrust = (text: string) => text.replace(/^REACH_(SERVER_TRUST_KEY|RELEASE_EPOCH|RELEASE_DIGEST|ROTATION_GENERATION)=.*\n/gm, "");
+  assert.equal(withoutTrust(rotated.replace(newKey, oldKey)), withoutTrust(stored), "only the private key line changed (the Server pin is the Client's own, separate trust state)");
+  const serverKey = ((await (await fetch(`${data}/release/trust-key`)).json()) as { public_key: string }).public_key;
+  assert.equal(/^REACH_SERVER_TRUST_KEY=(\S+)$/m.exec(rotated)?.[1], serverKey, "a Client from before pinning pinned this Server's key on its first signed connection, end to end against the real Server");
   assert.equal(statSync(file).mode & 0o077, 0, "still private after rotation");
   assert.ok(!readFileSync(d.config, "utf8").includes(newKey) && !JSON.stringify(await list()).includes(newKey), "the private key never reaches the Server");
 

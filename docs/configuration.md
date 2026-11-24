@@ -40,6 +40,18 @@ Ownership, one owner each. `ServerConfigStore` persists the identity and the aut
 
 The Admin UI/API requests rotation (`POST /admin/api/clients/<client_id>/rotate-key`), only for an Enabled, connected Client; any other Client is refused with `409` and nothing is queued. The Server sends one `rotate_key` frame to that session. The connected Client generates a candidate Ed25519 keypair locally and answers with only the new public key; its valid key is untouched. The Server stages that public key next to the valid one (one atomic write) and then sends `rotate_committed`; the Client writes the candidate through its Bootstrap, and the Server closes the session. The Client reconnects with the new key; the first proof promotes it, and only then is the old key refused. Until that proof either key authenticates, so a failure at any single step leaves the Client and the Server with a common key. One rotation per Client at a time, bounded by the request timeout.
 
+## Server trust key
+
+Contract from [ADR-0005](decisions/ADR-0005-server-trust-identity-and-signed-release-metadata.md); the runtime follows in Task #164.
+
+- The Server owns one persistent Ed25519 trust key under the deployment-provided persistent root (`/reach-private`), together with the current `release_epoch` and `rotation_generation`. The private key never leaves that root, and it is part of what the operator backs up: losing it forces a re-bootstrap of every Client.
+- The same key authenticates the Server on the WebSocket and signs the release manifest envelope. There is no separate release signing key.
+- `REACH_SERVER_TRUST_KEY` (public key, Base64url) is an optional installer input. When absent, the installer pins the key it fetches from the Server origin it was given on a first install (trust on first use, valid only on the V1 local/controlled network). When present the fetched key must match it. An existing pin is never replaced by a normal install, rerun or update.
+- The state is one file, `server-trust.json`, next to the Server config in the private root, written atomically with mode 0600 and never regenerated when it exists (an unreadable file stops the Server instead of replacing the key). The release epoch advances only when the served manifest bytes change, never on a request or a restart.
+- Routes: `/release/manifest` (exact bytes, unchanged), `/release/envelope` (`{ release_epoch, manifest, signature }`) and `/release/trust-key` (`{ public_key }`).
+- Rotation is an operator action on the Server that publishes a statement signed by the currently pinned key; Clients follow it automatically in generation order. A lost private key has no statement: run the installer's explicit recovery on each Client (`--recover-trust` / `REACH_RECOVER_TRUST=1`, with `REACH_SERVER_TRUST_KEY` set to the new key out of band); a normal rerun never replaces a pin.
+- A pinned Client refuses a handshake or manifest that does not verify with its pinned key, an envelope with a lower `release_epoch`, and the same epoch with a different manifest digest. `release_epoch` is part of the Server-signed envelope, never of the manifest, which stays as the release builder produced it. A rollback is published with a greater epoch.
+
 ## Client local state
 
 Protected local Client state owns only machine-local material:
@@ -47,9 +59,10 @@ Protected local Client state owns only machine-local material:
 - Server endpoint;
 - `client_id`;
 - Ed25519 private key;
-- physical root anchors.
+- physical root anchors;
+- `REACH_SERVER_TRUST_KEY` (the pinned Server public key), `REACH_RELEASE_EPOCH` with `REACH_RELEASE_DIGEST` (the highest accepted release epoch and the digest of its manifest bytes) and `REACH_ROTATION_GENERATION`, all written through the Bootstrap's one atomic writer.
 
-The Server stores only the matching public key and Server-owned logical configuration.
+The Server stores only the matching public key and Server-owned logical configuration. A Client from before pinning has none of the three trust fields; it pins once on its first signed-handshake connection and is strict afterwards.
 
 ## Runtime configuration
 

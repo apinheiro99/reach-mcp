@@ -20,6 +20,7 @@ import { OperationalLogger } from "./logging.ts";
 import { parseTrustedSources } from "./trusted-network.ts";
 import { ProposalStore } from "./proposals.ts";
 import { RotatingTextWriter } from "./rotating-text.ts";
+import { ServerTrustStore } from "./server-trust.ts";
 
 export type ServerArgs = {
   config: string;
@@ -41,6 +42,8 @@ export type ServerArgs = {
   devLiveReload: boolean;
 };
 
+/** The file holding the Server trust state, next to the Server config in the private persistent root. */
+export const SERVER_TRUST_FILE = "server-trust.json";
 const LOOPBACK = "127.0.0.1";
 const LOOPBACK_HOSTS = [LOOPBACK, "::1", "localhost"];
 
@@ -109,12 +112,14 @@ export async function startServer(args: ServerArgs): Promise<RunningServer> {
     if (!(error instanceof ConfigError)) throw error;
     logger.log("ERROR", "runtime", `configuration is not active, setup mode: ${error.problems.join("; ")}`);
   }
-  const connections = new ClientConnectionRegistry({ config, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, logger, audit });
+  // The one Server trust key, in the same private persistent root as the config; created once, never regenerated when the file exists.
+  const trust = new ServerTrustStore(path.join(path.dirname(args.config), SERVER_TRUST_FILE));
+  const connections = new ClientConnectionRegistry({ config, trust, serverBuild: args.build, isBuildCompatible: (clientBuild) => clientBuild === args.build, logger, audit });
   const proposals = new ProposalStore({ path: args.proposal, config, connections, logger, audit });
   const common = { config, connections, proposals, serverBuild: args.build, ...(args.repositoryCommit === undefined ? {} : { repositoryCommit: args.repositoryCommit }) };
   const artifacts = args.artifacts === undefined ? undefined : new DirectoryArtifactSource(args.artifacts);
   const admin = createServer(createAdminHandler({ ...common, logger, audit, installers: installerFacts(artifacts), devLiveReload: args.devLiveReload, logsDir: args.logs, ...(args.artifacts === undefined ? {} : { artifactsDir: args.artifacts }), ...(args.adminUser === undefined ? {} : { adminUser: args.adminUser }), ...(args.adminAllowFrom === undefined ? {} : { allowFrom: parseTrustedSources(args.adminAllowFrom) }) }));
-  const release = createReleaseHandler({ audit, ...(artifacts === undefined ? {} : { artifacts }) });
+  const release = createReleaseHandler({ audit, trust, ...(artifacts === undefined ? {} : { artifacts }) });
   const install = createInstallHandler({ audit, ...(artifacts === undefined ? {} : { artifacts }) });
   const server = createHttpServer({ ...common, release, install });
   const stop = async () => {
