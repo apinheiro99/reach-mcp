@@ -34,10 +34,10 @@ export const COMPONENT_CSS = `
 .row-detail{color:var(--c-muted);font-size:var(--fs-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-aside{color:var(--c-muted);font-size:var(--fs-sm);white-space:nowrap}
 .toggle{display:inline-flex;align-items:center;gap:var(--sp-2);cursor:pointer;font-size:var(--fs-md)}
-.toggle input{appearance:none;width:2.25rem;height:1.25rem;border-radius:var(--radius-pill);background:var(--c-elevated);border:1px solid var(--c-border-strong);position:relative;margin:0;cursor:pointer;transition:background .15s}
-.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:.95rem;height:.95rem;border-radius:50%;background:var(--c-muted);transition:transform .15s,background .15s}
-.toggle input:checked{background:var(--c-accent-soft);border-color:var(--c-accent)}
-.toggle input:checked::after{transform:translateX(1rem);background:var(--c-accent)}
+.toggle input{appearance:none;width:2.25rem;height:1.25rem;border-radius:var(--radius-pill);background:var(--c-bad-soft);border:1px solid var(--c-bad);position:relative;margin:0;cursor:pointer;transition:background .15s}
+.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:.95rem;height:.95rem;border-radius:50%;background:var(--c-bad);transition:transform .15s,background .15s}
+.toggle input:checked{background:var(--c-ok-soft);border-color:var(--c-ok)}
+.toggle input:checked::after{transform:translateX(1rem);background:var(--c-ok)}
 .field{display:flex;flex-direction:column;gap:var(--sp-1);font-size:var(--fs-sm);color:var(--c-muted);min-width:0}
 .input{font:inherit;color:var(--c-text);background:var(--c-surface);border:1px solid var(--c-border-strong);border-radius:var(--radius-control);padding:.45rem .65rem;min-width:0;width:100%}
 .input[data-kind="path"]{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--fs-sm)}
@@ -59,9 +59,9 @@ export const COMPONENT_CSS = `
 .stack{display:flex;flex-direction:column;gap:var(--gap)}
 .hint{color:var(--c-muted);font-size:var(--fs-sm)}
 .table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
-.table th{color:var(--c-muted);font-weight:600;text-align:left;padding:var(--sp-2);border-bottom:1px solid var(--c-border)}
+.table th{color:var(--c-muted);font-weight:600;text-align:left;padding:var(--sp-2);border-bottom:1px solid var(--c-border);position:sticky;top:0;z-index:1;background:var(--c-surface)}
 .table td{padding:var(--sp-2);border-bottom:1px solid var(--c-border);overflow-wrap:anywhere}
-.card[data-variant="table"] .card-body{padding:0;overflow-x:auto}
+.card[data-variant="table"] .card-body{padding:0;overflow:auto;max-height:70vh}
 .card[data-variant="table"] .table th{padding:var(--sp-4);font-size:var(--fs-md);color:var(--c-text)}
 .card[data-variant="table"] .table td{padding:var(--sp-3) var(--sp-4)}
 .table tr:last-child td{border-bottom:0}
@@ -191,6 +191,7 @@ const UI = {
   },
   toggle(label, checked, onChange) {
     const input = UI.el("input", { type: "checkbox", checked });
+    input.setAttribute("aria-label", label || (checked ? "On" : "Off"));
     input.addEventListener("change", () => onChange(input.checked));
     return UI.el("label", { className: "toggle" }, input, label);
   },
