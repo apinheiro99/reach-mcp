@@ -64,8 +64,6 @@ export class ClientTransport {
   #lastHealthyAt: number | null = null;
   #attempts = 0;
   #answered = false;
-  /** The INCOMPATIBLE_BUILD the Server attached to a management-only welcome; null in a normal session. */
-  #incompatible: WireError | null = null;
   /** The candidate identity of the one rotation in flight; dropped on every reconnect. */
   #rotation: { id: string; commit: () => void } | null = null;
   #socket: WebSocket | null = null;
@@ -100,8 +98,8 @@ export class ClientTransport {
   }
 
   /** Safe observable state: no key material and no socket internals. */
-  snapshot(): { state: TransportState; lastError: WireError | null; lastHealthyAt: number | null; attempts: number; incompatible: WireError | null } {
-    return { state: this.#state, lastError: this.#lastError, lastHealthyAt: this.#lastHealthyAt, attempts: this.#attempts, incompatible: this.#incompatible };
+  snapshot(): { state: TransportState; lastError: WireError | null; lastHealthyAt: number | null; attempts: number } {
+    return { state: this.#state, lastError: this.#lastError, lastHealthyAt: this.#lastHealthyAt, attempts: this.#attempts };
   }
 
   /** Starts the lifecycle; a second call while running, backing off or terminal creates nothing. */
@@ -167,7 +165,6 @@ export class ClientTransport {
       this.#state = "connected";
       this.#attempts = 0;
       this.#lastError = null;
-      this.#incompatible = reply.data.error ?? null;
       this.#lastHealthyAt = this.#now();
       if (reply.data.runtime) this.#applyRuntime(socket, reply.data.runtime);
       return;
@@ -196,7 +193,6 @@ export class ClientTransport {
 
   /** After the welcome only a policy snapshot or a request is legal; anything else closes the socket. */
   #onAdmittedFrame(socket: WebSocket, frame: unknown): void {
-    if (this.#incompatible) return this.#failClosed(socket, "unexpected frame in a management-only session");
     const message = this.#handler ? parseWire(PostWelcomeMessage, frame) : null;
     if (!this.#handler || !message?.ok) return this.#failClosed(socket, "unexpected frame after the handshake");
     if (message.data.kind === "rotate_key") return this.#rotateKey(socket, message.data.rotation_id);
@@ -258,7 +254,6 @@ export class ClientTransport {
   #onDown(socket: WebSocket): void {
     if (socket !== this.#socket) return;
     this.#socket = null;
-    this.#incompatible = null;
     this.#stopHeartbeat();
     this.#stopHandshake();
     if (!this.#lastError) this.#lastError = connectionLost;

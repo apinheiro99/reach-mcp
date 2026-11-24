@@ -340,8 +340,9 @@ export class ClientConnectionRegistry {
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
     this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
-    const error = compatible ? {} : { error: incompatibleBuildError(build, this.#options.serverBuild) };
-    this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible, ...error, runtime: clientRuntimeOf(this.#settings()) });
+    // The welcome is the exact frame pre-change Clients already parse (their schema is strict and accepts only compatible=true), so an
+    // incompatible Client is never told apart on the wire: the Server-owned `session.compatible` is the only authority and gives it no policy.
+    this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()) });
     this.syncPolicy(clientId);
     return session;
   }

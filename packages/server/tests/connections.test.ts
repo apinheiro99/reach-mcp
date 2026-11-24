@@ -287,21 +287,27 @@ test("build gate: an incompatible opaque build from a Client that is not Enabled
   await t.done();
 });
 
-test("management-only session: a known Enabled Client with an incompatible build stays connected, observable and incompatible, and gets no policy, request or key rotation", async () => {
+// The handshake parser every pre-change Client runs: a strict welcome that only accepts compatible=true, with no extra field.
+const preChangeClientAcceptsWelcome = (frame: Frame): boolean => {
+  const keys = Object.keys(frame);
+  return frame.kind === "welcome" && (frame as { compatible?: unknown }).compatible === true && keys.every((k) => ["kind", "server_build", "compatible", "runtime"].includes(k));
+};
+
+test("management-only session: a known Enabled Client with an incompatible build gets the welcome pre-change Clients accept, stays connected, and gets no policy, request or key rotation", async () => {
   const t = await setup();
   const c = await t.connect({ build: "old-9" });
-  await until(() => c.frames.some((f) => f.kind === "welcome"), "management-only welcome");
-  const welcome = c.frames.find((f) => f.kind === "welcome") as Frame & { compatible: boolean };
-  assert.equal(welcome.compatible, false);
-  assert.equal(welcome.error!.code, "INCOMPATIBLE_BUILD");
-  assert.deepEqual(welcome.error!.details, { client_build: "old-9", server_build: "srv-1" });
-  assert.deepEqual(t.registry.status().map((s) => [s.client_id, s.client_build, s.compatible, s.online]), [["laptop", "old-9", false, true]]);
+  await until(() => c.frames.some((f) => f.kind === "welcome"), "welcome");
+  assert.equal(preChangeClientAcceptsWelcome(c.frames.find((f) => f.kind === "welcome")!), true, "a pre-change parser keeps the socket");
+  assert.deepEqual(t.registry.status().map((s) => [s.client_id, s.client_build, s.compatible, s.online]), [["laptop", "old-9", false, true]], "the Server alone knows it is incompatible");
   const refused = await t.registry.route("laptop", "web", { op: "fs_list", path: "" });
   assert.equal(refused.ok, false);
   assert.equal(!refused.ok && refused.error.code, "INCOMPATIBLE_BUILD");
   assert.equal(t.registry.syncPolicy("laptop"), false, "no policy snapshot is ever pushed");
   assert.equal(await t.registry.rotateKey("laptop"), "refused");
-  await new Promise((r) => setTimeout(r, 30));
+  const pong = new Promise<void>((r) => c.ws.once("pong", () => r()));
+  c.ws.ping();
+  await pong;
+  assert.equal(c.ws.readyState, WebSocket.OPEN, "the socket stays alive and answers the heartbeat");
   assert.deepEqual(c.frames.map((f) => f.kind), ["challenge", "welcome"], "nothing but the welcome reached the Client");
   await t.done();
 });

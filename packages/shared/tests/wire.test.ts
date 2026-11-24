@@ -81,10 +81,7 @@ test("a submitted value is never echoed: validation errors name paths and codes 
 
 test("handshake replies: welcome or a compact rejection carrying the build identifiers", () => {
   assert.ok(HandshakeReply.safeParse({ kind: "welcome", server_build: "build-2026.11.0001", compatible: true }).success);
-  const incompatible = incompatibleBuildError("build-old", "b");
-  assert.ok(HandshakeReply.safeParse({ kind: "welcome", server_build: "b", compatible: false, error: incompatible }).success, "a management-only welcome carries the incompatibility");
-  assert.equal(HandshakeReply.safeParse({ kind: "welcome", server_build: "b", compatible: false }).success, false, "an incompatible welcome must say why");
-  assert.equal(HandshakeReply.safeParse({ kind: "welcome", server_build: "b", compatible: true, error: incompatible }).success, false, "a compatible welcome carries no error");
+  assert.equal(HandshakeReply.safeParse({ kind: "welcome", server_build: "b", compatible: false }).success, false, "a welcome is always compatible");
   const reject = { kind: "reject", server_build: "build-2026.11.0009", error: incompatibleBuildError("build-2026.11.0001", "build-2026.11.0009") };
   assert.ok(HandshakeReply.safeParse(reject).success);
   assert.equal(reject.error.code, "INCOMPATIBLE_BUILD");

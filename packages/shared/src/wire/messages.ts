@@ -18,10 +18,7 @@ export type ServerChallenge = z.infer<typeof ServerChallenge>;
 export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional() });
 export type ClientHello = z.infer<typeof ClientHello>;
 
-/** An incompatible but authenticated, known and Enabled Client is welcomed into a management-only session: `compatible` is false and `error` (INCOMPATIBLE_BUILD with both builds) is present exactly then. */
-export const ServerWelcome = z
-  .strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.boolean(), error: WireError.optional(), runtime: ClientRuntime.optional() })
-  .refine((welcome) => welcome.compatible === (welcome.error === undefined), { message: "error is required exactly when the build is incompatible" });
+export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true), runtime: ClientRuntime.optional() });
 export type ServerWelcome = z.infer<typeof ServerWelcome>;
 
 /** A refused handshake: authentication, duplicate identity or incompatible build, always as the compact error. */

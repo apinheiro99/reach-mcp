@@ -163,37 +163,6 @@ test("start twice creates one socket; stop cancels timers and prevents reconnect
   await srv.close();
 });
 
-const incompatibleWelcome = (s: ServerSocket) =>
-  s.send(JSON.stringify({ kind: "welcome", server_build: "srv-1", compatible: false, error: { code: "INCOMPATIBLE_BUILD", message: "client and server builds are not compatible", details: { client_build: "build-1", server_build: "srv-1" } } }));
-
-test("management-only welcome: the Client stays connected with its heartbeat, is never terminal, and exposes the incompatibility", async () => {
-  const srv = await server((s) => s.once("message", () => incompatibleWelcome(s)));
-  const c = clock();
-  const terminal: unknown[] = [];
-  const t = new ClientTransport(boot(srv.port), opts(c, { onTerminal: (error) => terminal.push(error) }));
-  t.start();
-  await until(() => t.snapshot().state === "connected", "connected in management-only mode");
-  assert.equal(t.snapshot().incompatible?.code, "INCOMPATIBLE_BUILD");
-  assert.equal(t.snapshot().lastError, null, "a management-only session is not an error");
-  assert.deepEqual(terminal, []);
-  assert.ok(c.pending().length > 0, "the heartbeat keeps running");
-  t.stop();
-  await srv.close();
-});
-
-test("management-only session fails closed on any frame from the Server (no policy, no request)", async () => {
-  const srv = await server((s) => s.once("message", () => { incompatibleWelcome(s); s.send(JSON.stringify(policyFrame())); }));
-  const c = clock();
-  const handled: unknown[] = [];
-  const t = new ClientTransport(boot(srv.port), opts(c, { handler: { applyPolicy: (f) => void handled.push(f), handle: (r) => { handled.push(r); return Promise.reject(new Error("never")); } } }));
-  t.start();
-  await until(() => t.snapshot().state === "backoff", "dropped and retried");
-  assert.deepEqual(handled, [], "nothing reached the handler");
-  assert.equal(t.snapshot().incompatible, null, "the flag is cleared for the next connection");
-  t.stop();
-  await srv.close();
-});
-
 for (const code of ["AUTH_FAILED", "DUPLICATE_CLIENT", "INCOMPATIBLE_BUILD"]) {
   test(`${code} reject is terminal: no reconnect, safe error kept`, async () => {
     const srv = await server((s) => s.once("message", () => reject(code)(s)));
