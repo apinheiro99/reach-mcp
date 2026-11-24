@@ -27,7 +27,7 @@ export type FrameHandler = {
 };
 
 /** The explicit update the Server asked for: reports its states as it goes and throws UpdateError (a closed reason) when it cannot go on. Without one, the Client does not say it can update and an update frame fails closed. */
-export type UpdateRunner = (report: (state: "staging" | "restarting") => void) => Promise<void>;
+export type UpdateRunner = (updateId: string, report: (state: "staging" | "restarting") => void) => Promise<void>;
 
 export type TransportOptions = {
   /** Receives policy snapshots and requests after the welcome; without one, any such frame fails closed. */
@@ -287,7 +287,7 @@ export class ClientTransport {
     if (this.#updating) return;
     this.#updating = true;
     const send = (frame: object) => socket === this.#socket && this.#state === "connected" && socket.send(JSON.stringify(frame));
-    this.#updater((state) => send({ kind: "update_state", update_id: updateId, state })).then(
+    this.#updater(updateId, (state) => send({ kind: "update_state", update_id: updateId, state })).then(
       () => undefined,
       (error: unknown) => send({ kind: "update_state", update_id: updateId, state: "failed", reason: error instanceof UpdateError ? error.reason : "staging" }),
     ).finally(() => {

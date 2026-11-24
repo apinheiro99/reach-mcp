@@ -5,6 +5,7 @@ import type { WireError } from "@reach-mcp/shared/wire";
 import { loadBootstrap } from "./bootstrap.ts";
 import { ClientDispatcher } from "./dispatcher.ts";
 import { ClientTransport } from "./transport.ts";
+import { readApplyReceipt } from "./apply-receipt.ts";
 import { runUpdate } from "./updater.ts";
 import path from "node:path";
 
@@ -22,7 +23,8 @@ export type RunningClient = { transport: ClientTransport; stop(): void };
 export function startClient(args: ClientArgs, onTerminal?: (error: WireError) => void): RunningClient {
   const bootstrap = loadBootstrap(args.bootstrap, { allowInsecureWs: args.allowInsecureWs, createIdentity: true });
   const dispatcher = new ClientDispatcher({ anchors: bootstrap.anchors });
-  const transport = new ClientTransport(bootstrap, { build: args.build, handler: dispatcher, updater: (report) => runUpdate({ bootstrap, endpoint: bootstrap.endpoint, build: args.build, stateDir: path.dirname(args.bootstrap) }, report), ...(onTerminal ? { onTerminal } : {}) });
+  const stateDir = path.dirname(args.bootstrap);
+  const transport = new ClientTransport(bootstrap, { build: args.build, handler: dispatcher, updater: (updateId, report) => runUpdate({ bootstrap, endpoint: bootstrap.endpoint, build: args.build, updateId, stateDir }, report), receipt: () => readApplyReceipt(stateDir), ...(onTerminal ? { onTerminal } : {}) });
   transport.start();
   return { transport, stop: () => transport.stop() };
 }

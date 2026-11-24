@@ -298,6 +298,10 @@ test("Linux update: the installer registers the privileged half (a path unit on 
   assert.match(script, /systemctl enable "\$UNIT_NAME" "\$UPDATE_PATH"\n\s+systemctl restart "\$UNIT_NAME"/, "enabling restarts the Client so a rerun runs the new files");
 });
 
+const REQUEST_JSON = '{"schema_version":1,"update_id":"update-1","from_build":"build-1","target_build":"build-2","artifact_sha256":"' + "a".repeat(64) + '"}';
+const APPLIED_JSON = `${REQUEST_JSON.slice(0, -1)},"state":"applied"}\n`;
+const FAILED_JSON = `${REQUEST_JSON.slice(0, -1)},"state":"failed","reason":"apply"}\n`;
+
 test("Linux update: the privileged script reruns the public installer on the staged archive, consumes the request first, and always removes the staged file", () => {
   const apply = path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh");
   const text = readFileSync(apply, "utf8");
@@ -310,6 +314,7 @@ test("Linux update: the privileged script reruns the public installer on the sta
     writeFileSync(d.bootstrap, "REACH_SERVER_URL=ws://127.0.0.1:8787/client\nREACH_CLIENT_ID=x\n");
     writeFileSync(path.join(state, "update", "client.tgz"), "staged");
     writeFileSync(path.join(state, "update", "apply"), "");
+    writeFileSync(path.join(state, "update", "apply-request.json"), REQUEST_JSON);
     const log = path.join(state, "args.txt");
     writeFileSync(path.join(d.install, "deploy", "install.sh"), `printf '%s\\n' "$@" >"${log}"\nexit ${exitCode}\n`);
     const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8" });
@@ -317,7 +322,42 @@ test("Linux update: the privileged script reruns the public installer on the sta
     assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["--server-origin", "http://127.0.0.1:8787", "--state-dir", state, "--install-dir", d.install, "--unit-dir", d.units, "--staged", path.join(state, "update", "client.tgz")]);
     assert.equal(existsSync(path.join(state, "update", "apply")), false, "the request is consumed, so a failure is never retried in a loop");
     assert.equal(existsSync(path.join(state, "update", "client.tgz")), false, "the staged archive never lingers");
+    const resultFile = path.join(state, "update", "apply-result.json");
+    assert.equal(readFileSync(resultFile, "utf8"), exitCode === 0 ? APPLIED_JSON : FAILED_JSON, "the wrapper alone authors the exact terminal result");
+    assert.equal(existsSync(`${resultFile}.tmp`), false, "no partial result is left behind");
+    assert.equal(existsSync(path.join(state, "update", "apply-request.json")), false, "the request is dropped only after the result is committed");
   }
+});
+
+test("Linux update: without a canonical apply request the wrapper stops before the installer and invents no result", () => {
+  const apply = path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh");
+  for (const request of [null, "{", REQUEST_JSON.replace('"update_id":"update-1"', '"update_id":"up\\"date"'), `${REQUEST_JSON}\n{}`]) {
+    const d = dirs();
+    const state = path.dirname(d.bootstrap);
+    mkdirSync(path.join(state, "update"), { recursive: true });
+    mkdirSync(path.join(d.install, "deploy"), { recursive: true });
+    writeFileSync(d.bootstrap, "REACH_SERVER_URL=ws://127.0.0.1:8787/client\n");
+    writeFileSync(path.join(state, "update", "client.tgz"), "staged");
+    const ran = path.join(state, "ran");
+    writeFileSync(path.join(d.install, "deploy", "install.sh"), `touch "${ran}"\n`);
+    if (request !== null) writeFileSync(path.join(state, "update", "apply-request.json"), request);
+    const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(existsSync(ran), false, "the installer never ran");
+    assert.equal(existsSync(path.join(state, "update", "apply-result.json")), false, "no result without a valid request to correlate it to");
+  }
+});
+
+test("Linux update: a failure before the installer (no staged archive) is still a terminal failed/apply result", () => {
+  const apply = path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh");
+  const d = dirs();
+  const state = path.dirname(d.bootstrap);
+  mkdirSync(path.join(state, "update"), { recursive: true });
+  writeFileSync(d.bootstrap, "REACH_SERVER_URL=ws://127.0.0.1:8787/client\n");
+  writeFileSync(path.join(state, "update", "apply-request.json"), REQUEST_JSON);
+  const result = spawnSync("sh", [apply, "--bootstrap", d.bootstrap, "--install-dir", d.install, "--unit-dir", d.units], { encoding: "utf8" });
+  assert.equal(result.status, 2, result.stderr);
+  assert.equal(readFileSync(path.join(state, "update", "apply-result.json"), "utf8"), FAILED_JSON);
 });
 
 test("Linux update: public installer --staged is still verified against the manifest, and release archives carry the update scripts", () => {
@@ -337,6 +377,13 @@ test("Windows update (structural only): the installer registers a trigger-less o
   assert.match(apply, /Copy-Item -LiteralPath \(Join-Path \$InstallDir 'deploy\\install\.ps1'\)/, "the installer runs from a copy: the install directory is moved aside while it works");
   assert.match(apply, /\$env:REACH_STAGED = \$Staged/);
   assert.doesNotMatch(apply, /Invoke-WebRequest|HttpWebRequest|Stop-ScheduledTask|Stop-Process/, "no download and no process control of its own");
+  const shape = (text: string) => text.match(/\^\\\{"schema_version":1[^\n']*\\\}\$/)?.[0];
+  const linux = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "apply-update-linux.sh"), "utf8");
+  assert.ok(shape(apply) !== undefined && shape(apply) === shape(linux), "both wrappers accept exactly the same canonical request line");
+  assert.match(apply, /Request\.Substring\(0, \$Request\.Length - 1\) \+ ",`"state`":`"\$State`"\$Tail\}`n"/, "the result is the request text closed with the outcome, as on Linux: no hand-built JSON");
+  assert.doesNotMatch(apply, /ConvertTo-Json/, "no second JSON writer that could diverge from Linux");
+  assert.match(apply, /\$Stream\.Flush\(\$true\)[\s\S]*\[IO\.File\]::Replace\(\$Temp, \$ResultFile, \$null\)/, "flushed to disk, then replaced atomically");
+  assert.match(apply, /\} catch \{\n {2}Write-Result 'failed' ',"reason":"apply"'\n {2}throw\n\}[\s\S]*\nWrite-Result 'applied' ''\n$/, "failed is written on any error before exiting nonzero; applied only after the installer finished and cleanup ran");
   const installer = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "install.ps1"), "utf8");
   assert.match(installer, /if \(\$Staged\) \{ Copy-Item -LiteralPath \$Staged -Destination \$ArchiveFile \} else \{ Get-Release/, "a staged archive skips only the download; size and SHA-256 are still checked");
   assert.match(readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", "uninstall-windows.ps1"), "utf8"), /Unregister-ScheduledTask -TaskName 'REACH Client Update'/, "the uninstaller removes the update task too");
