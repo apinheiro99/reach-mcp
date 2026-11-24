@@ -16,7 +16,7 @@ function block(name: string): string {
   return lines.slice(start, end).join("\n");
 }
 
-const validationJobs = ["Public Release Check", "Lint", "Type Check", "Automated Tests", "Package Check", "Release Check"];
+const validationJobs = ["Public Release Check", "Lint", "Type Check", "Tests: Repository", "Tests: Shared", "Tests: Client", "Tests: Server", "Package Check", "Release Check"];
 
 test("validation jobs are blocking and never run for tag pipelines", () => {
   const rules = block(".branch-push-only");
@@ -189,7 +189,7 @@ test("GitGate is governance-only for REACH: no mirror or publication, branch and
 test("jobs that run a real Client get the CI-only machine id prerequisite from one shared template, and no other job does", () => {
   const tpl = block(".real-client-tests");
   assert.match(tpl, /- npm ci( [^\n]*)?\n\s+- node scripts\/git-ci\/ensure-machine-id\.ts/);
-  for (const job of ["Automated Tests", "Release Check"]) assert.match(block(job), /- \.real-client-tests/, `${job} runs real Clients`);
+  for (const job of ["Tests: Repository", "Tests: Shared", "Tests: Client", "Tests: Server", "Release Check"]) assert.match(block(job), /- \.real-client-tests/, `${job} runs real Clients`);
   for (const job of ["Public Release Check", "Lint", "Type Check", "Package Check"]) assert.doesNotMatch(block(job), /real-client-tests/);
   assert.doesNotMatch(ci, /machine-id\.ts[\s\S]*machine-id\.ts/, "the prerequisite is wired once, not copied per job");
   const prod = readFileSync(new URL("../packages/client/src/machine-identity.ts", import.meta.url), "utf8");

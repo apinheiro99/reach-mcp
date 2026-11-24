@@ -74,14 +74,45 @@ default:
   script:
     - node scripts/validation-summary.ts "Type Check" npm run typecheck
 
-"Automated Tests":
+# scripts, installers, CI shape and release plumbing
+"Tests: Repository":
   extends:
     - .branch-push-only
     - .real-client-tests
     - .validation-summary
   stage: validate
   script:
-    - node scripts/validation-summary.ts "Automated Tests" npm test
+    - node scripts/validation-summary.ts "Tests: Repository" npm run test:root
+
+# wire, identity, path policy, readers and writers
+"Tests: Shared":
+  extends:
+    - .branch-push-only
+    - .real-client-tests
+    - .validation-summary
+  stage: validate
+  script:
+    - node scripts/validation-summary.ts "Tests: Shared" npm test --workspace packages/shared
+
+# the Client transport, runtime and updater
+"Tests: Client":
+  extends:
+    - .branch-push-only
+    - .real-client-tests
+    - .validation-summary
+  stage: validate
+  script:
+    - node scripts/validation-summary.ts "Tests: Client" npm test --workspace packages/client
+
+# the Server, Admin UI, connections and MCP
+"Tests: Server":
+  extends:
+    - .branch-push-only
+    - .real-client-tests
+    - .validation-summary
+  stage: validate
+  script:
+    - node scripts/validation-summary.ts "Tests: Server" npm test --workspace packages/server
 
 "Package Check":
   extends:
@@ -149,7 +180,10 @@ ci-tag-red:
     - "Public Release Check"
     - "Lint"
     - "Type Check"
-    - "Automated Tests"
+    - "Tests: Repository"
+    - "Tests: Shared"
+    - "Tests: Client"
+    - "Tests: Server"
     - "Package Check"
     - "Release Check"
   script:
