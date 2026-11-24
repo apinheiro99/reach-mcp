@@ -273,9 +273,10 @@ test("Rotate Key: only the Client's public key comes back and is STAGED next to 
   await t.done();
 });
 
-test("build gate: an incompatible opaque build is refused with both identifiers and no protocol number", async () => {
+test("build gate: an incompatible opaque build from a Client that is not Enabled is refused with both identifiers and no protocol number", async () => {
   const t = await setup();
-  const c = await t.connect({ build: "old-9" });
+  const stranger = newIdentity();
+  const c = await t.connect({ id: "newbox", identity: stranger, build: "old-9" });
   await c.closed;
   const reject = c.frames.find((f) => f.kind === "reject")!;
   assert.equal(reject.error!.code, "INCOMPATIBLE_BUILD");
@@ -283,6 +284,44 @@ test("build gate: an incompatible opaque build is refused with both identifiers 
   assert.equal(reject.server_build, "srv-1");
   assert.ok(!/protocol|version/i.test(JSON.stringify(reject)));
   assert.deepEqual(t.registry.status(), []);
+  await t.done();
+});
+
+test("management-only session: a known Enabled Client with an incompatible build stays connected, observable and incompatible, and gets no policy, request or key rotation", async () => {
+  const t = await setup();
+  const c = await t.connect({ build: "old-9" });
+  await until(() => c.frames.some((f) => f.kind === "welcome"), "management-only welcome");
+  const welcome = c.frames.find((f) => f.kind === "welcome") as Frame & { compatible: boolean };
+  assert.equal(welcome.compatible, false);
+  assert.equal(welcome.error!.code, "INCOMPATIBLE_BUILD");
+  assert.deepEqual(welcome.error!.details, { client_build: "old-9", server_build: "srv-1" });
+  assert.deepEqual(t.registry.status().map((s) => [s.client_id, s.client_build, s.compatible, s.online]), [["laptop", "old-9", false, true]]);
+  const refused = await t.registry.route("laptop", "web", { op: "fs_list", path: "" });
+  assert.equal(refused.ok, false);
+  assert.equal(!refused.ok && refused.error.code, "INCOMPATIBLE_BUILD");
+  assert.equal(t.registry.syncPolicy("laptop"), false, "no policy snapshot is ever pushed");
+  assert.equal(await t.registry.rotateKey("laptop"), "refused");
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(c.frames.map((f) => f.kind), ["challenge", "welcome"], "nothing but the welcome reached the Client");
+  await t.done();
+});
+
+test("management-only session: the stale sweep ends it like any other session", async () => {
+  const t = await setup();
+  const c = await t.connect({ build: "old-9" });
+  await until(() => c.frames.some((f) => f.kind === "welcome"), "welcome");
+  t.clock.advance(RUNTIME_DEFAULTS.stale_ms + 1_000);
+  assert.equal(t.registry.status()[0]!.online, false);
+  t.registry.sweep();
+  await c.closed;
+  await t.done();
+});
+
+test("a compatible Client is unchanged: compatible welcome without error", async () => {
+  const t = await setup();
+  const c = await t.connect();
+  await until(() => c.frames.length === 3, "welcome and policy");
+  assert.equal(t.registry.status()[0]!.compatible, true);
   await t.done();
 });
 

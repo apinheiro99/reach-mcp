@@ -18,7 +18,7 @@ export type HealthSnapshot = {
   repository_commit: string | null;
   uptime_seconds: number;
   config_active: boolean;
-  clients: { connected: number; sessions: { client_id: string; enabled: boolean; online: boolean; client_build: string | null; last_seen: number | null }[] };
+  clients: { connected: number; sessions: { client_id: string; enabled: boolean; online: boolean; compatible: boolean | null; client_build: string | null; last_seen: number | null }[] };
   requests: { in_flight: number; completed: number; failed: number; timed_out: number };
 };
 
@@ -29,7 +29,7 @@ export function buildHealth({ config, connections, serverBuild, repositoryCommit
   const sessions = active
     ? config.snapshot().clients.map(({ client_id, enabled }) => {
         const s = live.get(client_id);
-        return { client_id, enabled, online: s?.online ?? false, client_build: s?.client_build ?? connections.lastBuild(client_id), last_seen: s?.last_seen ?? null };
+        return { client_id, enabled, online: s?.online ?? false, compatible: s?.compatible ?? null, client_build: s?.client_build ?? connections.lastBuild(client_id), last_seen: s?.last_seen ?? null };
       })
     : [];
   return {
