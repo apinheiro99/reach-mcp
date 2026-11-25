@@ -13,7 +13,6 @@ import {
   ClientAuthBegin,
   ClientHello,
   type ClientUpdateState,
-  type LegacyClientUpdateState,
   failureResponse,
   incompatibleBuildError,
   isMutation,
@@ -31,7 +30,6 @@ import { NO_AUDIT, type Audit } from "./audit.ts";
 import { clientRuntimeOf, type RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
 import type { ClientAdmission, ServerConfigStore } from "./config.ts";
 import { NO_LOGGER, type Logger } from "./logging.ts";
-import { LegacyMigration, type MigrationStatus } from "./legacy-migration.ts";
 import { UpdateLifecycle, type UpdateStatus, type UpdateView } from "./update-lifecycle.ts";
 
 export type ConnectionOptions = {
@@ -64,16 +62,15 @@ export type ConnectionOptions = {
 };
 
 /** `compatible` false is a management-only session: authenticated and live, but never given policy, requests or key rotation. */
-type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; updateProtocol: 1 | 2 | null; connectedSince: number; lastSeen: number };
+type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; connectedSince: number; lastSeen: number };
 type Handshake = { nonce: string; clientNonce: string | null };
 type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
 export type { UpdateStatus, UpdateView } from "./update-lifecycle.ts";
-export type { MigrationStatus } from "./legacy-migration.ts";
 export type UpdateResult = "accepted" | "offline" | "current" | "unsupported" | "busy";
 export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
 
-export type SessionStatus = { client_id: string; client_build: string; compatible: boolean; update_capable: boolean; update_protocol: 1 | 2 | null; update: UpdateStatus | null; connected_since: number; last_seen: number; online: boolean };
+export type SessionStatus = { client_id: string; client_build: string; compatible: boolean; update_capable: boolean; update: UpdateStatus | null; connected_since: number; last_seen: number; online: boolean };
 
 const withProof = (proof: ServerProof | undefined) => (proof ? { proof } : {});
 const AUTH_FAILED: WireError = { code: "AUTH_FAILED", message: "authentication failed" };
@@ -86,8 +83,6 @@ export class ClientConnectionRegistry {
   readonly #rotations = new Map<string, Rotation>();
   /** Every update attempt of every Client, kept across reconnects; terminal states come from a receipt only. */
   readonly #updates = new UpdateLifecycle();
-  /** The one-time migration of first-generation Clients, kept apart: it never produces a receipt-backed result. */
-  readonly #migrations = new LegacyMigration();
   /** When each Client was last heard, kept after its session ends so the Clients screen can say "seen 2h ago". */
   readonly #lastHeard = new Map<string, number>();
   /** The Client build of each Client's latest session, kept after the session ends so the version stays observable offline. */
@@ -234,23 +229,11 @@ export class ClientConnectionRegistry {
     if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return this.#recordUpdate(clientId, "offline");
     if (session.build === this.#options.serverBuild) return this.#recordUpdate(clientId, "current");
     if (!session.updateCapable) return this.#recordUpdate(clientId, "unsupported");
-    if (session.updateProtocol === 1) return this.#requestLegacyMigration(clientId, session);
     if (this.#updates.hasInFlight(clientId)) return this.#recordUpdate(clientId, "busy");
     const updateId = this.#newId("update");
     this.#updates.begin(clientId, session, { update_id: updateId, from_build: session.build, target_build: this.#options.serverBuild });
     if (!this.#send(session, { kind: "update", update_id: updateId })) {
       this.#updates.discard(clientId, updateId);
-      return this.#recordUpdate(clientId, "offline");
-    }
-    return this.#recordUpdate(clientId, "accepted");
-  }
-
-  /** A first-generation Client (update_capable without update_protocol 2) gets its own grammar and its own labeled record, chosen from what it announced and never from its build. */
-  #requestLegacyMigration(clientId: string, session: Session): UpdateResult {
-    if (this.#migrations.hasInFlight(clientId)) return this.#recordUpdate(clientId, "busy");
-    this.#migrations.begin(clientId, session);
-    if (!this.#send(session, { kind: "update" })) {
-      this.#migrations.discard(clientId, session);
       return this.#recordUpdate(clientId, "offline");
     }
     return this.#recordUpdate(clientId, "accepted");
@@ -269,16 +252,12 @@ export class ClientConnectionRegistry {
   }
 
   /** The attempt in flight and the last terminal result of a Client, known with or without a live session. */
-  migrationView(clientId: string): MigrationStatus | null {
-    return this.#migrations.view(clientId);
-  }
-
   updateView(clientId: string): UpdateView {
     return this.#updates.view(clientId);
   }
 
   status(): SessionStatus[] {
-    return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, compatible: s.compatible, update_capable: s.updateCapable, update_protocol: s.updateProtocol, update: this.#updates.status(s.clientId), connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
+    return [...this.#sessions.values()].map((s) => ({ client_id: s.clientId, client_build: s.build, compatible: s.compatible, update_capable: s.updateCapable, update: this.#updates.status(s.clientId), connected_since: s.connectedSince, last_seen: s.lastSeen, online: !this.#isStale(s) }));
   }
 
   /** Terminates every stale session. */
@@ -405,7 +384,7 @@ export class ClientConnectionRegistry {
     const nonce = handshake.nonce;
     const hello = parseWire(ClientHello, frame);
     if (!hello.ok) return this.#reject(socket, hello.error);
-    const { client_id: clientId, client_build: build, public_key: publicKey, signature, client_nonce: clientNonce, display_name: displayName, machine_uuid: machineUuid, update_capable: updateCapable, update_protocol: updateProtocol } = hello.data;
+    const { client_id: clientId, client_build: build, public_key: publicKey, signature, client_nonce: clientNonce, display_name: displayName, machine_uuid: machineUuid, update_capable: updateCapable } = hello.data;
     // The Server proves itself over the Client's own nonce, so a recorded answer cannot be replayed to another connection.
     const proofFor = (outcome: string): ServerProof | undefined => (clientNonce !== undefined ? this.#options.trust?.proof(outcome, clientNonce, nonce) : undefined);
     const reject = (error: WireError, serverBuild?: string): null => this.#reject(socket, error, serverBuild, proofFor(`reject:${error.code}`));
@@ -432,10 +411,9 @@ export class ClientConnectionRegistry {
       existing.socket.terminate();
     }
     const now = this.#now();
-    const session: Session = { clientId, socket, build, compatible, updateCapable: updateCapable === true, updateProtocol: updateCapable !== true ? null : updateProtocol === 2 ? 2 : 1, connectedSince: now, lastSeen: now };
+    const session: Session = { clientId, socket, build, compatible, updateCapable: updateCapable === true, connectedSince: now, lastSeen: now };
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
-    this.#migrations.reconnected(clientId, session.updateProtocol === 2, build === this.#options.serverBuild);
     this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
     // The welcome is the exact frame pre-change Clients already parse (their schema is strict and accepts only compatible=true), so an
     // incompatible Client is never told apart on the wire: the Server-owned `session.compatible` is the only authority and gives it no policy.
@@ -509,12 +487,8 @@ export class ClientConnectionRegistry {
     const message = parseWire(SessionMessage, frame);
     if (!message.ok) return session.socket.terminate();
     if (message.data.kind === "rotated") return this.#onRotated(session, message.data);
-    // Each update grammar belongs to the generation the session negotiated; a frame of the other one is a violation, never a fallback.
-    if (message.data.kind === "update_state") {
-      if ("update_id" in message.data) return session.updateProtocol === 2 ? this.#onUpdateState(session, message.data) : session.socket.terminate();
-      return session.updateProtocol === 1 ? this.#onLegacyUpdateState(session, message.data) : session.socket.terminate();
-    }
-    if (message.data.kind === "update_receipt") return session.updateProtocol === 2 ? this.#onUpdateReceipt(session, message.data.receipt) : session.socket.terminate();
+    if (message.data.kind === "update_state") return this.#onUpdateState(session, message.data);
+    if (message.data.kind === "update_receipt") return this.#onUpdateReceipt(session, message.data.receipt);
     const pending = this.#pending.get(message.data.request_id);
     // A response settles only the request it answers, and only on the session that carried it; anything else is dropped.
     if (pending && pending.session === session) pending.settle(message.data);
@@ -524,12 +498,6 @@ export class ClientConnectionRegistry {
   #onUpdateState(session: Session, report: ClientUpdateState): void {
     if (this.#updates.progress(session.clientId, session, report) !== "recorded") return;
     this.#recordClientUpdate(session.clientId, report.state === "failed" ? `failed:${report.reason}` : report.state, report.state === "failed");
-  }
-
-  /** A first-generation progress frame: recorded as migration progress only, and logged and audited like any other Client-reported state. */
-  #onLegacyUpdateState(session: Session, report: LegacyClientUpdateState): void {
-    if (!this.#migrations.progress(session.clientId, session, report)) return;
-    this.#recordClientUpdate(session.clientId, `migration:${report.state === "failed" ? `failed:${report.reason}` : report.state}`, report.state === "failed");
   }
 
   /** The terminal apply receipt: accepted on any authenticated session, so it survives a reconnect and a Server restart; a repeat changes and logs nothing, a conflict changes nothing. */
@@ -566,7 +534,6 @@ export class ClientConnectionRegistry {
     if (this.#sessions.get(session.clientId) !== session) return;
     this.#sessions.delete(session.clientId);
     this.#updates.sessionEnded(session.clientId, session);
-    this.#migrations.sessionEnded(session.clientId, session);
     this.#lastHeard.set(session.clientId, session.lastSeen);
     this.#rotations.get(session.clientId)?.settle("offline");
     this.#logger.log("RUNNING", "connections", `client disconnected client_id=${session.clientId}${this.#who(session.clientId)}`);

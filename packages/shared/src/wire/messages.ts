@@ -33,7 +33,7 @@ export const ServerAuth = z.strictObject({ kind: z.literal("server_auth"), proof
 export type ServerAuth = z.infer<typeof ServerAuth>;
 
 /** Client -> Server, once per connection: identity, public key and the signature of the challenge. A first valid hello from an unknown client_id registers it as Pending; it gets no access until a human enables it. */
-export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, client_nonce: Nonce.optional(), display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional(), update_capable: z.literal(true).optional(), update_protocol: z.literal(2).optional() });
+export const ClientHello = z.strictObject({ kind: z.literal("hello"), client_id: ClientId, client_build: BuildId, public_key: PublicKey, signature: Signature, client_nonce: Nonce.optional(), display_name: z.string().min(1).max(100).optional(), machine_uuid: MachineUuid.optional(), update_capable: z.literal(true).optional() });
 export type ClientHello = z.infer<typeof ClientHello>;
 
 export const ServerWelcome = z.strictObject({ kind: z.literal("welcome"), server_build: BuildId, compatible: z.literal(true), runtime: ClientRuntime.optional(), proof: ServerProof.optional() });
@@ -71,9 +71,6 @@ export type ClientRotated = z.infer<typeof ClientRotated>;
 /** Server -> Client: the explicit operator command to update to the Server's canonical release build. It carries no URL, path, command or build: the Client resolves everything from the Server's release manifest. `update_id` is minted by the Server only and names this one attempt in every later message. Sent only to a Client whose hello said `update_capable`. */
 export const ServerUpdate = z.strictObject({ kind: z.literal("update"), update_id: RequestId });
 export type ServerUpdate = z.infer<typeof ServerUpdate>;
-/** The update command of the first generation (Client builds before Story #154), which knows no `update_id` and no receipt. The Server sends it ONLY to a session whose hello said `update_capable` without `update_protocol: 2`; a current Client never accepts it. It exists for the one-time migration to a receipt-capable build. */
-export const LegacyServerUpdate = z.strictObject({ kind: z.literal("update") });
-export type LegacyServerUpdate = z.infer<typeof LegacyServerUpdate>;
 
 /** Why an update stopped: a closed set, so a state can never carry a path, URL or secret. `apply` is the only reason after the handoff and is written by the privileged apply wrapper alone; the others stop the update before it. */
 export const UPDATE_FAILURES = ["unsupported", "current", "manifest", "artifact", "verification", "staging", "handoff", "apply"] as const;
@@ -90,13 +87,6 @@ export const ClientUpdateState = z.discriminatedUnion("state", [
   z.strictObject({ kind: z.literal("update_state"), update_id: RequestId, state: z.literal("failed"), reason: PreHandoffFailure }),
 ]);
 export type ClientUpdateState = z.infer<typeof ClientUpdateState>;
-/** The first generation's progress frames: no `update_id`. Accepted only on a session negotiated as legacy, never mixed into the correlated lifecycle. */
-export const LegacyClientUpdateState = z.discriminatedUnion("state", [
-  z.strictObject({ kind: z.literal("update_state"), state: z.literal("staging") }),
-  z.strictObject({ kind: z.literal("update_state"), state: z.literal("restarting") }),
-  z.strictObject({ kind: z.literal("update_state"), state: z.literal("failed"), reason: PreHandoffFailure }),
-]);
-export type LegacyClientUpdateState = z.infer<typeof LegacyClientUpdateState>;
 
 const receiptCommon = { schema_version: z.literal(1), update_id: RequestId, from_build: BuildId, target_build: BuildId, artifact_sha256: Sha256Hex };
 /** The durable apply request the Client hands to the lifecycle owner: correlation metadata only, never an authority (the installer re-verifies the staged bytes, manifest and trust). */
@@ -117,7 +107,7 @@ export const ClientUpdateReceipt = z.strictObject({ kind: z.literal("update_rece
 export type ClientUpdateReceipt = z.infer<typeof ClientUpdateReceipt>;
 
 /** What an admitted Client may send: a response to a request, the answer to a key rotation, an update state or the terminal apply receipt. */
-export const SessionMessage = z.union([ClientRotated, ClientUpdateReceipt, ...ClientUpdateState.options, ...LegacyClientUpdateState.options, ...ResponseEnvelope.options]);
+export const SessionMessage = z.union([ClientRotated, ClientUpdateReceipt, ...ClientUpdateState.options, ...ResponseEnvelope.options]);
 export type SessionMessage = z.infer<typeof SessionMessage>;
 
 /** Client -> Server: the hello, then one response per request. */
@@ -128,7 +118,7 @@ export const ClientMessage = z.union([ClientAuthBegin, ClientHello, ...SessionMe
 export type ClientMessage = z.infer<typeof ClientMessage>;
 
 /** Server -> Client: the handshake answer, the policy snapshot, and the requests the Client executes. */
-export const ServerMessage = z.union([ServerChallenge, ServerAuth, ServerWelcome, ServerReject, PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted, ServerUpdate, LegacyServerUpdate]);
+export const ServerMessage = z.union([ServerChallenge, ServerAuth, ServerWelcome, ServerReject, PolicySync, RequestEnvelope, ServerRotateKey, ServerRotateCommitted, ServerUpdate]);
 export type ServerMessage = z.infer<typeof ServerMessage>;
 
 /** What the Server may send once the Client is admitted. */
