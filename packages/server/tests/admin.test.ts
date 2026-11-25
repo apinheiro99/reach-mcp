@@ -232,6 +232,36 @@ test("Client display name API: PUT renames through the audited change path; wron
   await rt.close();
 });
 
+test("Client Auto Update API: PUT changes only that Client's policy through the audited change path, persists, is listed, and every refusal changes and syncs nothing", async () => {
+  const rt = await start(true);
+  rt.config.registerPendingClient("box", newIdentity().publicKey);
+  const url = `${rt.a}/admin/api/clients/box/auto-update`;
+  const put = (body: unknown, target = url) => fetch(target, { method: "PUT", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+  const listed = async () => ((await (await fetch(`${rt.a}/admin/api/clients`)).json()) as { clients: { client_id: string; auto_update: boolean }[] }).clients.find((c) => c.client_id === "box")?.auto_update;
+  const others = () => JSON.stringify({ ...rt.config.snapshot().clients.find((c) => c.client_id === "box"), auto_update: null });
+  assert.equal(await listed(), false, "default OFF");
+  const kept = others();
+  const before = rt.syncs();
+  assert.equal((await put({ auto_update: true })).status, 200);
+  assert.equal(await listed(), true);
+  assert.equal(rt.syncs(), before + 1, "policies are synced once through the one change path");
+  assert.equal(others(), kept, "no other field of the Client changed");
+  assert.equal((JSON.parse(readFileSync(rt.file, "utf8")).clients as { client_id: string; auto_update: boolean }[]).find((c) => c.client_id === "box")?.auto_update, true, "persisted on disk");
+  assert.equal((await put({ auto_update: false })).status, 200);
+  assert.equal(await listed(), false);
+  const after = rt.syncs();
+  assert.equal((await fetch(url, { method: "POST" })).status, 405);
+  assert.equal((await fetch(url, { method: "GET" })).status, 405);
+  assert.equal((await put({ auto_update: true, enabled: true })).status, 400, "extra field");
+  assert.equal((await put({ enabled: true })).status, 400, "wrong field");
+  assert.equal((await put({ auto_update: "yes" })).status, 400, "wrong type");
+  assert.equal((await put("not json")).status, 400);
+  assert.equal((await put({ auto_update: true }, `${rt.a}/admin/api/clients/nobody/auto-update`)).status, 422, "unknown client");
+  assert.equal(await listed(), false, "refusals changed nothing");
+  assert.equal(rt.syncs(), after, "no refusal pushed policies");
+  await rt.close();
+});
+
 test("runtime knobs over the Admin API: the state serves the autosave debounce, a PUT with a runtime section persists and applies it live, and an edit without one keeps it", async () => {
   const rt = await start(true);
   const debounce = async () => ((await (await fetch(`${rt.a}/admin/api/state`)).json()) as { runtime: { admin_autosave_debounce_ms: number } }).runtime.admin_autosave_debounce_ms;

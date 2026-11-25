@@ -20,6 +20,15 @@ export function parseClientDisplayNameUpdate(input: unknown): string {
   return parsed.data.display_name;
 }
 
+const ClientAutoUpdateUpdate = z.strictObject({ auto_update: z.boolean() });
+
+/** The one accepted Auto Update policy body, exactly `{ auto_update: boolean }`. */
+export function parseClientAutoUpdateUpdate(input: unknown): boolean {
+  const parsed = ClientAutoUpdateUpdate.safeParse(input);
+  if (!parsed.success) throw new ConfigError(["body must be exactly { auto_update: boolean }"]);
+  return parsed.data.auto_update;
+}
+
 /** SHA-256 of a credential, lowercase hex. */
 const Digest = z.string().regex(/^[0-9a-f]{64}$/, "must be 64 lowercase hex characters");
 
@@ -117,7 +126,7 @@ export type PublicClient = { client_id: string; display_name?: string; enabled: 
 /** The one status of a Client: Pending (enrolled, never decided), Enabled or Disabled (a human decision). */
 export type ClientStatus = "pending" | "enabled" | "disabled";
 /** What the admin Clients screen reads of one Client: identity and authorization, never the key itself. */
-export type ClientSummary = { client_id: string; display_name?: string; machine_uuid?: string; status: ClientStatus; fingerprint: string | null; projects: number };
+export type ClientSummary = { client_id: string; display_name?: string; machine_uuid?: string; status: ClientStatus; fingerprint: string | null; projects: number; auto_update: boolean };
 /** What admission needs: whether the id is registered, its authorization status and its stored public key, whatever the status. */
 export type ClientAdmission = { status: ClientStatus; publicKey: string | null; nextPublicKey: string | null; machineUuid: string | null } | null;
 /** The editable view of one Client: whether it is enrolled (has a public key), never the key itself. */
@@ -235,9 +244,14 @@ export class ServerConfigStore {
     this.#changeClient(clientId, (client) => ({ ...client, display_name: displayName.trim() }));
   }
 
+  /** The Auto Update policy of one Client; every other field of the Client is kept. */
+  setClientAutoUpdate(clientId: string, autoUpdate: boolean): void {
+    this.#changeClient(clientId, (client) => ({ ...client, auto_update: autoUpdate }));
+  }
+
   /** Every Client as the Clients screen shows it: status and fingerprint, never the key. */
   clientSummaries(): ClientSummary[] {
-    return this.#requireActive().clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), ...(c.machine_uuid ? { machine_uuid: c.machine_uuid } : {}), status: statusOf(c), fingerprint: c.public_key ? publicKeyFingerprint(c.public_key) : null, projects: c.projects.length }));
+    return this.#requireActive().clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), ...(c.machine_uuid ? { machine_uuid: c.machine_uuid } : {}), status: statusOf(c), fingerprint: c.public_key ? publicKeyFingerprint(c.public_key) : null, projects: c.projects.length, auto_update: c.auto_update }));
   }
 
   /** What the admin UI edits: every Client with its policies, never a digest. Empty while no configuration is active. */

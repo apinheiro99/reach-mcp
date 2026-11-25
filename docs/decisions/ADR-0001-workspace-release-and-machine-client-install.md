@@ -20,7 +20,7 @@ The design must keep one source of truth for shared security primitives, avoid S
 
 6. **Effective Project Configuration remains Server-owned.** One Client may hold multiple logical project policies simultaneously, but every `physical_root` must remain within the bootstrap anchors. An invalid policy snapshot is rejected atomically and does not replace the previous valid snapshot. No Client-local project ACL/delegation system is introduced.
 
-7. **No silent update.** Install/update is always an explicit operator action. Server production image/Compose/CD is subsequent Story #10 work; SCOPE migration is subsequent Story #11 work.
+7. **No Client-local or hidden self-update.** The original Story #57 decision required every update to be an explicit operator action. **That operator-only trigger clause is superseded by Story #155 and `architecture.md` §18:** manual update remains the default, while a Server-owned per-Client `auto_update=true` opt-in may trigger the same canonical updater automatically. The Client still never schedules or initiates its own update. Server production image/Compose/CD is subsequent Story #10 work; SCOPE migration is subsequent Story #11 work.
 
 ## Consequences
 
@@ -40,7 +40,7 @@ The design must keep one source of truth for shared security primitives, avoid S
 - Global machine trash: rejected because it crosses physical roots by design and complicates restore/ownership.
 - Manifest-driven version ranges/secondary protocol version: rejected for MVP; exact opaque build equality is sufficient.
 - Separate admin credential solely for artifact retrieval: rejected for now to avoid a second auth owner.
-- Automatic Client self-update: rejected; explicit operator action is the product contract.
+- Client-local/hidden self-update: rejected and still rejected. The narrower rejection of every automatic Server trigger was later superseded by Story #155: Server-owned per-Client Auto Update is allowed only by explicit persisted opt-in and reuses the canonical updater.
 
 ## Evidence
 
