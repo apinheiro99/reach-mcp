@@ -169,7 +169,13 @@ test("Projects drawer: right-side panel with project configuration, access rules
   assert.equal(drawer.match(/\bchange\(\)/g), null, "drawer edits never trigger the global autosave");
   assert.equal(drawer.match(/\bsave\(\)/g)?.length, 1, "Save changes is the only drawer path that persists");
   assert.ok(/UI\.button\("Cancel", \{ onClick: close \}\)/.test(drawer) && /onClose: close/.test(drawer) && !/close = [^\n]*(save|p\.)/.test(drawer), "Cancel and close discard the draft with no write");
-  assert.ok(/for \(const k of \["writable_globs", "deny_globs", "allow_globs"\]\) delete p\[k\]/.test(src), "saving replaces the canonical fields instead of merging stale ones");
+  assert.ok(/for \(const k of \["_draft", "writable_globs", "deny_globs", "allow_globs"\]\) delete p\[k\]/.test(src), "saving replaces the canonical fields instead of merging stale ones");
+  const commit = drawer.slice(drawer.indexOf("const commit"), drawer.indexOf("const pathBox"));
+  assert.ok(commit.indexOf("await save()") < commit.indexOf("Object.assign(p, next)") && /if \(!saved\) return;/.test(commit), "the live project changes only after the Server accepted the save, and the drawer stays open otherwise");
+  assert.ok(commit.indexOf("if (!saved) return;") < commit.indexOf("close()"), "the drawer closes only after a successful save");
+  const saveFn = src.slice(src.indexOf("async function save()"), src.indexOf("async function setAccess"));
+  assert.equal(saveFn.match(/return false;/g)?.length, 3, "deferral, refused broad-root confirmation and a failed PUT each report not saved");
+  assert.ok(/return true;/.test(saveFn) && /if \(!candidate\) await load\(true\)/.test(saveFn), "success is reported and a refused drawer save does not reload over the draft's project");
 });
 
 test("Admin serialization: no UI-local root syntax decides membership, so POSIX, drive and UNC roots all reach the Server and a malformed one is refused atomically", async () => {
