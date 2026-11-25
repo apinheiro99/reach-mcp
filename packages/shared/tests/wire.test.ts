@@ -46,6 +46,7 @@ test("handshake: a valid hello parses; empty identity or build, malformed key or
     }
   }
   assert.equal(ClientHello.safeParse({ ...hello, extra: 1 }).success, false);
+  assert.equal(ClientHello.safeParse({ ...hello, update_protocol: 2 }).success, false, "no second version axis: update_protocol is not a hello field");
   assert.equal(ClientHello.safeParse({ ...hello, kind: "request" }).success, false);
   assert.equal(ClientHello.safeParse({ ...hello, credential: CRED }).success, false, "the shared Client credential no longer exists on the wire");
   assert.equal(ClientHello.safeParse({ ...hello, public_key: "A".repeat(44) }).success, false, "a public key is exactly 32 bytes");
@@ -291,17 +292,32 @@ test("rotation frames: the Server asks with a rotation_id, the Client answers wi
   for (const code of ["PENDING_APPROVAL", "CLIENT_DISABLED"]) assert.equal(WireError.safeParse({ code, message: "m" }).success, true, code);
 });
 
-test("update frames: the command carries nothing, a state is one of three, a failure has only a closed reason, and the hello capability is only `true`", async () => {
-  const { ServerUpdate, ClientUpdateState, UPDATE_FAILURES } = await import("../src/wire/index.ts");
-  assert.equal(ServerUpdate.safeParse({ kind: "update" }).success, true);
-  for (const bad of [{ kind: "update", url: "http://x" }, { kind: "update", command: "anything" }, { kind: "update", build: "b" }]) assert.equal(ServerUpdate.safeParse(bad).success, false, "no URL, command or build can ride on it");
-  for (const state of ["staging", "restarting"]) assert.equal(ClientUpdateState.safeParse({ kind: "update_state", state }).success, true);
-  for (const reason of UPDATE_FAILURES) assert.equal(ClientUpdateState.safeParse({ kind: "update_state", state: "failed", reason }).success, true);
-  for (const bad of [{ kind: "update_state", state: "failed" }, { kind: "update_state", state: "failed", reason: "C:\\some\\path" }, { kind: "update_state", state: "restarting", reason: "manifest" }, { kind: "update_state", state: "done" }]) assert.equal(ClientUpdateState.safeParse(bad).success, false);
-  assert.equal(SessionMessage.safeParse({ kind: "update_state", state: "staging" }).success, true);
+test("update frames: the command carries only the Server-minted id, a state is one of three, a failure has only a closed pre-handoff reason, and the hello capability is only `true`", async () => {
+  const { ServerUpdate, ClientUpdateState, PreHandoffFailure, UPDATE_FAILURES } = await import("../src/wire/index.ts");
+  assert.equal(ServerUpdate.safeParse({ kind: "update", update_id: "update-1" }).success, true);
+  for (const bad of [{ kind: "update" }, { kind: "update", update_id: "" }, { kind: "update", update_id: "u", url: "http://x" }, { kind: "update", update_id: "u", command: "anything" }, { kind: "update", update_id: "u", build: "b" }]) assert.equal(ServerUpdate.safeParse(bad).success, false, "no URL, command or build can ride on it, and the id is required");
+  for (const state of ["staging", "restarting"]) assert.equal(ClientUpdateState.safeParse({ kind: "update_state", update_id: "u", state }).success, true);
+  for (const reason of PreHandoffFailure.options) assert.equal(ClientUpdateState.safeParse({ kind: "update_state", update_id: "u", state: "failed", reason }).success, true);
+  assert.deepEqual(PreHandoffFailure.options, UPDATE_FAILURES.filter((r) => r !== "apply"), "`apply` is the wrapper's reason and the Client never reports it as a state");
+  for (const bad of [{ kind: "update_state", state: "staging" }, { kind: "update_state", update_id: "u", state: "failed" }, { kind: "update_state", update_id: "u", state: "failed", reason: "apply" }, { kind: "update_state", update_id: "u", state: "failed", reason: "C:\\some\\path" }, { kind: "update_state", update_id: "u", state: "restarting", reason: "manifest" }, { kind: "update_state", update_id: "u", state: "applied" }, { kind: "update_state", update_id: "u", state: "done" }]) assert.equal(ClientUpdateState.safeParse(bad).success, false);
+  assert.equal(SessionMessage.safeParse({ kind: "update_state", update_id: "u", state: "staging" }).success, true);
+  assert.equal(SessionMessage.safeParse({ kind: "update_state", state: "staging" }).success, false);
   const hello = { kind: "hello", client_id: "laptop-1", client_build: "b1", public_key: "A".repeat(43), signature: "B".repeat(86) };
   assert.equal(ClientHello.safeParse(hello).success, ClientHello.safeParse({ ...hello, update_capable: true }).success, "the field is optional, so a pre-change hello still parses");
   assert.equal(ClientHello.safeParse({ ...hello, update_capable: false }).success, false);
+});
+
+test("update apply request and receipt: one closed logical schema for Linux and Windows, applied or failed/apply only, no secret, path or timestamp", async () => {
+  const { UpdateApplyRequest, UpdateApplyResult, ClientUpdateReceipt, UPDATE_APPLY_REQUEST_FILE, UPDATE_APPLY_RESULT_FILE } = await import("../src/wire/index.ts");
+  const base = { schema_version: 1, update_id: "update-1", from_build: "b1", target_build: "b2", artifact_sha256: "a".repeat(64) };
+  assert.equal(UpdateApplyRequest.safeParse(base).success, true);
+  assert.equal(UpdateApplyRequest.safeParse({ ...base, state: "applied" }).success, false, "the request is intent only: it has no outcome");
+  assert.equal(UpdateApplyResult.safeParse({ ...base, state: "applied" }).success, true);
+  assert.equal(UpdateApplyResult.safeParse({ ...base, state: "failed", reason: "apply" }).success, true);
+  for (const bad of [{ ...base, state: "failed" }, { ...base, state: "failed", reason: "staging" }, { ...base, state: "applied", reason: "apply" }, { ...base, state: "restarting" }, { ...base, state: "applied", at: "2026-11-24T00:00:00Z" }, { ...base, state: "applied", path: "/opt/x" }, { ...base, artifact_sha256: "A".repeat(64), state: "applied" }, { ...base, schema_version: 2, state: "applied" }]) assert.equal(UpdateApplyResult.safeParse(bad).success, false, JSON.stringify(bad));
+  assert.equal(ClientUpdateReceipt.safeParse({ kind: "update_receipt", receipt: { ...base, state: "applied" } }).success, true);
+  assert.equal(SessionMessage.safeParse({ kind: "update_receipt", receipt: { ...base, state: "applied" } }).success, true);
+  assert.deepEqual([UPDATE_APPLY_REQUEST_FILE, UPDATE_APPLY_RESULT_FILE], ["update/apply-request.json", "update/apply-result.json"]);
 });
 
 // ---- ADR-0005: the client nonce and the Server proof are strict, fail-closed shapes ----

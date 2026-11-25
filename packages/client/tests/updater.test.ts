@@ -4,10 +4,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { readApplyReceipt } from "../src/apply-receipt.ts";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocketServer } from "ws";
 import { generateIdentityKey, importPrivateKey, newNonce, signReleaseEnvelope } from "@reach-mcp/shared/identity";
+import type { UpdateApplyResult } from "@reach-mcp/shared/wire";
 import { SERVER_KEY, serverProof } from "./proof-fixture.ts";
 import { ClientTransport, parseBootstrap, platformTrigger, releaseOrigin, runUpdate, openReleaseEnvelope, selectClientArtifact, UpdateError, type UpdaterOptions } from "../src/index.ts";
 
@@ -34,6 +36,7 @@ function setup(over: Over = {}) {
     bootstrap,
     endpoint: "ws://127.0.0.1:8787/client",
     build: over.build ?? "build-1",
+    updateId: "update-1",
     stateDir: dir,
     platform: "linux",
     arch: "x64",
@@ -156,8 +159,8 @@ test("transport: the hello says update_capable with an updater, and the command 
       if (f.kind === "auth_begin") return void s.send(JSON.stringify({ kind: "server_auth", proof: serverProof("auth", String(f.client_nonce), challenge) }));
       if (f.kind !== "hello") return;
       s.send(JSON.stringify({ kind: "welcome", server_build: "srv", compatible: true, proof: serverProof("welcome", String(f.client_nonce), challenge) }));
-      s.send(JSON.stringify({ kind: "update" }));
-      s.send(JSON.stringify({ kind: "update" }));
+      s.send(JSON.stringify({ kind: "update", update_id: "update-1" }));
+      s.send(JSON.stringify({ kind: "update", update_id: "update-2" }));
     });
   });
   await new Promise<void>((r) => wss.once("listening", () => r()));
@@ -166,7 +169,7 @@ test("transport: the hello says update_capable with an updater, and the command 
   const transport = new ClientTransport(bootstrap(port), {
     build: "build-1",
     handler: { applyPolicy: () => undefined, handle: () => Promise.reject(new Error("unused")) },
-    updater: async (report) => {
+    updater: async (_updateId, report) => {
       runs++;
       report("staging");
       await new Promise((r) => setTimeout(r, 40));
@@ -178,6 +181,67 @@ test("transport: the hello says update_capable with an updater, and the command 
   transport.stop();
   await new Promise<void>((r) => wss.close(() => r()));
   assert.equal(frames.find((f) => f.kind === "hello")!.update_capable, true);
-  assert.deepEqual(frames.filter((f) => f.kind === "update_state"), [{ kind: "update_state", state: "staging" }, { kind: "update_state", state: "failed", reason: "verification" }]);
+  assert.deepEqual(frames.filter((f) => f.kind === "update_state"), [{ kind: "update_state", update_id: "update-1", state: "staging" }, { kind: "update_state", update_id: "update-1", state: "failed", reason: "verification" }], "every state carries the id the Server minted");
   assert.equal(runs, 1, "the second command while one runs is ignored");
+});
+
+test("transport: the latest terminal apply receipt is reported after the welcome, as read; with none, nothing is reported and nothing is invented", async () => {
+  const key = generateIdentityKey();
+  const run = async (receipt: (() => UpdateApplyResult | null) | undefined) => {
+    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    const frames: Record<string, unknown>[] = [];
+    wss.on("connection", (s) => {
+      const challenge = newNonce();
+      s.send(JSON.stringify({ kind: "challenge", nonce: challenge }));
+      s.on("message", (d) => {
+        const f = JSON.parse(d.toString()) as Record<string, unknown>;
+        frames.push(f);
+        if (f.kind === "auth_begin") return void s.send(JSON.stringify({ kind: "server_auth", proof: serverProof("auth", String(f.client_nonce), challenge) }));
+        if (f.kind === "hello") s.send(JSON.stringify({ kind: "welcome", server_build: "srv", compatible: true, proof: serverProof("welcome", String(f.client_nonce), challenge) }));
+      });
+    });
+    await new Promise<void>((r) => wss.once("listening", () => r()));
+    const port = (wss.address() as { port: number }).port;
+    const bootstrap = parseBootstrap(`REACH_SERVER_URL=ws://127.0.0.1:${port}/ws\nREACH_CLIENT_ID=laptop-1\nREACH_CLIENT_IDENTITY_KEY=${key.privateKey}\nREACH_SERVER_TRUST_KEY=${SERVER_KEY.publicKey}\nREACH_ROOTS=${JSON.stringify([tmpdir()])}`, { allowInsecureWs: true });
+    const transport = new ClientTransport(bootstrap, { build: "build-2", handler: { applyPolicy: () => undefined, handle: () => Promise.reject(new Error("unused")) }, ...(receipt ? { receipt } : {}) });
+    transport.start();
+    await new Promise((r) => setTimeout(r, 150));
+    transport.stop();
+    await new Promise<void>((r) => wss.close(() => r()));
+    return frames.filter((f) => f.kind === "update_receipt");
+  };
+  const applied: UpdateApplyResult = { schema_version: 1, update_id: "update-1", from_build: "build-1", target_build: "build-2", artifact_sha256: "a".repeat(64), state: "applied" };
+  assert.deepEqual(await run(() => applied), [{ kind: "update_receipt", receipt: applied }]);
+  assert.deepEqual(await run(() => null), [], "no receipt on disk: nothing is reported, and reaching the target build is not turned into one");
+  assert.deepEqual(await run(undefined), []);
+});
+
+const REQUEST = { schema_version: 1, update_id: "update-1", from_build: "build-1", target_build: "build-2", artifact_sha256: sha(ARCHIVE) };
+
+test("the apply request is durable and exact before the platform is asked, and a failed write never triggers", async () => {
+  const seen: string[] = [];
+  const ok = setup({ trigger: async () => void seen.push(readFileSync(path.join(ok.dir, "update", "apply-request.json"), "utf8")) });
+  await ok.run();
+  assert.deepEqual(seen, [JSON.stringify(REQUEST)], "the trigger found the request already written, in the wrappers' one-line shape");
+  const blocked = setup();
+  mkdirSync(path.join(blocked.dir, "update", "apply-request.json"), { recursive: true });
+  await failsWith(blocked.run(), "staging");
+  assert.equal(blocked.calls.includes("trigger"), false, "no handoff without a durable request");
+});
+
+test("the receipt reader returns the wrapper's canonical result and nothing else", () => {
+  const dir = stateDir();
+  mkdirSync(path.join(dir, "update"));
+  const file = path.join(dir, "update", "apply-result.json");
+  assert.equal(readApplyReceipt(dir), null, "absent");
+  const applied: UpdateApplyResult = { ...REQUEST, state: "applied" } as UpdateApplyResult;
+  writeFileSync(file, `${JSON.stringify(applied)}\n`);
+  assert.deepEqual(readApplyReceipt(dir), applied);
+  const failed = { ...REQUEST, state: "failed", reason: "apply" };
+  writeFileSync(file, JSON.stringify(failed));
+  assert.deepEqual(readApplyReceipt(dir), failed);
+  for (const bad of ["{", JSON.stringify({ ...REQUEST, state: "failed", reason: "handoff" }), JSON.stringify({ ...REQUEST, state: "applied", path: "/x" }), JSON.stringify(REQUEST)]) {
+    writeFileSync(file, bad);
+    assert.equal(readApplyReceipt(dir), null, `invalid is read as nothing: ${bad}`);
+  }
 });

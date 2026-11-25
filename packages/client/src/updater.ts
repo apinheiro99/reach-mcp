@@ -10,6 +10,7 @@ import http from "node:http";
 import path from "node:path";
 import { verifyReleaseEnvelope } from "@reach-mcp/shared/identity";
 import type { UpdateFailure } from "@reach-mcp/shared/wire";
+import { writeApplyRequest } from "./apply-receipt.ts";
 import type { ServerTrust } from "./bootstrap.ts";
 
 export const UPDATE_DIR = "update";
@@ -30,6 +31,8 @@ export type UpdaterOptions = {
   endpoint: string;
   /** The Client's own build id: an update to the same build is refused as `current`, not repeated. */
   build: string;
+  /** The attempt the Server minted; it is written into the apply request so the wrapper's terminal result correlates to it. The Client never mints one. */
+  updateId: string;
   /** The directory holding the bootstrap; the staged archive goes to its `update` subdirectory. */
   stateDir: string;
   platform?: NodeJS.Platform;
@@ -166,6 +169,7 @@ export async function runUpdate(options: UpdaterOptions, report: UpdateReport): 
     const file = path.join(stageDir, platform === "win32" ? "client.zip" : "client.tgz");
     writeFileSync(`${file}.tmp`, bytes, { mode: 0o600 });
     renameSync(`${file}.tmp`, file);
+    writeApplyRequest(options.stateDir, { schema_version: 1, update_id: options.updateId, from_build: options.build, target_build: selected.build, artifact_sha256: selected.sha256 });
   } catch {
     throw new UpdateError("staging");
   }

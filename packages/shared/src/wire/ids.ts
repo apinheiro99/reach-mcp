@@ -15,6 +15,8 @@ export const ClientId = printable(128);
 export const MachineUuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, "must be a Machine UUID");
 export const ProjectId = printable(128);
 export const RequestId = printable(128);
+/** A SHA-256 as 64 lowercase hex characters. */
+export const Sha256Hex = z.string().regex(/^[0-9a-f]{64}$/, "must be a SHA-256 in lowercase hex");
 /** The actual build identifier or tag of one side, compared for equality of compatibility by the Server, never parsed. */
 export const BuildId = printable(128);
 /** Ed25519 public key: the raw 32 bytes as unpadded base64url. Not secret; the Server stores it as the Client identity. */
