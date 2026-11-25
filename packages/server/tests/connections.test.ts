@@ -992,3 +992,32 @@ test("auto update: turning it off while an attempt is in flight neither cancels 
   assert.equal(updateFrames(c).length, 1, "no extra frame");
   await t.done();
 });
+
+test("auto update: admission never starts an attempt; a Client with no receipt to replay is started by its first heartbeat", async () => {
+  const t = await setup(compatSrv);
+  optIn(t, ["laptop"]);
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  await settle();
+  assert.equal(updateFrames(c).length, 0, "nothing is decided before a possible receipt replay");
+  c.ws.ping();
+  await until(() => updateFrames(c).length === 1, "the heartbeat reconciles");
+  c.ws.ping();
+  await settle();
+  assert.equal(updateFrames(c).length, 1, "exactly one automatic command");
+  await t.done();
+});
+
+test("auto update: a failed receipt replayed after a Server restart is observed before any heartbeat can retry the build", async () => {
+  const t = await setup(compatSrv);
+  optIn(t, ["laptop"]);
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted on a fresh Server (no update state yet)");
+  assert.equal(updateFrames(c).length, 0, "admission itself sent no update frame");
+  c.ws.send(JSON.stringify(receiptOf("update-1", { state: "failed", reason: "apply" })));
+  await until(() => t.registry.status()[0]!.update?.state === "failed", "the durable failure is restored");
+  c.ws.ping();
+  await settle();
+  assert.equal(updateFrames(c).length, 0, "no automatic retry of the failed build");
+  await t.done();
+});

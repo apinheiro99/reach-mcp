@@ -149,8 +149,14 @@ export class ClientConnectionRegistry {
       cancelHandshake();
       if (session) this.#drop(session);
     });
-    socket.on("ping", () => session && (session.lastSeen = this.#now()));
-    socket.on("pong", () => session && (session.lastSeen = this.#now()));
+    // Heartbeat is also the Auto Update fallback trigger for a Client with no receipt to replay (see #admit).
+    const onHeartbeat = () => {
+      if (!session) return;
+      session.lastSeen = this.#now();
+      this.#reconcileAutoUpdate();
+    };
+    socket.on("ping", onHeartbeat);
+    socket.on("pong", onHeartbeat);
     socket.on("message", (data, isBinary) => {
       if (session) {
         session.lastSeen = this.#now();
@@ -454,7 +460,8 @@ export class ClientConnectionRegistry {
     // incompatible Client is never told apart on the wire: the Server-owned `session.compatible` is the only authority and gives it no policy.
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()), ...withProof(proofFor("welcome")) });
     this.syncPolicy(clientId);
-    this.#reconcileAutoUpdate();
+    // No Auto Update decision here: the Client replays its durable receipt only after it handles this welcome, so deciding now could retry a
+    // failed build. #onUpdateReceipt (or the next heartbeat, for a Client with no receipt) reconciles once that state has been observed.
     return session;
   }
 
