@@ -7,6 +7,7 @@ export const CLIENTS_CSS = `
 .cl-detail{color:var(--c-muted);font-size:var(--fs-sm)}
 .cl-detail[data-tone="warn"]{color:var(--c-warn)}
 .cl-detail[data-tone="bad"]{color:var(--c-bad)}
+.cl-detail[data-tone="ok"]{color:var(--c-ok)}
 .cl-fp{display:flex;align-items:center;gap:var(--sp-2);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--fs-sm);white-space:nowrap}
 .cl-name{width:100%;min-width:9rem;font:inherit;font-weight:700;padding:.15rem .4rem}
 .cl-actions{display:flex;align-items:center;gap:var(--sp-3)}
@@ -23,11 +24,14 @@ const shortFingerprint = (f) => (f ? f.slice(0, 16) + "…" + f.slice(-8) : "—
 const operationalState = (c) => (!c.online ? "offline" : c.compatible === false ? "incompatible" : "online");
 const STATE_PILL = { online: ["Online", "ok", "wifi"], offline: ["Offline", "bad", "wifi-off"], incompatible: ["Incompatible", "warn", "alert"] };
 const AUTH_LABEL = { enabled: "Enabled", pending: "Pending approval", disabled: "Disabled" };
-const UPDATE_TEXT = { requested: "Update requested…", staging: "Updating: downloading and verifying…", restarting: "Update applied: the Client is restarting", failed: "Update failed" };
+const UPDATE_TEXT = { requested: "Update requested…", staging: "Updating: downloading and verifying…", restarting: "Restarting: update result pending", applied: "Update applied", failed: "Update failed" };
+// The two update facts the Server keeps apart: the attempt in flight, and the last terminal result (shown as the previous one while a retry runs). The browser renders them and infers nothing.
+const currentUpdateText = (u) => UPDATE_TEXT[u.state];
+const lastUpdateText = (u, retrying) => (retrying ? "Previous update " + u.state : UPDATE_TEXT[u.state]) + (u.reason ? ": " + u.reason : "");
 const FILTERS = [["all", "All statuses"], ["online", "Online"], ["offline", "Offline"], ["incompatible", "Incompatible"], ["pending", "Pending"], ["enabled", "Enabled"], ["disabled", "Disabled"]];
 const matchesFilter = (c, filter) => filter === "all" || c.status === filter || operationalState(c) === filter;
 // Update is offered only when the Server's own facts allow it; the Server still decides and its refusal is shown as it is.
-const updateBlock = (c) => (!c.online ? "The Client must be online to update" : c.update_available === false ? "Already up to date" : c.update_capable !== true ? "This build cannot update remotely: run the installer once on the host" : c.update && c.update.state !== "failed" ? "An update is already in progress" : "");
+const updateBlock = (c) => (!c.online ? "The Client must be online to update" : c.update_available === false ? "Already up to date" : c.update_capable !== true ? "This build cannot update remotely: run the installer once on the host" : c.current_update ? "An update is already in progress" : "");
 // How long the live session has lasted (connected_since is set when it was admitted; the heartbeat last_seen would restart this on every ping).
 const since = (ms) => ago(ms).replace(" ago", "");
 const matchesSearch = (c, text) => !text || [c.display_name, c.client_id, c.machine_uuid, c.fingerprint].some((v) => (v || "").toLowerCase().includes(text));
@@ -77,7 +81,8 @@ async function renderClients(view) {
     const conn = UI.el("div", { className: "cl-conn" }, UI.el("div", { className: "cl-conn-state" }, UI.pill(label, tone, icon)),
       state === "incompatible" ? detail("Build " + c.client_build + " is not accepted by this Server (build " + serverBuild + "): update it to manage it again", "warn") : "",
       detail((c.online ? "Connected · " + (c.connected_since ? since(c.connected_since) : "—") : "Last seen " + (c.last_seen ? ago(c.last_seen) : "—")) + (c.client_build && state !== "incompatible" ? " · build " + c.client_build : "")),
-      c.update ? detail(UPDATE_TEXT[c.update.state] + (c.update.reason ? ": " + c.update.reason : ""), c.update.state === "failed" ? "bad" : "warn") : "");
+      c.current_update ? detail(currentUpdateText(c.current_update), "warn") : "",
+      c.last_update_result ? detail(lastUpdateText(c.last_update_result, !!c.current_update), c.last_update_result.state === "failed" ? "bad" : "ok") : "");
     const fp = UI.el("div", { className: "cl-fp" }, UI.el("span", { textContent: shortFingerprint(c.fingerprint), title: c.fingerprint || "" }),
       c.fingerprint ? UI.iconButton("copy", "Copy fingerprint", () => navigator.clipboard.writeText(c.fingerprint).then(() => say("saved", "Fingerprint copied · " + clock()))) : "");
     const toggle = UI.toggle(AUTH_LABEL[c.status], c.status === "enabled", (on) => act(base + (on ? "/enable" : "/disable"), on ? "Enabled" : "Disabled"));

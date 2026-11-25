@@ -46,6 +46,7 @@ test("handshake: a valid hello parses; empty identity or build, malformed key or
     }
   }
   assert.equal(ClientHello.safeParse({ ...hello, extra: 1 }).success, false);
+  assert.equal(ClientHello.safeParse({ ...hello, update_protocol: 2 }).success, false, "no second version axis: update_protocol is not a hello field");
   assert.equal(ClientHello.safeParse({ ...hello, kind: "request" }).success, false);
   assert.equal(ClientHello.safeParse({ ...hello, credential: CRED }).success, false, "the shared Client credential no longer exists on the wire");
   assert.equal(ClientHello.safeParse({ ...hello, public_key: "A".repeat(44) }).success, false, "a public key is exactly 32 bytes");
