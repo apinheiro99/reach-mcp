@@ -1,5 +1,5 @@
 // The Projects view: six counters, a search and Client filter, and one row per Client project (Client, Project, Root Path, Policy,
-// Access), built only from UI.* components. The Server owns validity: every edit is autosaved (~500 ms, no Save button) through the one
+// Access), built only from UI.* components. The Server owns validity: every table edit is autosaved (~500 ms) and the access drawer saves on Save changes, through the one
 // config endpoint and the Server's refusal is shown as it is. Access reuses the Clients lifecycle endpoint; the view never touches a key.
 export const PROJECTS_CSS = `
 .pj-root{position:relative;display:flex;align-items:center;min-width:14rem}
@@ -97,30 +97,31 @@ async function renderProjects(view) {
   const host = UI.el("div", {});
   document.body.append(host);
 
-  // The access drawer edits the working project directly: every change writes the canonical policy back and autosaves through the same debounce.
+  // The access drawer edits an isolated draft of the one canonical policy (the explicit exception to autosave): nothing touches the project or the Server until Save changes.
   function openAccess(c, p) {
     const draft = { name: p.project_id, root: p.physical_root, tab: "access", ...rulesOf(p) };
     const close = () => { host.replaceChildren(); drawTable(); };
     const body = UI.el("div", { className: "stack" });
     const current = () => policyOf(p, draft.name, draft.root, draft.defaultMode, draft.rules);
     const tone = (perm) => (perm === "deny" ? "bad" : "ok");
-    const apply = () => {
+    const commit = async () => {
       const next = current();
       for (const k of ["writable_globs", "deny_globs", "allow_globs"]) delete p[k];
       Object.assign(p, next);
-      change();
+      await save();
+      close();
     };
     const pathBox = (value, onInput) => { const input = UI.input({ kind: "path", value, placeholder: "/absolute/path/on/the/client", onInput }); input.dataset.root = "1"; return UI.el("div", { className: "pj-root" }, UI.icon("folder"), input); };
     function accessTab() {
-      const defaults = UI.select(MODES, draft.defaultMode, (v) => { draft.defaultMode = v; apply(); redraw(); });
+      const defaults = UI.select(MODES, draft.defaultMode, (v) => { draft.defaultMode = v; redraw(); });
       const ruleRows = draft.rules.map((r, i) => {
-        const perm = UI.select(draft.defaultMode === "read_write" ? RULE_PERMS.filter(([v]) => v !== "write") : RULE_PERMS, r.perm, (v) => { r.perm = v; perm.dataset.tone = tone(v); apply(); });
+        const perm = UI.select(draft.defaultMode === "read_write" ? RULE_PERMS.filter(([v]) => v !== "write") : RULE_PERMS, r.perm, (v) => { r.perm = v; perm.dataset.tone = tone(v); });
         perm.dataset.tone = tone(r.perm);
-        const path = UI.el("div", { className: "rule-path" }, UI.icon("folder"), UI.input({ kind: "path", value: r.path, placeholder: "temp/** or docs/readme.md", onInput: (v) => { r.path = v; apply(); } }));
-        return [String(i + 1), path, perm, UI.iconButton("trash", "Remove this rule", () => { draft.rules.splice(i, 1); apply(); redraw(); })];
+        const path = UI.el("div", { className: "rule-path" }, UI.icon("folder"), UI.input({ kind: "path", value: r.path, placeholder: "temp/** or docs/readme.md", onInput: (v) => { r.path = v; } }));
+        return [String(i + 1), path, perm, UI.iconButton("trash", "Remove this rule", () => { draft.rules.splice(i, 1); redraw(); })];
       });
       return [
-        UI.card({ title: "Project configuration", children: [UI.el("div", { className: "form-grid" }, UI.field("Project name", UI.input({ value: draft.name, placeholder: "project-id", onInput: (v) => { draft.name = v; apply(); } })), UI.field("Root (base path on the client)", pathBox(draft.root, (v) => { draft.root = v; apply(); }))), UI.field("Default access mode", defaults),
+        UI.card({ title: "Project configuration", children: [UI.el("div", { className: "form-grid" }, UI.field("Project name", UI.input({ value: draft.name, placeholder: "project-id", onInput: (v) => { draft.name = v; } })), UI.field("Root (base path on the client)", pathBox(draft.root, (v) => { draft.root = v; }))), UI.field("Default access mode", defaults),
           UI.el("p", { className: "hint", textContent: "Applies to the whole project. Read / Write makes the whole root writable; Read Only lets the Read / Write rules below open only the paths they name." })] }),
         UI.card({ title: "Access rules", subtitle: "Exact files or globs relative to the root. The order of rules does not matter; the Server decides which rule applies (Deny, then Allow, then the built-in protections).", children: [
           UI.el("div", { className: "actions" }, UI.button("Add rule", { variant: "accent", icon: "plus", onClick: () => { draft.rules.push({ path: "", perm: draft.defaultMode === "read_write" ? "deny" : "write" }); redraw(); } })),
@@ -131,7 +132,7 @@ async function renderProjects(view) {
           UI.el("li", { textContent: "Globs: ** crosses folders, * stays in one folder. An Allow rule explicitly opens a path the built-in protections would deny (for example .env); the .git store always stays closed." }),
           UI.el("li", { textContent: "Write actions (create, edit, delete) work inside the root; delete moves the file to .lixeira and never unlinks." }))] })];
     }
-    const configTab = () => [UI.card({ title: "Canonical policy", subtitle: "The exact object the Client enforces (read-only view of what autosave writes).", children: [UI.el("pre", { className: "json-view", textContent: JSON.stringify(current(), null, 2) })] })];
+    const configTab = () => [UI.card({ title: "Canonical policy", subtitle: "The exact object the Client enforces (read-only view of what Save changes writes).", children: [UI.el("pre", { className: "json-view", textContent: JSON.stringify(current(), null, 2) })] })];
     const detailsTab = () => [UI.card({ title: "Details", children: [
       UI.row({ icon: "user", title: "Client", detail: c.display_name || c.client_id, aside: c.client_id }),
       UI.row({ icon: "box", title: "Project", detail: draft.name || "(new)" }),
@@ -144,7 +145,7 @@ async function renderProjects(view) {
     }
     redraw();
     host.replaceChildren(UI.drawer({ icon: "folder", title: "Project: " + (p.project_id || "new"), subtitle: "Client: " + (c.display_name || c.client_id), onClose: close, children: [body],
-      footer: [UI.el("span", { className: "hint", textContent: "Changes are autosaved." }), UI.button("Close", { onClick: close })] }));
+      footer: [UI.button("Cancel", { onClick: close }), UI.button("Save changes", { variant: "accent", onClick: commit })] }));
   }
 
   const row = ({ c, p }) => {
