@@ -87,6 +87,8 @@ export class ClientConnectionRegistry {
   readonly #lastHeard = new Map<string, number>();
   /** The Client build of each Client's latest session, kept after the session ends so the version stays observable offline. */
   readonly #lastBuild = new Map<string, string>();
+  /** The one unresolved Auto Update attempt (in memory, owned here; the attempt itself lives in UpdateLifecycle): no second automatic Client starts before it is applied and healthy on the canonical build. */
+  #auto: { clientId: string; targetBuild: string } | null = null;
   readonly #options: ConnectionOptions;
   readonly #settings: () => RuntimeSettings;
   readonly #maxPending: number;
@@ -171,6 +173,7 @@ export class ClientConnectionRegistry {
   /** Call after a known config reload. */
   syncAllPolicies(): void {
     for (const clientId of this.#sessions.keys()) this.syncPolicy(clientId);
+    this.#reconcileAutoUpdate();
   }
 
   /** Small request totals for the health snapshot. */
@@ -224,26 +227,58 @@ export class ClientConnectionRegistry {
    * that needs it; refused for a Client already on the Server's build (nothing to do) and for a Client that did not say it can update (a pre-change Client has no handler and would drop the socket) and
    * while another update of the same Client is in flight. Nothing is queued: an offline Client is refused.
    */
-  requestUpdate(clientId: string): UpdateResult {
-    const session = this.#sessions.get(clientId);
-    if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return this.#recordUpdate(clientId, "offline");
-    if (session.build === this.#options.serverBuild) return this.#recordUpdate(clientId, "current");
-    if (!session.updateCapable) return this.#recordUpdate(clientId, "unsupported");
-    if (this.#updates.hasInFlight(clientId)) return this.#recordUpdate(clientId, "busy");
+  requestUpdate(clientId: string, actor: "admin" | "system" = "admin"): UpdateResult {
+    const refusal = this.#updateRefusal(clientId);
+    if (refusal) return this.#recordUpdate(clientId, refusal, actor);
+    const session = this.#sessions.get(clientId)!;
     const updateId = this.#newId("update");
     this.#updates.begin(clientId, session, { update_id: updateId, from_build: session.build, target_build: this.#options.serverBuild });
     if (!this.#send(session, { kind: "update", update_id: updateId })) {
       this.#updates.discard(clientId, updateId);
-      return this.#recordUpdate(clientId, "offline");
+      return this.#recordUpdate(clientId, "offline", actor);
     }
-    return this.#recordUpdate(clientId, "accepted");
+    return this.#recordUpdate(clientId, "accepted", actor);
   }
 
-  /** The one place an update request is logged and audited, with the Client id and the result only. */
-  #recordUpdate(clientId: string, result: UpdateResult): UpdateResult {
-    this.#logger.log(result === "accepted" ? "RUNNING" : "WARNING", "connections", `client update ${result} client_id=${clientId}${this.#who(clientId)}`);
-    this.#audit.record({ actor: "admin", action: "client_update", client_id: clientId, result });
+  /** Why a Client cannot be asked to update now, or null when it can: the one eligibility rule of the manual and the automatic path. */
+  #updateRefusal(clientId: string): UpdateResult | null {
+    const session = this.#sessions.get(clientId);
+    if (!session || this.#isStale(session) || this.#options.config.admissionOf(clientId)?.status !== "enabled") return "offline";
+    if (session.build === this.#options.serverBuild) return "current";
+    if (!session.updateCapable) return "unsupported";
+    return this.#updates.hasInFlight(clientId) ? "busy" : null;
+  }
+
+  /** The one place an update request is logged and audited, with the Client id and the result only; `system` marks an Auto Update trigger. */
+  #recordUpdate(clientId: string, result: UpdateResult, actor: "admin" | "system"): UpdateResult {
+    this.#logger.log(result === "accepted" ? "RUNNING" : "WARNING", "connections", `client update ${result} client_id=${clientId}${actor === "system" ? " auto" : ""}${this.#who(clientId)}`);
+    this.#audit.record({ actor, action: "client_update", client_id: clientId, result });
     return result;
+  }
+
+  /**
+   * Auto Update, event-driven (no timer): called when something that can change eligibility happens. It starts at most ONE opted-in Client through requestUpdate, in config order,
+   * and starts nothing while an attempt is in flight, while the previous automatic one is not applied AND healthy on the canonical build, or after a terminal failure for this
+   * build (no automatic retry; a later successful result or a new canonical build lifts it). It owns no attempt state: UpdateLifecycle and the sessions answer every question.
+   */
+  #reconcileAutoUpdate(): void {
+    const build = this.#options.serverBuild;
+    const clients = this.#options.config.snapshot().clients;
+    if (this.#auto?.targetBuild !== build) this.#auto = null;
+    if (this.#auto) {
+      const { current, last } = this.#updates.view(this.#auto.clientId);
+      const session = this.#sessions.get(this.#auto.clientId);
+      if (current || last?.state !== "applied" || last.target_build !== build || session?.build !== build || !session.compatible || this.#isStale(session)) return;
+      this.#auto = null;
+    }
+    if (clients.some(({ client_id }) => this.#updates.hasInFlight(client_id) || this.#hasFailedFor(client_id, build))) return;
+    const next = clients.find(({ client_id, auto_update }) => auto_update && !this.#updateRefusal(client_id));
+    if (next && this.requestUpdate(next.client_id, "system") === "accepted") this.#auto = { clientId: next.client_id, targetBuild: build };
+  }
+
+  #hasFailedFor(clientId: string, build: string): boolean {
+    const last = this.#updates.view(clientId).last;
+    return last?.state === "failed" && last.target_build === build;
   }
 
   /** The build the Client reported on its latest connection, or null when it has never connected since the Server started. */
@@ -419,6 +454,7 @@ export class ClientConnectionRegistry {
     // incompatible Client is never told apart on the wire: the Server-owned `session.compatible` is the only authority and gives it no policy.
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()), ...withProof(proofFor("welcome")) });
     this.syncPolicy(clientId);
+    this.#reconcileAutoUpdate();
     return session;
   }
 
@@ -498,6 +534,7 @@ export class ClientConnectionRegistry {
   #onUpdateState(session: Session, report: ClientUpdateState): void {
     if (this.#updates.progress(session.clientId, session, report) !== "recorded") return;
     this.#recordClientUpdate(session.clientId, report.state === "failed" ? `failed:${report.reason}` : report.state, report.state === "failed");
+    this.#reconcileAutoUpdate();
   }
 
   /** The terminal apply receipt: accepted on any authenticated session, so it survives a reconnect and a Server restart; a repeat changes and logs nothing, a conflict changes nothing. */
@@ -506,6 +543,7 @@ export class ClientConnectionRegistry {
     if (outcome === "duplicate") return;
     const result = outcome === "recorded" ? (receipt.state === "failed" ? `failed:${receipt.reason}` : receipt.state) : `receipt_${outcome}`;
     this.#recordClientUpdate(session.clientId, result, outcome !== "recorded" || receipt.state === "failed");
+    this.#reconcileAutoUpdate();
   }
 
   /** The one place a Client-reported update state is logged and audited, with the Client id and the result only. */

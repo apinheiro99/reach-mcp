@@ -916,3 +916,79 @@ test("update lifecycle: requested and staging die with their session and allow a
   assert.equal(back.frames.filter((f) => f.kind === "update").length, 0, "no second command was sent");
   await t.done();
 });
+
+const optIn = (t: { config: ServerConfigStore; registry: ClientConnectionRegistry }, ids: string[]) => {
+  t.config.applyEdit({ clients: t.config.snapshot().clients.map((c) => ({ ...c, auto_update: ids.includes(c.client_id) })) });
+  t.registry.syncAllPolicies();
+};
+const compatSrv = { isBuildCompatible: (b: string) => b.startsWith("ok-") || b === "srv-1" };
+const settle = () => new Promise((r) => setTimeout(r, 40));
+
+test("auto update: only an opted-in, outdated, update-capable Client is asked, and the config change that opts it in is the trigger", async () => {
+  const t = await setup(compatSrv);
+  const old = await t.connect({ extra: { update_capable: true } });
+  const current = await t.connect({ id: "desktop", identity: DESKTOP, build: "srv-1", extra: { update_capable: true } });
+  await until(() => old.frames.length === 3 && current.frames.length === 3, "admitted");
+  await settle();
+  assert.deepEqual([updateFrames(old).length, updateFrames(current).length], [0, 0], "opted out: nothing is sent");
+  optIn(t, ["laptop", "desktop", "off"]);
+  await until(() => updateFrames(old).length === 1, "the opted-in outdated Client is asked");
+  await settle();
+  assert.deepEqual([updateFrames(old).length, updateFrames(current).length], [1, 0], "a Client already on the canonical build and a disabled one are skipped, not failed");
+  await t.done();
+});
+
+test("auto update: one at a time; the next starts only after a durable applied receipt AND a healthy reconnect on the canonical build", async () => {
+  const t = await setup(compatSrv);
+  const first = await t.connect({ extra: { update_capable: true } });
+  const second = await t.connect({ id: "desktop", identity: DESKTOP, extra: { update_capable: true } });
+  await until(() => first.frames.length === 3 && second.frames.length === 3, "admitted");
+  optIn(t, ["laptop", "desktop"]);
+  await until(() => updateFrames(first).length === 1, "the first in config order is asked");
+  const id = updateIdOf(first);
+  updateState(first, id, { state: "staging" });
+  updateState(first, id, { state: "restarting" });
+  await until(() => t.registry.status().find((s) => s.client_id === "laptop")?.update?.state === "restarting", "restarting");
+  first.ws.close();
+  await first.closed;
+  await until(() => t.registry.status().length === 1, "first session ended");
+  const back = await t.connect({ build: "srv-1", extra: { update_capable: true } });
+  await until(() => back.frames.length === 3, "reconnected on the canonical build");
+  await settle();
+  assert.equal(updateFrames(second).length, 0, "a reconnect on the canonical build without a receipt is not success");
+  back.ws.send(JSON.stringify(receiptOf(id)));
+  await until(() => updateFrames(second).length === 1, "applied + healthy advances to the next Client");
+  await settle();
+  assert.equal(updateFrames(second).length, 1, "exactly one command");
+  await t.done();
+});
+
+test("auto update: a terminal failure pauses the rollout with no automatic retry, and a manual update is unchanged", async () => {
+  const t = await setup(compatSrv);
+  const first = await t.connect({ extra: { update_capable: true } });
+  const second = await t.connect({ id: "desktop", identity: DESKTOP, extra: { update_capable: true } });
+  await until(() => first.frames.length === 3 && second.frames.length === 3, "admitted");
+  optIn(t, ["laptop", "desktop"]);
+  await until(() => updateFrames(first).length === 1, "asked");
+  updateState(first, updateIdOf(first), { state: "failed", reason: "verification" });
+  await until(() => t.registry.status().find((s) => s.client_id === "laptop")?.update?.state === "failed", "failed");
+  t.registry.syncAllPolicies();
+  await settle();
+  assert.deepEqual([updateFrames(first).length, updateFrames(second).length], [1, 0], "no retry of the failed Client and no next Client");
+  assert.equal(t.registry.requestUpdate("desktop"), "accepted", "the manual path still works");
+  await until(() => updateFrames(second).length === 1, "manual command");
+  await t.done();
+});
+
+test("auto update: turning it off while an attempt is in flight neither cancels it nor sends anything", async () => {
+  const t = await setup(compatSrv);
+  const c = await t.connect({ extra: { update_capable: true } });
+  await until(() => c.frames.length === 3, "admitted");
+  optIn(t, ["laptop"]);
+  await until(() => updateFrames(c).length === 1, "asked");
+  optIn(t, []);
+  await settle();
+  assert.equal(t.registry.status()[0]!.update?.state, "requested", "the attempt is intact");
+  assert.equal(updateFrames(c).length, 1, "no extra frame");
+  await t.done();
+});
