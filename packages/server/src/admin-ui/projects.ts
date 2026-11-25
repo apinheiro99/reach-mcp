@@ -40,9 +40,12 @@ const filledProject = (p) => p.project_id.trim() !== "" && p.physical_root.trim(
 const sendable = (p) => !p._draft || filledProject(p);
 
 async function renderProjects(view) {
+  let candidate = null;
   const ui = { data: null, search: "", client: "all", dirty: false, rev: 0, timer: null, confirmed: new Set() };
   const proposalHost = UI.el("div", {});
   const proposals = renderProposals(proposalHost, () => load(true));
+  // While the drawer saves, its candidate stands in for the live project in what is checked and sent; nothing is applied until the Server accepts it.
+  const live = (p) => (candidate && p === candidate.p ? candidate.next : p);
   const rootKey = (c, p) => c.client_id + "/" + p.project_id + "@" + p.physical_root.trim();
   const stats = UI.el("div", {});
   const tableHost = UI.el("div", {});
@@ -67,21 +70,22 @@ async function renderProjects(view) {
     const rev = ui.rev;
     // A broad root is confirmed once, before anything is sent; cancelling reloads the Server state and emits no request. While a root field is
     // still being typed the check waits, because "/" is the first character of every absolute path.
-    const broad = ui.data.clients.flatMap((c) => c.projects.filter(sendable).filter((p) => isBroadRoot(p.physical_root) && !ui.confirmed.has(rootKey(c, p))).map((p) => ({ c, p })));
+    const broad = ui.data.clients.flatMap((c) => c.projects.map(live).filter(sendable).filter((p) => isBroadRoot(p.physical_root) && !ui.confirmed.has(rootKey(c, p))).map((p) => ({ c, p })));
     if (broad.length) {
-      if (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.root) { ui.timer = setTimeout(save, autosaveDebounceMs); return; }
-      if (!confirm("This grants the whole root (" + broad.map(({ p }) => p.physical_root.trim()).join(", ") + ") to the project. Every file under it becomes reachable, subject to the Access Rules. Continue?")) { await load(true); say("saved", "Not applied · " + clock()); return; }
+      if (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.root) { ui.timer = setTimeout(save, autosaveDebounceMs); return false; }
+      if (!confirm("This grants the whole root (" + broad.map(({ p }) => p.physical_root.trim()).join(", ") + ") to the project. Every file under it becomes reachable, subject to the Access Rules. Continue?")) { if (!candidate) await load(true); say("saved", "Not applied · " + clock()); return false; }
       for (const { c, p } of broad) ui.confirmed.add(rootKey(c, p));
     }
     const clients = ui.data.clients.map((c) => ({ client_id: c.client_id, ...(c.display_name ? { display_name: c.display_name } : {}), enabled: c.enabled,
-      projects: c.projects.filter(sendable).map(({ _draft, ...p }) => p) }));
+      projects: c.projects.map(live).filter(sendable).map(({ _draft, ...p }) => p) }));
     say("saving", "Saving…");
     const r = await api("PUT", "/admin/api/config", { clients });
-    if (!r.ok) { say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; ")); return; }
+    if (!r.ok) { say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; ")); return false; }
     if (rev === ui.rev) ui.dirty = false;
     for (const c of ui.data.clients) for (const p of c.projects) if (filledProject(p)) delete p._draft;
     say("saved", "Autosaved · " + clock());
     drawStats();
+    return true;
   }
 
   async function setAccess(c, on) {
@@ -105,10 +109,13 @@ async function renderProjects(view) {
     const current = () => policyOf(p, draft.name, draft.root, draft.defaultMode, draft.rules);
     const tone = (perm) => (perm === "deny" ? "bad" : "ok");
     const commit = async () => {
-      const next = current();
-      for (const k of ["writable_globs", "deny_globs", "allow_globs"]) delete p[k];
+      const { _draft, ...next } = current();
+      candidate = { p, next };
+      const saved = await save();
+      candidate = null;
+      if (!saved) return;
+      for (const k of ["_draft", "writable_globs", "deny_globs", "allow_globs"]) delete p[k];
       Object.assign(p, next);
-      await save();
       close();
     };
     const pathBox = (value, onInput) => { const input = UI.input({ kind: "path", value, placeholder: "/absolute/path/on/the/client", onInput }); input.dataset.root = "1"; return UI.el("div", { className: "pj-root" }, UI.icon("folder"), input); };
