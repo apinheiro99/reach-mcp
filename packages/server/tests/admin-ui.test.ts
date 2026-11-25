@@ -141,7 +141,8 @@ test("Clients screen: the approved reference as structure: six counters in order
   assert.equal(clients.match(/UI\.search\(/g)?.length, 1, "one search field");
   assert.equal(clients.match(/UI\.select\(/g)?.length, 1, "one status filter");
   assert.ok(clients.includes('["Client", "Status", "Public Key (Fingerprint)", "Actions"]'), "Status is the one operational column; the administrative Enabled pill column is gone");
-  assert.equal(clients.match(/UI\.toggle\(/g)?.length, 1, "one Enable/Disable toggle owner");
+  assert.equal(clients.match(/UI\.toggle\(/g)?.length, 2, "one Enable/Disable toggle and one per-Client Auto Update toggle");
+  assert.equal(clients.match(/UI\.toggle\(AUTH_LABEL/g)?.length, 1, "one Enable/Disable toggle owner");
   assert.equal(clients.match(/UI\.button\("Rotate Key"/g)?.length, 1, "one Rotate Key action");
   assert.ok(/tone: c\.status === "pending" \? "warn"/.test(clients) && /Awaiting approval\./.test(clients), "the Pending row is highlighted and says why");
   assert.ok(/STATE_PILL = \{ online: \["Online", "ok"/.test(clients) && /UI\.pill\(label, tone, icon\)/.test(clients), "status uses the canonical pill");
@@ -253,6 +254,19 @@ test("Clients actions: Update Client only when the Server's facts allow it and t
   assert.ok(!/client_build\s*[!=]==?\s*serverBuild|update_available\s*=[^=]/.test(clients), "the browser compares no build");
   for (const text of ["Update requested\u2026", "Update failed"]) assert.ok(clients.includes(text.replace("\\u2026", "\u2026")), text);
   assert.ok(/api\("POST", path\)/.test(clients) && /r\.json\.problems \|\| \[r\.json\.result/.test(clients), "a Server refusal (409/422) is shown as it is");
+});
+
+test("Clients Auto Update: one per-Client toggle on the shared primitive, a narrow PUT that reloads the Server's value, no global control and no browser rollout logic", () => {
+  const clients = uiSource["clients.ts"] as string;
+  assert.equal(clients.match(/UI\.toggle\("Auto Update"/g)?.length, 1, "one Auto Update toggle per row");
+  assert.ok(/UI\.toggle\("Auto Update", c\.auto_update === true, \(on\) => saveAutoUpdate\(c\.client_id, on\)\)/.test(clients), "checked from the Server's c.auto_update");
+  assert.ok(/api\("PUT", "\/admin\/api\/clients\/" \+ encodeURIComponent\(clientId\) \+ "\/auto-update", \{ auto_update: on \}\)/.test(clients), "the narrow PUT with exactly { auto_update }");
+  assert.ok(/async function saveAutoUpdate[\s\S]*?await load\(true\);\s*\}/.test(clients), "success and failure both reload the canonical value");
+  assert.ok(!/\/admin\/api\/config/.test(clients), "the Clients screen never rewrites the whole configuration");
+  assert.equal(clients.match(/UI\.button\("Update Client"/g)?.length, 1, "manual Update Client stays, unchanged");
+  assert.ok(!/update\.disabled = [^;]*auto_update/.test(clients), "Auto Update never disables the manual update");
+  assert.ok(!/client_build\s*[!=]==?\s*serverBuild|setInterval|canary/i.test(clients), "no build comparison, polling scheduler or canary in the browser");
+  for (const [file, text] of Object.entries(uiSource)) if (file !== "clients.ts") assert.ok(!/Auto Update/.test(text as string), `${file} has no global Auto Update control`);
 });
 
 test("shared primitives: sticky table header and semantic toggle live once in components.ts and no view duplicates them", () => {

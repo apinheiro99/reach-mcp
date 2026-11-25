@@ -61,6 +61,15 @@ async function renderClients(view) {
     else say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; "));
   }
 
+  // The policy is Server-owned: on success and on failure the canonical value is reloaded, so the toggle never shows what the Server did not persist.
+  async function saveAutoUpdate(clientId, on) {
+    say("saving", "Saving…");
+    const r = await api("PUT", "/admin/api/clients/" + encodeURIComponent(clientId) + "/auto-update", { auto_update: on });
+    if (r.ok) say("saved", "Auto Update " + (on ? "on" : "off") + " · " + clock());
+    else say("error", "Not saved: " + (r.json.problems || ["unexpected error"]).join("; "));
+    await load(true);
+  }
+
   function scheduleDisplayNameSave(clientId, displayName) {
     ui.editing = true;
     say("editing", "Editing…");
@@ -87,6 +96,8 @@ async function renderClients(view) {
       c.fingerprint ? UI.iconButton("copy", "Copy fingerprint", () => navigator.clipboard.writeText(c.fingerprint).then(() => say("saved", "Fingerprint copied · " + clock()))) : "");
     const toggle = UI.toggle(AUTH_LABEL[c.status], c.status === "enabled", (on) => act(base + (on ? "/enable" : "/disable"), on ? "Enabled" : "Disabled"));
     toggle.title = c.status === "enabled" ? "Disable this client" : "Enable this client";
+    const autoUpdate = UI.toggle("Auto Update", c.auto_update === true, (on) => saveAutoUpdate(c.client_id, on));
+    autoUpdate.title = c.auto_update === true ? "Automatically update this Client to the Server canonical build" : "Manual updates only";
     const update = UI.button("Update Client", { icon: "refresh", onClick: () => { update.disabled = true; update.title = "An update is already in progress"; act(base + "/update", "Update requested: the Client downloads, verifies and restarts (about 20 s)"); } });
     const blocked = updateBlock(c);
     if (blocked) { update.disabled = true; update.title = blocked; }
@@ -94,7 +105,7 @@ async function renderClients(view) {
     if (state !== "online") { rotate.disabled = true; rotate.title = state === "incompatible" ? "An incompatible client cannot rotate its key: update it first" : "The client must be online to rotate its key"; }
     return {
       tone: c.status === "pending" ? "warn" : undefined,
-      cells: [name, conn, fp, UI.el("div", { className: "cl-actions" }, toggle, update, rotate)],
+      cells: [name, conn, fp, UI.el("div", { className: "cl-actions" }, toggle, autoUpdate, update, rotate)],
       note: c.status === "pending" ? UI.el("div", { className: "cl-note" }, UI.icon("info"), UI.el("strong", { textContent: "Awaiting approval." }), "Enable the client to grant access to projects.") : undefined,
     };
   };
