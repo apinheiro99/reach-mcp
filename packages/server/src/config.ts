@@ -9,7 +9,7 @@ import { hashCredential } from "./auth.ts";
 import { publicKeyFingerprint } from "@reach-mcp/shared/identity";
 import { LOG_LEVELS } from "./logging.ts";
 import { RUNTIME_DEFAULTS, RuntimeSettings } from "@reach-mcp/shared/runtime-settings";
-import { ClientId, EffectiveProjectPolicy, MachineUuid, PublicKey } from "@reach-mcp/shared/wire";
+import { ClientId, EffectiveProjectPolicy, MachineUuid, POLICY_SYNC_MAX_PROJECTS, PublicKey } from "@reach-mcp/shared/wire";
 
 const ClientDisplayNameUpdate = z.strictObject({ display_name: z.string() });
 
@@ -35,7 +35,7 @@ const ClientEntry = z.strictObject({
   next_public_key: PublicKey.optional(),
   /** The non-secret Machine UUID of this Client's OS machine, bound once by an authenticated Client. Server-owned: correlation only, never edited by a human and never authentication. */
   machine_uuid: MachineUuid.optional(),
-  projects: z.array(EffectiveProjectPolicy).max(200),
+  projects: z.array(EffectiveProjectPolicy).max(POLICY_SYNC_MAX_PROJECTS),
 });
 
 /** Size, retention and the operational threshold of the logs; their one owner is this config. The audit trail ignores the level. */
