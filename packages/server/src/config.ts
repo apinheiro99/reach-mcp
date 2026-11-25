@@ -35,6 +35,8 @@ const ClientEntry = z.strictObject({
   next_public_key: PublicKey.optional(),
   /** The non-secret Machine UUID of this Client's OS machine, bound once by an authenticated Client. Server-owned: correlation only, never edited by a human and never authentication. */
   machine_uuid: MachineUuid.optional(),
+  /** Per-Client opt-in: ON lets the Server trigger the one canonical update automatically; OFF (the default, also for configs written before this field) is manual only. */
+  auto_update: z.boolean().default(false),
   projects: z.array(EffectiveProjectPolicy).max(POLICY_SYNC_MAX_PROJECTS),
 });
 

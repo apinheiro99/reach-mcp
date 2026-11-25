@@ -241,6 +241,24 @@ test("applyEdit: the first configuration needs a bearer, and validation errors n
   assert.equal(store.isActive(), true);
 });
 
+test("auto_update: legacy configs and new Pending Clients are OFF, true and false round-trip through applyEdit and a fresh reload, and a non-boolean is refused", () => {
+  const file = write(valid());
+  const store = new ServerConfigStore(file);
+  store.loadInitial();
+  assert.deepEqual(store.editableView().clients.map((c) => c.auto_update), [false, false], "a config written without the field loads OFF");
+  store.registerPendingClient("newbox", newIdentity().publicKey);
+  assert.equal(store.editableView().clients.find((c) => c.client_id === "newbox")?.auto_update, false, "a new Pending Client is OFF");
+  const flip = (id: string, auto_update: boolean) => store.applyEdit({ clients: store.snapshot().clients.map((c) => (c.client_id === id ? { ...c, auto_update } : c)) });
+  flip("laptop", true);
+  const reloaded = new ServerConfigStore(file);
+  reloaded.loadInitial();
+  assert.deepEqual(reloaded.editableView().clients.map((c) => [c.client_id, c.auto_update]), [["laptop", true], ["desktop", false], ["newbox", false]], "the stored value survives a fresh reload and touches only that Client");
+  assert.equal(reloaded.admissionOf("laptop")?.publicKey, MARKER_A, "keys are kept by the edit");
+  flip("laptop", false);
+  assert.equal(store.editableView().clients[0]?.auto_update, false);
+  assert.match(load({ ...valid(), clients: [{ ...valid().clients[0], auto_update: "yes" }] }), /auto_update/);
+});
+
 test("registerPendingClient: one atomic write of a new Pending Client with its public key, no project and no access; known ids and reused keys are refused", () => {
   const file = write(valid());
   const store = new ServerConfigStore(file);
