@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { ConfigError, hashCredential, ServerConfigStore, uniqueDisplayName } from "../src/index.ts";
 import { newIdentity } from "./identity-fixture.ts";
-import { PolicySync } from "@reach-mcp/shared/wire";
+import { POLICY_SYNC_MAX_PROJECTS, PolicySync } from "@reach-mcp/shared/wire";
 import { RUNTIME_DEFAULTS } from "@reach-mcp/shared/runtime-settings";
 
 /** An editable view's client without the two read-only facts the edit schema does not accept. */
@@ -60,6 +60,12 @@ test("a valid file loads; the same project name under two Clients is allowed; ro
   store.loadInitial();
   assert.equal(store.isActive(), true);
   assert.deepEqual(store.snapshot().clients.map((c) => [c.client_id, c.projects.map((p) => p.project_id)]), [["laptop", ["web", "api"]], ["desktop", ["web"]]]);
+});
+
+test("the per-Client project capacity is the shared PolicySync bound: exactly that many load, one more is refused", () => {
+  const many = (count: number) => ({ ...MCP, clients: [client("laptop", MARKER_A, Array.from({ length: count }, (_, i) => project(`p${i}`, `/srv/p${i}`)))] });
+  assert.equal(load(many(POLICY_SYNC_MAX_PROJECTS)), "");
+  assert.notEqual(load(many(POLICY_SYNC_MAX_PROJECTS + 1)), "");
 });
 
 test("strictness: unknown keys, malformed JSON, bad ids, relative roots, bad modes, globs, limits and digests are refused", () => {
