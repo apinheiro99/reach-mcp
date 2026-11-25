@@ -44,10 +44,10 @@ test("broad root: POSIX / and Windows drive roots need confirmation, ordinary ro
   for (const root of ["/srv/web", "C:\\work", "\\\\host\\share", "", "relative"]) assert.equal(lib.isBroadRoot(root), false, root);
 });
 
-test("Projects: the drawer autosaves with no Save or Cancel, and a broad root is confirmed before the PUT is sent", () => {
+test("Projects: table edits autosave, the drawer saves only on Save changes, and a broad root is confirmed before the PUT is sent", () => {
   const src = ui("projects.ts");
-  assert.ok(!/Save changes|"Cancel"/.test(src), "no modal Save/Cancel flow for ordinary edits");
-  assert.ok(/apply\(\)/.test(src) && /setTimeout\(save, autosaveDebounceMs\)/.test(src), "drawer edits apply to the working data and use the shared debounce");
+  assert.ok(/Save changes/.test(src) && /"Cancel"/.test(src), "the drawer has explicit Save changes / Cancel");
+  assert.ok(!/apply\(\)/.test(src) && /setTimeout\(save, autosaveDebounceMs\)/.test(src), "drawer edits stay in the draft; table edits keep the shared debounce");
   const save = src.slice(src.indexOf("async function save()"), src.indexOf("async function setAccess"));
   assert.ok(save.indexOf("isBroadRoot") !== -1 && save.indexOf("confirm(") !== -1 && save.indexOf("confirm(") < save.indexOf('api("PUT"'), "the confirmation precedes the request");
   assert.ok(/await load\(true\)/.test(save), "cancelling the confirmation reloads the Server state and sends nothing");
