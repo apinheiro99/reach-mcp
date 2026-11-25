@@ -113,7 +113,7 @@ export function uniqueDisplayName(base: string, taken: readonly (string | undefi
   return name;
 }
 
-export type PublicClient = { client_id: string; display_name?: string; enabled: boolean; projects: EffectiveProjectPolicy[] };
+export type PublicClient = { client_id: string; display_name?: string; enabled: boolean; auto_update: boolean; projects: EffectiveProjectPolicy[] };
 /** The one status of a Client: Pending (enrolled, never decided), Enabled or Disabled (a human decision). */
 export type ClientStatus = "pending" | "enabled" | "disabled";
 /** What the admin Clients screen reads of one Client: identity and authorization, never the key itself. */
@@ -262,7 +262,7 @@ export class ServerConfigStore {
 
   /** A copy of the active configuration without public keys. */
   snapshot(): { clients: PublicClient[] } {
-    const clients = this.#requireActive().clients.map(({ client_id, display_name, enabled, projects }) => ({ client_id, display_name, enabled, projects }));
+    const clients = this.#requireActive().clients.map(({ client_id, display_name, enabled, auto_update, projects }) => ({ client_id, display_name, enabled, auto_update, projects }));
     return structuredClone({ clients });
   }
 
