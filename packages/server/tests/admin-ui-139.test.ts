@@ -67,7 +67,7 @@ test("Proposal review: items are decided one by one through the Server endpoints
 test("Clients: Machine UUID, friendly name, build and liveness come from the Server data", () => {
   const src = ui("clients.ts");
   assert.ok(/c\.machine_uuid/.test(src) && /c\.client_build/.test(src) && /ago\(c\.last_seen\)/.test(src));
-  assert.equal(src.match(/UI\.toggle\(/g)?.length, 1);
+  assert.equal(src.match(/UI\.toggle\(/g)?.length, 2, "Enable/Disable plus the per-Client Auto Update toggle");
   assert.ok(!/delete|uninstall/i.test(src.replace(/display-name|deleted/g, "")), "Delete/Uninstall stays with Story #110");
 });
 
