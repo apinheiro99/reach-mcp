@@ -467,7 +467,8 @@ export class ClientConnectionRegistry {
     const session: Session = { clientId, socket, build, compatible, updateCapable: updateCapable === true, connectedSince: now, lastSeen: now, repeatedRefusal: false };
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
-    this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
+    // A retry of an already logged refusal adds nothing; its outcome is logged by #onPolicyResult when it changes.
+    if (!this.#policyRefusals.has(clientId)) this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
     // The welcome is the exact frame pre-change Clients already parse (their schema is strict and accepts only compatible=true), so an
     // incompatible Client is never told apart on the wire: the Server-owned `session.compatible` is the only authority and gives it no policy.
     this.#send(session, { kind: "welcome", server_build: this.#options.serverBuild, compatible: true, runtime: clientRuntimeOf(this.#settings()), ...withProof(proofFor("welcome")) });

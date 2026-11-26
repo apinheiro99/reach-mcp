@@ -1043,14 +1043,27 @@ test("policy refusal: kept per authenticated client across reconnects, cleared o
   assert.equal(t.registry.policyRefusal("desktop"), null);
   assert.equal((await t.registry.route("laptop", "web", { op: "fs_list" })).ok, false);
 
+  const connects = () => lines.filter((line) => line.includes("client connected client_id=laptop")).length;
+  assert.equal(connects(), 1, "a normal admission is logged");
+  for (const occurrences of [2, 3]) {
+    const logged = lines.length;
+    const retry = await t.connect();
+    await until(() => retry.frames.length === 3, "retry admitted");
+    retry.ws.send(JSON.stringify(refused));
+    await until(() => t.registry.policyRefusal("laptop")?.occurrences === occurrences, "counted");
+    retry.ws.close();
+    await until(() => t.registry.status().length === 0, "retry dropped");
+    assert.deepEqual(lines.slice(logged), [], "an identical retry cycle writes no line at all");
+  }
+
   const second = await t.connect();
   await until(() => second.frames.length === 3, "reconnected");
-  assert.deepEqual(t.registry.policyRefusal("laptop"), expected, "a reconnect alone clears nothing");
+  assert.deepEqual(t.registry.policyRefusal("laptop"), { ...expected, occurrences: 3 }, "a reconnect alone clears nothing");
   const disconnects = () => lines.filter((line) => line.includes("client disconnected")).length;
   const before = disconnects();
   t.clock.advance(50);
   second.ws.send(JSON.stringify(refused));
-  await until(() => t.registry.policyRefusal("laptop")?.occurrences === 2, "counted again");
+  await until(() => t.registry.policyRefusal("laptop")?.occurrences === 4, "counted again");
   assert.equal(t.registry.policyRefusal("laptop")!.refused_at, 1050);
   second.ws.close();
   await until(() => t.registry.status().length === 0, "dropped again");
@@ -1075,6 +1088,7 @@ test("policy refusal: kept per authenticated client across reconnects, cleared o
 
   const last = await t.connect();
   await until(() => last.frames.length === 3, "last session");
+  assert.equal(connects(), 2, "after the recovery a normal admission is logged again, and none while the refusal stood");
 
   last.ws.send(JSON.stringify({ ...refused, message: "free text" }));
   await last.closed;
