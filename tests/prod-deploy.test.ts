@@ -4,11 +4,11 @@ import { Buffer } from "node:buffer";
 import { test } from "node:test";
 import { createServer } from "node:http";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync , symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { defaultDeps, deploy, parseArgs, rollback, status, type Deps, type Options } from "../deploy/prod/deploy.ts";
+import { bootstrapPrivateRoot, defaultDeps, deploy, parseArgs, rollback, status, type Deps, type Options } from "../deploy/prod/deploy.ts";
 import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS, type Untrusted } from "../scripts/release/manifest.ts";
 
 const base = mkdtempSync(path.join(tmpdir(), "reach-deploy-"));
@@ -563,4 +563,46 @@ test("deploy and rollback refuse to switch a running deployment to another priva
   await assert.rejects(() => rollback(opts(w, "", state, { privatePath: elsewhere }), w.deps), /refusing to switch/);
   assert.equal(w.log.length, 0);
   assert.ok(!existsSync(elsewhere), "the other root was not even created");
+});
+
+test("bootstrap creates only the missing private root for the container user and deployer group, and a following deploy accepts it", async () => {
+  const me = process.getuid!();
+  const gid = process.getgid!();
+  const root = path.join(base, `boot-${counter++}`);
+  const prepare = () => bootstrapPrivateRoot({ privatePath: root, deployerGid: gid, containerUid: me }, { uid: () => 0 });
+  assert.deepEqual(prepare(), { command: "bootstrap", private_path: root, result: "created", uid: me, gid, mode: "770" });
+  writeFileSync(path.join(root, "config.json"), "{}");
+  assert.equal(prepare().result, "ready");
+  assert.equal(readFileSync(path.join(root, "config.json"), "utf8"), "{}");
+  const w = world();
+  assert.equal((await deploy(opts(w, make("b1").dir, stateDir(), { privatePath: root }), w.deps)).exit, 0);
+});
+
+test("bootstrap refuses an unprivileged caller, a missing parent and any unsuitable existing path, without changing it", () => {
+  const me = process.getuid!();
+  const gid = process.getgid!();
+  const run = (root: string, extra: Partial<Options> = {}, uid = 0) => () => bootstrapPrivateRoot({ privatePath: root, deployerGid: gid, containerUid: me, ...extra }, { uid: () => uid });
+  const missing = path.join(base, `boot-${counter++}`);
+  assert.throws(run(missing, {}, 988), /must run as root/);
+  assert.throws(run(path.join(missing, "nested")), /parent directory must already exist/);
+  // A root that cannot be handed over is removed again instead of staying half prepared.
+  if (me !== 0) assert.throws(run(missing, { containerUid: me + 7 }), /is not ready \(EPERM\)/);
+  assert.ok(!existsSync(missing));
+  const closed = path.join(base, `boot-${counter++}`);
+  mkdirSync(closed, { mode: 0o700 });
+  assert.throws(run(closed), /mode 700/);
+  assert.throws(run(closed, { containerUid: me + 7 }), new RegExp(`expected owner ${me + 7}`));
+  assert.throws(run(closed, { deployerGid: gid + 7 }), new RegExp(`group ${gid + 7} with`));
+  assert.equal(statSync(closed).mode & 0o777, 0o700);
+  const link = path.join(base, `boot-${counter++}`);
+  symlinkSync(closed, link);
+  assert.throws(run(link), /is not ready/);
+  assert.throws(run(NOT_A_DIR), /is not ready/);
+});
+
+test("bootstrap arguments: a numeric deployer group and a private path are required, nothing else", () => {
+  assert.deepEqual(parseArgs(["bootstrap", "--private-path", "/p", "--deployer-gid", "989"]), { command: "bootstrap", privatePath: "/p", deployerGid: 989 });
+  assert.throws(() => parseArgs(["bootstrap", "--private-path", "/p"]), /missing --deployer-gid/);
+  assert.throws(() => parseArgs(["bootstrap", "--private-path", "/p", "--deployer-gid", "runner"]), /numeric group id/);
+  assert.throws(() => parseArgs(["bootstrap", "--private-path", "", "--deployer-gid", "1"]), /--private-path must not be empty/);
 });
