@@ -242,3 +242,22 @@ test("disable and removal boundary: disabled gives no inspector and core never i
   assert.deepEqual([...own.matchAll(/from "(@reach-mcp\/[^"]+)"/g)].map((m) => m[1]), ["@reach-mcp/shared/filesystem"]);
   assert.deepEqual([...own.matchAll(/from "(\.\.[^"]*)"/g)].map((m) => m[1]), []);
 });
+
+test("a project owned by another user is inspected, trusting only the configured root", { skip: process.platform === "win32" }, async () => {
+  // Git's own test switch makes every repository look foreign; a PATH shim sets it because the child env is sanitized.
+  const shimDir = mkdtempSync(path.join(tmpdir(), "reach-git-shim-"));
+  const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const shim = path.join(shimDir, "git");
+  writeFileSync(shim, `#!/bin/sh\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec "${realGit}" "$@"\n`);
+  chmodSync(shim, 0o755);
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${shimDir}${path.delimiter}${originalPath}`;
+  try {
+    assert.throws(() => execFileSync("git", ["-C", root, "status"], { env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, stdio: "pipe" }), /dubious ownership/);
+    assert.equal((await new GitInspector({ root }).status()).branch?.startsWith("main"), true);
+    // A subdirectory as root does not extend trust to the repository above it.
+    await assert.rejects(new GitInspector({ root: path.join(root, "src") }).status(), /dubious ownership/);
+  } finally {
+    process.env.PATH = originalPath;
+  }
+});
