@@ -7,8 +7,9 @@ import { followTrustRotations, newNonce, verifyServerAuth } from "@reach-mcp/sha
 import { RUNTIME_DEFAULTS, type ClientRuntime } from "@reach-mcp/shared/runtime-settings";
 import WebSocket from "ws";
 import type { RawData } from "ws";
-import { ClientAuthBegin, ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type ServerProof, type UpdateApplyResult, type WireError } from "@reach-mcp/shared/wire";
+import { ClientAuthBegin, ClientHello, HandshakeReply, parseWire, PostWelcomeMessage, type ClientPolicyResult, type PolicySync, type RequestEnvelope, type ResponseEnvelope, type ServerProof, type UpdateApplyResult, type WireError } from "@reach-mcp/shared/wire";
 import type { Bootstrap } from "./bootstrap.ts";
+import { PolicyRefused } from "./dispatcher.ts";
 import { suggestClientDisplayName } from "./display-name.ts";
 import { UpdateError } from "./updater.ts";
 import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
@@ -20,7 +21,7 @@ const TERMINAL_REJECTS: ReadonlySet<string> = new Set(["AUTH_FAILED", "DUPLICATE
 
 /** What the transport hands admitted traffic to; the dispatcher implements it. */
 export type FrameHandler = {
-  /** Throws when the snapshot is refused; the previous snapshot must then stay active. */
+  /** Throws when the snapshot is refused (PolicyRefused names the reason); the previous snapshot must then stay active. */
   applyPolicy(frame: PolicySync): void;
   /** Resolves with exactly one response for the request. */
   handle(request: RequestEnvelope): Promise<ResponseEnvelope>;
@@ -83,6 +84,8 @@ export class ClientTransport {
   /** The candidate identity of the one rotation in flight; dropped on every reconnect. */
   #rotation: { id: string; commit: () => void } | null = null;
   #socket: WebSocket | null = null;
+  /** The socket that refused a policy snapshot and is only waiting for that outcome to be written: nothing more is read from it. */
+  #refusedSocket: WebSocket | null = null;
   #cancelRetry: (() => void) | null = null;
   #cancelHeartbeat: (() => void) | null = null;
   #cancelHandshake: (() => void) | null = null;
@@ -171,7 +174,7 @@ export class ClientTransport {
   }
 
   #onMessage(socket: WebSocket, data: RawData, isBinary: boolean): void {
-    if (socket !== this.#socket) return;
+    if (socket !== this.#socket || socket === this.#refusedSocket) return;
     let frame: unknown;
     try {
       if (isBinary) throw new Error("binary");
@@ -265,20 +268,33 @@ export class ClientTransport {
       if (message.data.runtime) this.#applyRuntime(socket, message.data.runtime);
       try {
         this.#handler.applyPolicy(message.data);
-      } catch {
-        // No acknowledgement frame exists, so a snapshot that cannot be applied would leave Server and Client silently
-        // apart: drop the connection (the last good snapshot stays active) and let the Server resend after reconnect.
-        this.#failClosed(socket, "policy snapshot refused");
+      } catch (error) {
+        return this.#refusePolicy(socket, error);
       }
-      return;
+      return this.#sendPolicyResult(socket, { kind: "policy_result", state: "applied" });
     }
     this.#handler.handle(message.data).then(
       (response) => {
         // A late result belongs to the connection that asked; it is never replayed on a newer one.
-        if (socket === this.#socket && this.#state === "connected") socket.send(JSON.stringify(response));
+        if (socket === this.#socket && socket !== this.#refusedSocket && this.#state === "connected") socket.send(JSON.stringify(response));
       },
       () => this.#failClosed(socket, "request handler failed"),
     );
+  }
+
+  #sendPolicyResult(socket: WebSocket, result: ClientPolicyResult, written?: () => void): void {
+    socket.send(JSON.stringify(result), written);
+  }
+
+  /**
+   * A snapshot that cannot be applied would leave Server and Client apart: say why, then drop the connection (the last good
+   * snapshot stays active) and let the Server resend after reconnect. The socket closes once the outcome is written.
+   */
+  #refusePolicy(socket: WebSocket, error: unknown): void {
+    this.#refusedSocket = socket;
+    this.#lastError = { code: "BAD_REQUEST", message: "policy snapshot refused" };
+    const refusal = error instanceof PolicyRefused ? { reason: error.code, project_id: error.projectId } : { reason: "INTERNAL" as const };
+    this.#sendPolicyResult(socket, { kind: "policy_result", state: "refused", ...refusal }, () => socket.terminate());
   }
 
   /** The explicit update: one at a time, states reported on the asking connection, a failure reported with its closed reason and never dropping the socket. A Client that did not say it can update treats the frame as a violation. */

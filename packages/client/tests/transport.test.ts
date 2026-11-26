@@ -424,7 +424,8 @@ writeFileSync(path.join(readyProject, "a.txt"), "alpha\n");
 const policyFrame = (...policies: object[]) => ({ kind: "policy_sync", policies });
 const goodPolicy = { project_id: "p1", physical_root: readyProject, mode: "read_only" };
 const request = (id: string, operation: object, project_id = "p1") => ({ kind: "request", request_id: id, project_id, operation });
-const responsesOf = (seen: Seen) => seen.frames.slice(1) as { request_id: string; ok: boolean; result?: { op: string }; error?: { code: string } }[];
+const outcomesOf = (seen: Seen) => (seen.frames as { kind: string }[]).filter((f) => f.kind === "policy_result");
+const responsesOf = (seen: Seen) => (seen.frames as { kind: string }[]).filter((f) => f.kind === "response") as unknown as { request_id: string; ok: boolean; result?: { op: string }; error?: { code: string } }[];
 
 /** A server that welcomes and then sends the given frames. */
 const welcomingServer = (frames: () => unknown[]) =>
@@ -435,7 +436,8 @@ test("admitted: policy_sync then requests execute and each response carries its 
   const dispatcher = new ClientDispatcher({ anchors: [root] });
   const t = new ClientTransport(boot(srv.port), opts(clock(), { handler: dispatcher }));
   t.start();
-  await until(() => srv.seen[0]?.frames.length === 5, "four responses");
+  await until(() => srv.seen[0]?.frames.length === 6, "the policy outcome and four responses");
+  assert.deepEqual(outcomesOf(srv.seen[0]!), [{ kind: "policy_result", state: "applied" }]);
   const byId = Object.fromEntries(responsesOf(srv.seen[0]!).map((r) => [r.request_id, r]));
   assert.equal(byId.a?.result?.op, "fs_list");
   assert.equal(byId.b?.result?.op, "fs_read");
@@ -488,6 +490,23 @@ test("admitted: a project root inside the local anchor keeps the session, a root
   await outside.close();
 });
 
+test("admitted: a handler that throws anything else is reported INTERNAL without its text, then the Client reconnects; later frames are ignored", async () => {
+  let handled = 0;
+  const handler: FrameHandler = { applyPolicy: () => { throw new Error("leak /etc/secret"); }, handle: () => (handled++, Promise.reject(new Error("never"))) };
+  const srv = await welcomingServer(() => [policyFrame(goodPolicy), request("late", { op: "fs_list" })]);
+  const c = clock();
+  const t = new ClientTransport(boot(srv.port), opts(c, { handler }));
+  t.start();
+  await until(() => t.snapshot().state === "backoff", "dropped");
+  await until(() => outcomesOf(srv.seen[0]!).length === 1, "refusal received");
+  assert.deepEqual(outcomesOf(srv.seen[0]!), [{ kind: "policy_result", state: "refused", reason: "INTERNAL" }]);
+  assert.equal(handled, 0);
+  c.advance(100);
+  await until(() => srv.seen.length === 2, "reconnect stays enabled");
+  t.stop();
+  await srv.close();
+});
+
 test("admitted: a refused snapshot drops the connection and keeps the last good snapshot; a malformed frame fails closed without echo", async () => {
   const escape = { project_id: "bad", physical_root: path.dirname(root), mode: "read_only" };
   const srv = await welcomingServer(() => [policyFrame(goodPolicy), policyFrame(goodPolicy, escape)]);
@@ -497,6 +516,8 @@ test("admitted: a refused snapshot drops the connection and keeps the last good 
   await until(() => t.snapshot().state === "backoff", "dropped after the refused snapshot");
   assert.equal(t.snapshot().lastError?.message, "policy snapshot refused");
   assert.deepEqual(dispatcher.projects(), ["p1"], "the previous snapshot is untouched");
+  await until(() => outcomesOf(srv.seen[0]!).length === 2, "the refusal was written before the close");
+  assert.deepEqual(outcomesOf(srv.seen[0]!), [{ kind: "policy_result", state: "applied" }, { kind: "policy_result", state: "refused", reason: "OUTSIDE_ROOT", project_id: "bad" }]);
   t.stop();
   await srv.close();
 

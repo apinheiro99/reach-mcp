@@ -35,7 +35,7 @@ async function start(initialConfig = false) {
       await new Promise<void>((r) => s.close(() => r()));
     }
   };
-  return { a, d, file, config, proposals, put, close, syncs: () => syncs };
+  return { a, d, file, config, connections, proposals, put, close, syncs: () => syncs };
 }
 
 test("setup mode: the admin surface works while the data plane stays closed, then the first config opens it", async () => {
@@ -169,6 +169,14 @@ test("Clients API: one safe list with counts that add up; Enable and Disable per
   const box = view.clients.find((c) => c.client_id === "box")!;
   assert.deepEqual([box.display_name, box.status, box.online], ["Friendly box", "pending", false]);
   assert.match(box.fingerprint!, /^ed25519:[0-9a-f]{64}$/);
+  const refusalOf = async () => ((await (await fetch(`${rt.a}/admin/api/clients`)).json()) as { clients: { client_id: string; policy_refusal: unknown }[] }).clients.find((c) => c.client_id === "box")!.policy_refusal;
+  assert.equal(await refusalOf(), null);
+  const standing = { reason: "OUTSIDE_ROOT" as const, project_id: "web", refused_at: 7, occurrences: 2 };
+  const registry = rt.connections.policyRefusal.bind(rt.connections);
+  rt.connections.policyRefusal = (id) => (id === "box" ? standing : registry(id));
+  assert.deepEqual(await refusalOf(), standing, "an offline Client still shows why it was refused");
+  rt.connections.policyRefusal = registry;
+  assert.equal(await refusalOf(), null);
   const text = JSON.stringify(view);
   assert.ok(!text.includes(identity.publicKey) && !text.includes(identity.privateKey), "the list carries a fingerprint, never a key");
 

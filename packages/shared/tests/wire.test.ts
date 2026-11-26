@@ -358,3 +358,11 @@ test("auth_begin holds only a nonce and server_auth only a proof; extra or ident
   assert.equal(parseNonceWire(NonceReply, { kind: "server_auth", proof }).ok, true, "the Client reads it as a handshake reply");
   for (const bad of [{ kind: "server_auth" }, { kind: "server_auth", proof: { server_public_key: K43 } }, { kind: "server_auth", proof, extra: 1 }]) assert.equal(parseNonceWire(ServerAuth, bad).ok, false);
 });
+
+test("policy outcome frames: applied or refused with a closed reason and optional project id, never free text, and only from the Client", async () => {
+  const { ClientPolicyResult, POLICY_REFUSAL_REASONS } = await import("../src/wire/index.ts");
+  const refused = { kind: "policy_result", state: "refused", reason: "OUTSIDE_ROOT" };
+  for (const good of [{ kind: "policy_result", state: "applied" }, { ...refused, project_id: "web" }, ...POLICY_REFUSAL_REASONS.map((reason) => ({ ...refused, reason }))]) assert.equal(SessionMessage.safeParse(good).success, true, JSON.stringify(good));
+  for (const bad of [{ kind: "policy_result", state: "refused" }, { ...refused, reason: "DENIED" }, { ...refused, reason: "/srv/web is outside" }, { ...refused, message: "x" }, { ...refused, root: "/srv" }, { kind: "policy_result", state: "applied", reason: "INTERNAL" }]) assert.equal(ClientPolicyResult.safeParse(bad).success, false, JSON.stringify(bad));
+  assert.equal(ServerMessage.safeParse(refused).success, false, "the Server never sends an outcome");
+});

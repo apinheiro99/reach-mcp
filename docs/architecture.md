@@ -783,6 +783,14 @@ The Client owns its private identity key. The Server owns admission, the Client 
 
 The Client initiates transport because the Server may not be able to open an inbound connection through NAT/firewall.
 
+### Policy outcome diagnostics
+
+The Client answers every `policy_sync` with one `policy_result`, in order on the same socket: `applied`, or `refused` with a closed reason (`OUTSIDE_ROOT`, `NOT_FOUND`, `NOT_DIRECTORY`, `BAD_REQUEST`, `INTERNAL` for anything unclassified) and, when one policy failed, its `project_id`. No message, path, root or exception text travels. A refusal stays fail-closed: the Client keeps its last good snapshot, reads nothing more from that socket, closes it once the outcome is written and reconnects with the ordinary backoff.
+
+The Server connection registry owns the last refusal of each Client, in memory only: it survives disconnects and reconnects, a newer refusal replaces it, and only an `applied` outcome clears it (a Server restart forgets it). It is a diagnostic and grants no access; delivery is best effort, and a lost outcome is sent again by the next refused snapshot.
+
+Operators see it in the Clients screen Status cell (`policy_refusal` in `GET /admin/api/clients`: reason, project, time of the latest report and `occurrences`). The operational log follows the condition, not its retries: one WARNING for a new reason or project, nothing for an identical repeat (nor for the disconnect that follows it, nor for the connect of a Client whose refusal stands), and one RUNNING `policy recovered` line with the final count. The reconnect itself is never delayed or suppressed.
+
 ### Concurrent ChatGPT conversations
 
 The Server does not need to know which ChatGPT conversation originated a request.
