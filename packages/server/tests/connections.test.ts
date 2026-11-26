@@ -1023,7 +1023,9 @@ test("auto update: a failed receipt replayed after a Server restart is observed 
 });
 
 test("policy refusal: kept per authenticated client across reconnects, cleared only by an applied outcome, granting nothing", async () => {
-  const t = await setup();
+  const lines: string[] = [];
+  const t = await setup({ logger: { log: (level, _component, message) => void lines.push(`${level} ${message}`) } });
+  const policyLines = () => lines.filter((line) => / policy (refused|recovered) /.test(line));
   const refused = { kind: "policy_result", state: "refused", reason: "OUTSIDE_ROOT", project_id: "web" };
   const stranger = await t.connect({ hello: null });
   stranger.ws.send(JSON.stringify(refused));
@@ -1035,7 +1037,8 @@ test("policy refusal: kept per authenticated client across reconnects, cleared o
   first.ws.send(JSON.stringify(refused));
   first.ws.close();
   await until(() => t.registry.status().length === 0, "dropped");
-  const expected = { reason: "OUTSIDE_ROOT", project_id: "web", refused_at: 1000 };
+  const expected = { reason: "OUTSIDE_ROOT", project_id: "web", refused_at: 1000, occurrences: 1 };
+  assert.deepEqual(policyLines(), ["WARNING policy refused client_id=laptop reason=OUTSIDE_ROOT project_id=web"]);
   assert.deepEqual(t.registry.policyRefusal("laptop"), expected, "survives the disconnect");
   assert.equal(t.registry.policyRefusal("desktop"), null);
   assert.equal((await t.registry.route("laptop", "web", { op: "fs_list" })).ok, false);
@@ -1043,11 +1046,38 @@ test("policy refusal: kept per authenticated client across reconnects, cleared o
   const second = await t.connect();
   await until(() => second.frames.length === 3, "reconnected");
   assert.deepEqual(t.registry.policyRefusal("laptop"), expected, "a reconnect alone clears nothing");
-  second.ws.send(JSON.stringify({ kind: "policy_result", state: "applied" }));
-  await until(() => t.registry.policyRefusal("laptop") === null, "cleared by applied");
+  const disconnects = () => lines.filter((line) => line.includes("client disconnected")).length;
+  const before = disconnects();
+  t.clock.advance(50);
+  second.ws.send(JSON.stringify(refused));
+  await until(() => t.registry.policyRefusal("laptop")?.occurrences === 2, "counted again");
+  assert.equal(t.registry.policyRefusal("laptop")!.refused_at, 1050);
+  second.ws.close();
+  await until(() => t.registry.status().length === 0, "dropped again");
+  assert.equal(policyLines().length, 1, "an identical refusal logs nothing new");
+  assert.equal(disconnects(), before, "nor does the disconnect that follows it");
 
-  second.ws.send(JSON.stringify({ ...refused, message: "free text" }));
-  await second.closed;
+  const third = await t.connect();
+  await until(() => third.frames.length === 3, "reconnected again");
+  third.ws.send(JSON.stringify({ ...refused, reason: "NOT_FOUND" }));
+  third.ws.send(JSON.stringify({ kind: "policy_result", state: "refused", reason: "NOT_FOUND" }));
+  await until(() => policyLines().length === 3, "each new cause or project is logged at once");
+  assert.equal(t.registry.policyRefusal("laptop")!.occurrences, 1);
+  third.ws.send(JSON.stringify({ kind: "policy_result", state: "applied" }));
+  third.ws.send(JSON.stringify({ kind: "policy_result", state: "applied" }));
+  third.ws.send(JSON.stringify(refused));
+  await until(() => policyLines().length === 5, "one recovery, then the next refusal");
+  assert.equal(policyLines()[3], "RUNNING policy recovered client_id=laptop reason=NOT_FOUND occurrences=1");
+  third.ws.send(JSON.stringify({ kind: "policy_result", state: "applied" }));
+  await until(() => t.registry.policyRefusal("laptop") === null, "cleared by applied");
+  third.ws.close();
+  await until(() => disconnects() === before + 1, "a recovered session logs its disconnect");
+
+  const last = await t.connect();
+  await until(() => last.frames.length === 3, "last session");
+
+  last.ws.send(JSON.stringify({ ...refused, message: "free text" }));
+  await last.closed;
   assert.equal(t.registry.policyRefusal("laptop"), null, "a malformed outcome creates no state");
   await t.done();
 });

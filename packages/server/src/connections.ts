@@ -64,7 +64,7 @@ export type ConnectionOptions = {
 };
 
 /** `compatible` false is a management-only session: authenticated and live, but never given policy, requests or key rotation. */
-type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; connectedSince: number; lastSeen: number };
+type Session = { clientId: string; socket: WebSocket; build: string; compatible: boolean; updateCapable: boolean; connectedSince: number; lastSeen: number; repeatedRefusal: boolean };
 type Handshake = { nonce: string; clientNonce: string | null };
 type Rotation = { id: string; session: Session; settle: (result: RotationResult) => void; cancel: () => void };
 export type { UpdateStatus, UpdateView } from "./update-lifecycle.ts";
@@ -72,8 +72,8 @@ export type UpdateResult = "accepted" | "offline" | "current" | "unsupported" | 
 export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
 
-/** The last policy snapshot a Client refused and has not since applied; `refused_at` is Server time. */
-export type PolicyRefusal = { reason: PolicyRefusalReason; project_id?: string; refused_at: number };
+/** The policy refusal a Client has standing: its latest cause, when it was last reported (Server time) and how many times in a row. */
+export type PolicyRefusal = { reason: PolicyRefusalReason; project_id?: string; refused_at: number; occurrences: number };
 
 export type SessionStatus = { client_id: string; client_build: string; compatible: boolean; update_capable: boolean; update: UpdateStatus | null; connected_since: number; last_seen: number; online: boolean };
 
@@ -464,7 +464,7 @@ export class ClientConnectionRegistry {
       existing.socket.terminate();
     }
     const now = this.#now();
-    const session: Session = { clientId, socket, build, compatible, updateCapable: updateCapable === true, connectedSince: now, lastSeen: now };
+    const session: Session = { clientId, socket, build, compatible, updateCapable: updateCapable === true, connectedSince: now, lastSeen: now, repeatedRefusal: false };
     this.#sessions.set(clientId, session);
     this.#lastBuild.set(clientId, build);
     this.#logger.log("RUNNING", "connections", `client connected client_id=${clientId}${this.#who(clientId)}`);
@@ -550,11 +550,25 @@ export class ClientConnectionRegistry {
     if (pending && pending.session === session) pending.settle(message.data);
   }
 
-  /** A policy outcome counts only on the Client's current, compatible session (the only kind that is ever sent a policy). */
+  /**
+   * A policy outcome counts only on the Client's current, compatible session (the only kind that is ever sent a policy). The log
+   * records changes of the condition, not its retries: a new cause at once, one recovery, and nothing for an identical refusal.
+   */
   #onPolicyResult(session: Session, result: ClientPolicyResult): void {
     if (this.#sessions.get(session.clientId) !== session || !session.compatible) return;
-    if (result.state === "applied") return void this.#policyRefusals.delete(session.clientId);
-    this.#policyRefusals.set(session.clientId, { reason: result.reason, ...(result.project_id === undefined ? {} : { project_id: result.project_id }), refused_at: this.#now() });
+    const standing = this.#policyRefusals.get(session.clientId);
+    if (result.state === "applied") {
+      session.repeatedRefusal = false;
+      if (!standing) return;
+      this.#policyRefusals.delete(session.clientId);
+      return void this.#logger.log("RUNNING", "connections", `policy recovered client_id=${session.clientId} reason=${standing.reason} occurrences=${standing.occurrences}`);
+    }
+    const { reason, project_id: projectId } = result;
+    const repeated = standing?.reason === reason && standing.project_id === projectId;
+    session.repeatedRefusal = repeated;
+    const project = projectId === undefined ? {} : { project_id: projectId };
+    this.#policyRefusals.set(session.clientId, { reason, ...project, refused_at: this.#now(), occurrences: repeated ? standing.occurrences + 1 : 1 });
+    if (!repeated) this.#logger.log("WARNING", "connections", `policy refused client_id=${session.clientId} reason=${reason}${projectId === undefined ? "" : ` project_id=${projectId}`}`);
   }
 
   /** An update state counts only for the attempt asked on this very session; it is logged and audited once per state the Client reports. */
@@ -601,7 +615,8 @@ export class ClientConnectionRegistry {
     this.#updates.sessionEnded(session.clientId, session);
     this.#lastHeard.set(session.clientId, session.lastSeen);
     this.#rotations.get(session.clientId)?.settle("offline");
-    this.#logger.log("RUNNING", "connections", `client disconnected client_id=${session.clientId}${this.#who(session.clientId)}`);
+    // The disconnect that follows an already logged refusal adds nothing; every other disconnect is logged.
+    if (!session.repeatedRefusal) this.#logger.log("RUNNING", "connections", `client disconnected client_id=${session.clientId}${this.#who(session.clientId)}`);
     for (const [id, pending] of [...this.#pending]) {
       if (pending.session === session) pending.settle(failureResponse(id, this.#lost(pending.mutation, "client disconnected")));
     }
