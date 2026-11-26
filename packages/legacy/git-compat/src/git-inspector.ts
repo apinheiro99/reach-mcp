@@ -99,9 +99,12 @@ export class GitInspector {
       GIT_EXTERNAL_DIFF: "",
       LC_ALL: "C",
     };
+    // The service account need not own the project: trust exactly this configured root, for this call only. Global
+    // and system config stay disabled, so the command line is the only protected scope. Git expects forward slashes.
+    const trustRoot = ["-c", `safe.directory=${this.root.replaceAll("\\", "/")}`];
     const max = this.limits.maxGitOutputBytes;
     return new Promise((resolve, reject) => {
-      execFile("git", ["--no-pager", "-C", this.root, ...SAFE_CONFIG, ...args], { env, timeout: this.limits.gitTimeoutMs, maxBuffer: max * BUFFER_FACTOR, encoding: "utf8" }, (err, stdout, stderr) => {
+      execFile("git", ["--no-pager", "-C", this.root, ...trustRoot, ...SAFE_CONFIG, ...args], { env, timeout: this.limits.gitTimeoutMs, maxBuffer: max * BUFFER_FACTOR, encoding: "utf8" }, (err, stdout, stderr) => {
         const overflow = (err as NodeJS.ErrnoException | null)?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
         if (err && !overflow) {
           // Only a fixed message or git's first stderr line with the root path masked; no raw stderr, no stack.
