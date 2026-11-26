@@ -1,6 +1,6 @@
 // The Clients view: six counters, a search and status filter, and one table row per Client, built only from UI.* components and only
 // from what /admin/api/clients answers. The Server owns every status, count and fingerprint; this view renders them, sends the human
-// actions (Enable/Disable, Update Client, Rotate Key) to the lifecycle API and reloads on the shell's one refresh cadence, so it holds no policy.
+// actions (Enable/Disable, Update Client, Rotate Key, Retire) to the lifecycle API and reloads on the shell's one refresh cadence, so it holds no policy.
 export const CLIENTS_CSS = `
 .cl-conn{display:flex;flex-direction:column;gap:.15rem}
 .cl-conn-state{display:flex;align-items:center;gap:var(--sp-2);font-weight:600}
@@ -31,6 +31,8 @@ const FILTERS = [["all", "All statuses"], ["online", "Online"], ["offline", "Off
 const matchesFilter = (c, filter) => filter === "all" || c.status === filter || operationalState(c) === filter;
 // The standing refusal exactly as the Server answered it: closed reason, project and count.
 const refusalText = (r) => "Policy refused: " + r.reason + (r.project_id ? " · project " + r.project_id : "") + (r.occurrences > 1 ? " · repeated " + r.occurrences + "×" : "") + " · " + ago(r.refused_at);
+// Retire cannot be undone, so the human confirms it against the immutable id, never only the editable name.
+const retireWarning = (c) => "Retire client " + c.client_id + (c.display_name ? " (" + c.display_name + ")" : "") + "? Its key, access and projects are removed from this Server and cannot be restored. Nothing is uninstalled on its machine; if it connects again it appears as Pending.";
 // Update is offered only when the Server's own facts allow it; the Server still decides and its refusal is shown as it is.
 const updateBlock = (c) => (!c.online ? "The Client must be online to update" : c.update_available === false ? "Already up to date" : c.update_capable !== true ? "This build cannot update remotely: run the installer once on the host" : c.current_update ? "An update is already in progress" : "");
 // How long the live session has lasted (connected_since is set when it was admitted; the heartbeat last_seen would restart this on every ping).
@@ -111,9 +113,10 @@ async function renderClients(view) {
     if (blocked) { update.disabled = true; update.title = blocked; }
     const rotate = UI.button("Rotate Key", { icon: "refresh", onClick: () => act(base + "/rotate-key", "Key rotated") });
     if (state !== "online") { rotate.disabled = true; rotate.title = state === "incompatible" ? "An incompatible client cannot rotate its key: update it first" : "The client must be online to rotate its key"; }
+    const retire = UI.button("Retire", { variant: "danger", icon: "ban", onClick: () => { if (confirm(retireWarning(c))) act(base + "/retire", "Client retired"); } });
     return {
       tone: c.status === "pending" ? "warn" : undefined,
-      cells: [name, conn, fp, access, autoUpdate, UI.el("div", { className: "cl-actions" }, update, rotate)],
+      cells: [name, conn, fp, access, autoUpdate, UI.el("div", { className: "cl-actions" }, update, rotate, retire)],
       note: c.status === "pending" ? UI.el("div", { className: "cl-note" }, UI.icon("info"), UI.el("strong", { textContent: "Awaiting approval." }), "Enable the client to grant access to projects.") : undefined,
     };
   };

@@ -312,3 +312,31 @@ test("admin proposal item endpoints: review one rule at a time, approve-all as a
   assert.equal((await body("/admin/api/proposal")).json.proposal, null);
   await rt.close();
 });
+
+test("retire: removes exactly one Client by id, forgets its runtime facts, audits without keys, and the identity can only return as Pending", async () => {
+  const rt = await start(true);
+  const identity = newIdentity();
+  rt.config.registerPendingClient("box", identity.publicKey);
+  rt.config.setClientEnabled("box", true);
+  const forgotten: string[] = [];
+  const forget = rt.connections.forget.bind(rt.connections);
+  rt.connections.forget = (id) => (forgotten.push(id), forget(id));
+  const post = (id: string, action = "retire") => fetch(`${rt.a}/admin/api/clients/${id}/${action}`, { method: "POST" });
+  const laptop = () => rt.config.editableView().clients.find((c) => c.client_id === "laptop");
+  const untouched = laptop();
+  assert.equal((await post("box", "disable")).status, 200);
+  assert.equal(rt.config.admissionOf("box")?.status, "disabled", "Disable keeps the record");
+  const before = readFileSync(rt.file, "utf8");
+  assert.equal((await post("nobody")).status, 422);
+  assert.equal(readFileSync(rt.file, "utf8"), before, "an unknown id changes nothing");
+  assert.equal((await fetch(`${rt.a}/admin/api/clients/box/retire`)).status, 405);
+  const res = await post("box");
+  assert.equal(res.status, 200);
+  assert.ok(!(await res.text()).includes(identity.publicKey));
+  assert.equal(rt.config.admissionOf("box"), null);
+  assert.deepEqual(laptop(), untouched);
+  assert.deepEqual(forgotten, ["box"], "only the retired Client's session is touched");
+  assert.ok(!readFileSync(rt.file, "utf8").includes(identity.publicKey), "no tombstone");
+  assert.equal((await post("box")).status, 422, "already retired");
+  await rt.close();
+});
