@@ -1,13 +1,14 @@
 // The production delivery transaction, driven with in-process stand-ins for compose, the build and the running Server. No Docker,
-// no network, no real target: it proves the state machine (promotion, automatic and explicit rollback, locking, secret-free evidence).
+// no external network (one loopback probe), no real target: it proves the state machine (promotion, automatic and explicit rollback, locking, secret-free evidence).
 import { Buffer } from "node:buffer";
 import { test } from "node:test";
+import { createServer } from "node:http";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { deploy, parseArgs, rollback, status, type Deps, type Options } from "../deploy/prod/deploy.ts";
+import { defaultDeps, deploy, parseArgs, rollback, status, type Deps, type Options } from "../deploy/prod/deploy.ts";
 import { buildManifest, INSTALLERS, REQUIRED_ARTIFACTS, type Untrusted } from "../scripts/release/manifest.ts";
 
 const base = mkdtempSync(path.join(tmpdir(), "reach-deploy-"));
@@ -68,7 +69,7 @@ function world({ failImages = new Set<string>(), wrongIdentity = new Set<string>
         const release = wrongIdentity.has(running) ? { build_id: "other", repository_commit: "0".repeat(40) } : { build_id: id, repository_commit: commitOf.get(id!) };
         return { status: 200, body: JSON.stringify({ release }) };
       }
-      return { status: 401, body: "" };
+      return { status: 401, body: "", challenge: "Bearer" };
     },
     sleep: async () => {},
     now: () => "2026-11-16T00:00:00.000Z",
@@ -343,13 +344,54 @@ test("a missing or non-file tunnel input is refused before anything is built or 
   }
 });
 
-test("a data plane that answers 503 (no active configuration) fails the smoke check and reports the status", async () => {
-  const w = world();
-  const http = w.deps.http;
-  w.deps.http = async (url) => (url.endsWith("/health") ? { status: 503, body: "" } : http(url));
-  const { exit, evidence } = await deploy(opts(w, make("b8").dir, stateDir()), w.deps);
-  assert.equal(exit, 1);
-  assert.deepEqual(evidence.checks.find((c: Untrusted) => c.name === "smoke-data-plane"), { name: "smoke-data-plane", ok: false, data_plane_status: 503 });
+test("only the exact unauthenticated Bearer challenge passes the smoke; anything else is not promoted and the previous deployment is restored", async () => {
+  const answers: [string, { status: number; body: string; challenge?: string | null } | null][] = [
+    ["connection failure", null],
+    ["404", { status: 404, body: "" }],
+    ["302", { status: 302, body: "" }],
+    ["307", { status: 307, body: "", challenge: "Bearer" }],
+    ["200", { status: 200, body: "ok" }],
+    ["204", { status: 204, body: "" }],
+    ["503 setup mode", { status: 503, body: "" }],
+    ["401 without challenge", { status: 401, body: "", challenge: null }],
+    ["401 wrong challenge", { status: 401, body: "", challenge: "Basic" }],
+    ["401 with a body", { status: 401, body: "SMOKE-BODY-MARKER", challenge: "Bearer" }],
+  ];
+  for (const [label, answer] of answers) {
+    const w = world();
+    const state = stateDir();
+    await deploy(opts(w, make("b1").dir, state), w.deps);
+    const http = w.deps.http;
+    let running = "";
+    const run = w.deps.run;
+    w.deps.run = (cmd, args, env) => { running = env.REACH_IMAGE!; return run(cmd, args, env); };
+    w.deps.http = async (url) => {
+      if (!url.endsWith("/health") || running !== "reach-server:b8") return http(url);
+      if (answer === null) throw new Error("connection refused");
+      return answer;
+    };
+    const { exit, evidence } = await deploy(opts(w, make("b8").dir, state), w.deps);
+    assert.equal(exit, 1, label);
+    assert.deepEqual([evidence.result, evidence.rollback], ["candidate-failed", "restored"], label);
+    assert.deepEqual(evidence.checks.find((c: Untrusted) => c.name === "smoke-data-plane"),
+      { name: "smoke-data-plane", ok: false, data_plane_status: answer?.status ?? 0, bearer_challenge: answer?.challenge === "Bearer", empty_body: !answer?.body }, label);
+    assert.equal(status({ state }).current.build_id, "b1", label);
+    assert.ok(!JSON.stringify(evidence).includes("SMOKE-BODY-MARKER"), label);
+  }
+});
+
+test("the real probe never follows a redirect and reports the authentication challenge", async () => {
+  const server = createServer((req, res) => {
+    if (req.url === "/moved") return void res.writeHead(302, { location: "/health" }).end();
+    res.writeHead(401, { "WWW-Authenticate": "Bearer" }).end();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const { http } = defaultDeps();
+  assert.equal((await http(`${origin}/moved`)).status, 302);
+  assert.deepEqual(await http(`${origin}/health`), { status: 401, body: "", challenge: "Bearer" });
+  server.closeAllConnections();
+  await new Promise<void>((r) => server.close(() => r()));
 });
 
 test("readiness and running identity come from the service plane's release manifest and never from the Admin plane", async () => {

@@ -25,7 +25,8 @@ export const CONTAINER_UID = 1000;
 
 export type Deps = {
   run: (cmd: string, args: string[], env: Record<string, string>) => unknown;
-  http: (url: string) => Promise<{ status: number; body: string }>;
+  /** One probe, redirects not followed; `challenge` is the WWW-Authenticate header. */
+  http: (url: string) => Promise<{ status: number; body: string; challenge?: string | null }>;
   sleep: (ms: number) => Promise<unknown>;
   now: () => string;
   uid: () => number;
@@ -126,11 +127,11 @@ async function withLock<T>(dir: string, fn: () => Promise<T>) {
   }
 }
 
-const defaultDeps = (): Deps => ({
+export const defaultDeps = (): Deps => ({
   run: (cmd, args, env) => execFileSync(cmd, args, { env: { ...process.env, ...env }, stdio: "inherit" }),
   http: async (url) => {
-    const res = await globalThis.fetch(url, { signal: globalThis.AbortSignal.timeout(4000) });
-    return { status: res.status, body: await res.text() };
+    const res = await globalThis.fetch(url, { redirect: "manual", signal: globalThis.AbortSignal.timeout(4000) });
+    return { status: res.status, body: await res.text(), challenge: res.headers.get("www-authenticate") };
   },
   sleep: (ms) => sleepMs(ms),
   now: () => new Date().toISOString(),
@@ -278,9 +279,11 @@ async function verify(deps: Deps, opts: Options, d: DeploymentRecord): Promise<{
   checks.push({ name: "health", ok: health !== null });
   const identity = health !== null && health.build_id === d.build_id && health.repository_commit === d.repository_commit;
   checks.push({ name: "running-identity", ok: identity, ...(health === null ? {} : { running_build: health.build_id, running_commit: health.repository_commit }) });
-  // The data-plane /health is bearer-protected: 401 proves an active configuration is enforcing it; 503 means no active configuration (setup mode).
-  const smoke = await deps.http(`http://127.0.0.1:${opts.port}/health`).then((res) => res.status, () => 0);
-  checks.push({ name: "smoke-data-plane", ok: smoke > 0 && smoke < 500, data_plane_status: smoke });
+  // The data-plane promotion contract (docs/production-deployment.md): only the unauthenticated challenge of an active configuration passes; the body is never recorded.
+  const smoke = await deps.http(`http://127.0.0.1:${opts.port}/health`).catch(() => ({ status: 0, body: "", challenge: null }));
+  const bearer_challenge = smoke.challenge === "Bearer";
+  const empty_body = smoke.body === "";
+  checks.push({ name: "smoke-data-plane", ok: smoke.status === 401 && bearer_challenge && empty_body, data_plane_status: smoke.status, bearer_challenge, empty_body });
   return { ok: checks.every((c) => c.ok), checks };
 }
 
