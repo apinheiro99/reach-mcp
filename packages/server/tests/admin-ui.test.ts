@@ -144,7 +144,7 @@ test("Clients screen: the approved reference as structure: six counters in order
   assert.ok(clients.includes('["Client", "Status", "Public Key (Fingerprint)", "Access", "Auto Update", "Actions"]'), "Status is the one operational column; the administrative Enabled pill column is gone");
   assert.equal(clients.match(/UI\.toggle\(""/g)?.length, 1, "one table toggle builder, with no visible label");
   assert.equal(clients.match(/cellToggle\("Client access"/g)?.length, 1, "one Enable/Disable toggle owner");
-  assert.ok(/cells: \[name, conn, fp, access, autoUpdate, UI\.el\("div", \{ className: "cl-actions" \}, update, rotate\)\]/.test(clients), "Access and Auto Update have their own columns; Actions keeps Update Client and Rotate Key");
+  assert.ok(/cells: \[name, conn, fp, access, autoUpdate, UI\.el\("div", \{ className: "cl-actions" \}, update, rotate, retire\)\]/.test(clients), "Access and Auto Update have their own columns; Actions keeps Update Client, Rotate Key and Retire");
   assert.equal(clients.match(/UI\.button\("Rotate Key"/g)?.length, 1, "one Rotate Key action");
   assert.ok(/tone: c\.status === "pending" \? "warn"/.test(clients) && /Awaiting approval\./.test(clients), "the Pending row is highlighted and says why");
   assert.ok(/STATE_PILL = \{ online: \["Online", "ok"/.test(clients) && /UI\.pill\(label, tone, icon\)/.test(clients), "status uses the canonical pill");
@@ -387,7 +387,7 @@ test("Clients table: the unlabeled Access and Auto Update toggles render in thei
   assert.deepEqual(headers.slice(3), ["Access", "Auto Update", "Actions"]);
   const toggles = [cells[3], cells[4]].map((cell) => cell!.kids[0] as Node);
   assert.deepEqual(toggles.map((t) => [t.args[0], t.args[1], (t.kids[0] as Node).attrs["aria-label"]]), [["", true, "Client access"], ["", false, "Auto Update"]]);
-  assert.deepEqual(cells[5]!.kids.map((k) => k.args[0]), ["Update Client", "Rotate Key"]);
+  assert.deepEqual(cells[5]!.kids.map((k) => k.args[0]), ["Update Client", "Rotate Key", "Retire"]);
   (toggles[0]!.args[2] as (on: boolean) => void)(false);
   (toggles[1]!.args[2] as (on: boolean) => void)(true);
   assert.deepEqual(calls.filter((c) => c[0] !== "GET"), [["POST", "/admin/api/clients/c1/disable"], ["PUT", "/admin/api/clients/c1/auto-update", { auto_update: true }]]);
@@ -398,4 +398,11 @@ test("Clients Status shows the standing policy refusal with project and count, a
   assert.equal(refusalText({ reason: "OUTSIDE_ROOT", project_id: "reach", refused_at: 1, occurrences: 4 }), "Policy refused: OUTSIDE_ROOT · project reach · repeated 4× · 5s ago");
   assert.equal(refusalText({ reason: "INTERNAL", refused_at: 1, occurrences: 1 }), "Policy refused: INTERNAL · 5s ago");
   assert.match(uiSource["clients.ts"] as string, /c\.policy_refusal \? detail\(refusalText\(c\.policy_refusal\), "bad"\) : "",/);
+});
+
+test("Clients Retire asks for an explicit confirmation naming the client id before it posts", () => {
+  const retireWarning = new Function(`${CLIENTS_JS}; return retireWarning;`)() as (c: object) => string;
+  const text = retireWarning({ client_id: "box-1", display_name: "Box" });
+  assert.match(text, /Retire client box-1 \(Box\)\?.*cannot be restored.*Pending/);
+  assert.match(uiSource["clients.ts"] as string, /if \(confirm\(retireWarning\(c\)\)\) act\(base \+ "\/retire"/);
 });

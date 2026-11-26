@@ -224,6 +224,13 @@ export class ServerConfigStore {
     this.#changeClient(clientId, (client) => ({ ...omitPending(client), enabled }));
   }
 
+  /** The human decision to remove a Client for good: its record (key, status, projects) leaves the config, and a later hello from it is an unknown Client. */
+  retireClient(clientId: string): void {
+    this.#requireRegistered(clientId);
+    const active = this.#requireActive();
+    this.activateCandidate({ ...active, clients: active.clients.filter((c) => c.client_id !== clientId) });
+  }
+
   /** Binds the Machine UUID of the machine an authenticated Client runs on to its record, once. It never changes a key or a status. */
   bindMachineUuid(clientId: string, machineUuid: string): void {
     this.#changeClient(clientId, (client) => ({ ...client, machine_uuid: machineUuid }));
@@ -304,9 +311,13 @@ export class ServerConfigStore {
   }
 
   #changeClient(clientId: string, change: (client: ServerConfig["clients"][number]) => ServerConfig["clients"][number]): void {
+    this.#requireRegistered(clientId);
     const active = this.#requireActive();
-    if (!active.clients.some((c) => c.client_id === clientId)) throw new ConfigError(["client_id: not registered"]);
     this.activateCandidate({ ...active, clients: active.clients.map((c) => (c.client_id === clientId ? change(c) : c)) });
+  }
+
+  #requireRegistered(clientId: string): void {
+    if (!this.#requireActive().clients.some((c) => c.client_id === clientId)) throw new ConfigError(["client_id: not registered"]);
   }
 
   #persist(config: ServerConfig): void {
