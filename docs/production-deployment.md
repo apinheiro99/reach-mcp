@@ -66,6 +66,33 @@ Rollback remains explicit. The existing deployment controller remains the single
 
 `Publish GitHub` runs on the `docker-prod` runner for successful default-branch push pipelines only, after `ci-tag-green` and `Build Release`, and before `Deploy Production`, which needs it. The script is `scripts/git-ci/publish-github.ts`. Publication uses operator-owned host material exactly like the RAG deployment pattern: the job sets its publication root from `REACH_PUBLICATION_PATH`, falling back to `$HOME/reach-prod/reach-private`, then reads `credentials/github/reach-mcp` and `config/github.env` (`REACH_GITHUB_OWNER`, `REACH_GITHUB_REPO`, optional `REACH_GITHUB_REPOSITORY`). The private/public key pair is generated once on the PROD host; the public key is registered on the GitHub `reach-mcp` repository as a Deploy Key with write access, while the private key remains only on the runner host with mode `0600`. Nothing from those files is tracked, logged or stored as a GitHub token. SSH uses `IdentitiesOnly` and host verification stays on. The tag is the green tag of the pipeline (`vYYYY.MM.NNNNNN`), fetched from GitLab and checked against the tested commit; `-fail` tags are never published. `CI_JOB_TOKEN` remains a GitLab-internal credential and is not used for GitHub publication.
 
+## Data-plane promotion contract
+
+A candidate's data plane is proven ready by one probe of the service plane, sent without any credential: `GET /health` on port 8787. The Server owns this behavior (`packages/server/src/http-server.ts`); it answers the challenge below only while a configuration is active. The probe needs no secret and never uses the Admin plane.
+
+The smoke passes only when all of these hold:
+
+| Property | Required value |
+|---|---|
+| Status | exactly `401` |
+| `WWW-Authenticate` header | exactly `Bearer` |
+| Body | empty |
+| Redirects | not followed |
+
+Everything else fails the smoke:
+
+| Observed | Meaning |
+|---|---|
+| connection failure or no response | nothing is serving |
+| `503` | no active configuration (setup mode) |
+| `404` | wrong endpoint, or something else is listening |
+| any `3xx` | a redirect is never readiness |
+| any `2xx` | an unauthenticated request must not succeed |
+| `401` without the exact `Bearer` challenge, or with a body | not the REACH authentication owner |
+| any other status | not the contract |
+
+No status range counts as success. The deployment controller (`deploy.ts`) enforces this contract in its `smoke-data-plane` check; a candidate that fails it is not promoted and the previous known-good deployment is restored.
+
 ## Acceptance
 
 Production is accepted when:

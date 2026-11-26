@@ -34,7 +34,8 @@ test("active runtime: /health with the bearer returns the minimal snapshot and n
 
 test("/health uses the same bearer owner: missing or wrong is 401; only GET; other paths stay 404", async () => {
   const rt = await startRuntime();
-  assert.equal((await getHealth(rt.port, null)).status, 401);
+  const challenge = await getHealth(rt.port, null);
+  assert.deepEqual([challenge.status, challenge.headers.get("www-authenticate"), await challenge.text()], [401, "Bearer", ""], "the promotion contract of docs/production-deployment.md");
   assert.equal((await getHealth(rt.port, "wrong")).status, 401);
   assert.equal((await fetch(`http://127.0.0.1:${rt.port}/health`, { method: "POST", headers: { Authorization: `Bearer ${MCP_MARKER}` } })).status, 405);
   for (const p of ["/healthz", "/status", "/metrics", "/admin"]) assert.equal((await fetch(`http://127.0.0.1:${rt.port}${p}`, { headers: { Authorization: `Bearer ${MCP_MARKER}` } })).status, 404, p);
