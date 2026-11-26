@@ -12,6 +12,7 @@ import {
   isMutation,
   MUTATION_INDETERMINATE_ERROR,
   parseWire,
+  PolicyRefusalReason,
   ResponseEnvelope,
   toWireError,
   type Operation,
@@ -54,6 +55,19 @@ export function buildRuntime(policy: EffectiveProjectPolicy): ProjectRuntime {
   return { reader, writer, git, pdf: (input, options) => readPdf(reader, input, options) };
 }
 
+/** A refused policy snapshot as the bounded facts that may leave this host; the thrown value's own text stays here. */
+export class PolicyRefused extends Error {
+  readonly code: PolicyRefusalReason;
+  readonly projectId: string;
+
+  constructor(projectId: string, cause: unknown) {
+    super("policy snapshot refused", { cause });
+    const reason = PolicyRefusalReason.safeParse(toWireError(cause).code);
+    this.code = reason.success ? reason.data : "INTERNAL";
+    this.projectId = projectId;
+  }
+}
+
 export class ClientDispatcher {
   #projects = new Map<string, { policy: EffectiveProjectPolicy; runtime: ProjectRuntime }>();
   /** Per project, the promise of its most recent mutation; a new mutation starts when it settles. */
@@ -85,9 +99,13 @@ export class ClientDispatcher {
   applyPolicy(frame: PolicySync): void {
     const next = new Map<string, { policy: EffectiveProjectPolicy; runtime: ProjectRuntime }>();
     for (const raw of frame.policies) {
-      const policy = acceptEffectivePolicy(this.#anchors, raw, this.#platform);
-      if (next.has(policy.project_id)) throw new WireFault("BAD_REQUEST", "duplicate project in policy snapshot");
-      next.set(policy.project_id, { policy, runtime: this.#createRuntime(policy) });
+      try {
+        const policy = acceptEffectivePolicy(this.#anchors, raw, this.#platform);
+        if (next.has(policy.project_id)) throw new WireFault("BAD_REQUEST", "duplicate project in policy snapshot");
+        next.set(policy.project_id, { policy, runtime: this.#createRuntime(policy) });
+      } catch (err) {
+        throw new PolicyRefused(raw.project_id, err);
+      }
     }
     this.#projects = next;
   }

@@ -106,8 +106,20 @@ export const UPDATE_APPLY_RESULT_FILE = "update/apply-result.json";
 export const ClientUpdateReceipt = z.strictObject({ kind: z.literal("update_receipt"), receipt: UpdateApplyResult });
 export type ClientUpdateReceipt = z.infer<typeof ClientUpdateReceipt>;
 
-/** What an admitted Client may send: a response to a request, the answer to a key rotation, an update state or the terminal apply receipt. */
-export const SessionMessage = z.union([ClientRotated, ClientUpdateReceipt, ...ClientUpdateState.options, ...ResponseEnvelope.options]);
+/** Why a Client refused a policy snapshot: a closed set, so a refusal can never carry a message, path, root or secret. Anything unclassified is INTERNAL. */
+export const POLICY_REFUSAL_REASONS = ["OUTSIDE_ROOT", "NOT_FOUND", "NOT_DIRECTORY", "BAD_REQUEST", "INTERNAL"] as const;
+export const PolicyRefusalReason = z.enum(POLICY_REFUSAL_REASONS);
+export type PolicyRefusalReason = z.infer<typeof PolicyRefusalReason>;
+
+/** Client -> Server, one per `policy_sync`, in order on the same socket: the snapshot was applied, or refused (`project_id` names the failing policy when one is). It is a diagnostic only and grants nothing. */
+export const ClientPolicyResult = z.discriminatedUnion("state", [
+  z.strictObject({ kind: z.literal("policy_result"), state: z.literal("applied") }),
+  z.strictObject({ kind: z.literal("policy_result"), state: z.literal("refused"), reason: PolicyRefusalReason, project_id: ProjectId.optional() }),
+]);
+export type ClientPolicyResult = z.infer<typeof ClientPolicyResult>;
+
+/** What an admitted Client may send: a response to a request, the outcome of a policy snapshot, the answer to a key rotation, an update state or the terminal apply receipt. */
+export const SessionMessage = z.union([ClientRotated, ClientUpdateReceipt, ...ClientPolicyResult.options, ...ClientUpdateState.options, ...ResponseEnvelope.options]);
 export type SessionMessage = z.infer<typeof SessionMessage>;
 
 /** Client -> Server: the hello, then one response per request. */

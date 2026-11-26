@@ -12,7 +12,9 @@ import { realSchedule, type Schedule } from "@reach-mcp/shared/timers";
 import {
   ClientAuthBegin,
   ClientHello,
+  type ClientPolicyResult,
   type ClientUpdateState,
+  type PolicyRefusalReason,
   failureResponse,
   incompatibleBuildError,
   isMutation,
@@ -70,6 +72,9 @@ export type UpdateResult = "accepted" | "offline" | "current" | "unsupported" | 
 export type RotationResult = "rotated" | "offline" | "busy" | "timeout" | "refused";
 type Pending = { session: Session; mutation: boolean; settle: (response: ResponseEnvelope) => void; cancel: () => void };
 
+/** The last policy snapshot a Client refused and has not since applied; `refused_at` is Server time. */
+export type PolicyRefusal = { reason: PolicyRefusalReason; project_id?: string; refused_at: number };
+
 export type SessionStatus = { client_id: string; client_build: string; compatible: boolean; update_capable: boolean; update: UpdateStatus | null; connected_since: number; last_seen: number; online: boolean };
 
 const withProof = (proof: ServerProof | undefined) => (proof ? { proof } : {});
@@ -87,6 +92,8 @@ export class ClientConnectionRegistry {
   readonly #lastHeard = new Map<string, number>();
   /** The Client build of each Client's latest session, kept after the session ends so the version stays observable offline. */
   readonly #lastBuild = new Map<string, string>();
+  /** Why each Client last refused its policy, kept across reconnects; only an explicit `applied` outcome clears it. Runtime state, never persisted. */
+  readonly #policyRefusals = new Map<string, PolicyRefusal>();
   /** The one unresolved Auto Update attempt (in memory, owned here; the attempt itself lives in UpdateLifecycle): no second automatic Client starts before it is applied and healthy on the canonical build. */
   #auto: { clientId: string; targetBuild: string } | null = null;
   readonly #options: ConnectionOptions;
@@ -295,6 +302,11 @@ export class ClientConnectionRegistry {
   /** The attempt in flight and the last terminal result of a Client, known with or without a live session. */
   updateView(clientId: string): UpdateView {
     return this.#updates.view(clientId);
+  }
+
+  /** The Client's standing policy refusal, known with or without a live session; null when its last outcome was `applied` or none arrived. */
+  policyRefusal(clientId: string): PolicyRefusal | null {
+    return this.#policyRefusals.get(clientId) ?? null;
   }
 
   status(): SessionStatus[] {
@@ -530,11 +542,19 @@ export class ClientConnectionRegistry {
     const message = parseWire(SessionMessage, frame);
     if (!message.ok) return session.socket.terminate();
     if (message.data.kind === "rotated") return this.#onRotated(session, message.data);
+    if (message.data.kind === "policy_result") return this.#onPolicyResult(session, message.data);
     if (message.data.kind === "update_state") return this.#onUpdateState(session, message.data);
     if (message.data.kind === "update_receipt") return this.#onUpdateReceipt(session, message.data.receipt);
     const pending = this.#pending.get(message.data.request_id);
     // A response settles only the request it answers, and only on the session that carried it; anything else is dropped.
     if (pending && pending.session === session) pending.settle(message.data);
+  }
+
+  /** A policy outcome counts only on the Client's current, compatible session (the only kind that is ever sent a policy). */
+  #onPolicyResult(session: Session, result: ClientPolicyResult): void {
+    if (this.#sessions.get(session.clientId) !== session || !session.compatible) return;
+    if (result.state === "applied") return void this.#policyRefusals.delete(session.clientId);
+    this.#policyRefusals.set(session.clientId, { reason: result.reason, ...(result.project_id === undefined ? {} : { project_id: result.project_id }), refused_at: this.#now() });
   }
 
   /** An update state counts only for the attempt asked on this very session; it is logged and audited once per state the Client reports. */

@@ -1021,3 +1021,33 @@ test("auto update: a failed receipt replayed after a Server restart is observed 
   assert.equal(updateFrames(c).length, 0, "no automatic retry of the failed build");
   await t.done();
 });
+
+test("policy refusal: kept per authenticated client across reconnects, cleared only by an applied outcome, granting nothing", async () => {
+  const t = await setup();
+  const refused = { kind: "policy_result", state: "refused", reason: "OUTSIDE_ROOT", project_id: "web" };
+  const stranger = await t.connect({ hello: null });
+  stranger.ws.send(JSON.stringify(refused));
+  await stranger.closed;
+  assert.equal(t.registry.policyRefusal("laptop"), null, "an unauthenticated socket creates no state");
+
+  const first = await t.connect();
+  await until(() => first.frames.length === 3, "admitted");
+  first.ws.send(JSON.stringify(refused));
+  first.ws.close();
+  await until(() => t.registry.status().length === 0, "dropped");
+  const expected = { reason: "OUTSIDE_ROOT", project_id: "web", refused_at: 1000 };
+  assert.deepEqual(t.registry.policyRefusal("laptop"), expected, "survives the disconnect");
+  assert.equal(t.registry.policyRefusal("desktop"), null);
+  assert.equal((await t.registry.route("laptop", "web", { op: "fs_list" })).ok, false);
+
+  const second = await t.connect();
+  await until(() => second.frames.length === 3, "reconnected");
+  assert.deepEqual(t.registry.policyRefusal("laptop"), expected, "a reconnect alone clears nothing");
+  second.ws.send(JSON.stringify({ kind: "policy_result", state: "applied" }));
+  await until(() => t.registry.policyRefusal("laptop") === null, "cleared by applied");
+
+  second.ws.send(JSON.stringify({ ...refused, message: "free text" }));
+  await second.closed;
+  assert.equal(t.registry.policyRefusal("laptop"), null, "a malformed outcome creates no state");
+  await t.done();
+});
