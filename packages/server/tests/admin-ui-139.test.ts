@@ -68,7 +68,7 @@ test("Clients: Machine UUID, friendly name, build and liveness come from the Ser
   const src = ui("clients.ts");
   assert.ok(/c\.machine_uuid/.test(src) && /c\.client_build/.test(src) && /ago\(c\.last_seen\)/.test(src));
   assert.equal(src.match(/cellToggle\("/g)?.length, 2, "Enable/Disable plus the per-Client Auto Update toggle");
-  assert.ok(!/delete|uninstall/i.test(src.replace(/display-name|deleted/g, "")), "Delete/Uninstall stays with Story #110");
+  assert.ok(!/\/(delete|uninstall)\b/i.test(src), "removal is the Server-side Retire; the screen never asks for an uninstall");
 });
 
 test("System: logging level, size, retention and every runtime knob are controls that autosave through the config owner", () => {

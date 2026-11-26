@@ -18,7 +18,7 @@ import type { SourcePolicy } from "./trusted-network.ts";
 
 const MAX_BODY_BYTES = 1_000_000;
 const DECISION_ROUTE = /^\/admin\/api\/proposal\/([^/]+)\/(?:items\/([^/]+)\/)?(approve|reject)$/;
-const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|rotate-key|update)$/;
+const CLIENT_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/(enable|disable|retire|rotate-key|update)$/;
 const DISPLAY_NAME_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/display-name$/;
 const AUTO_UPDATE_ROUTE = /^\/admin\/api\/clients\/([^/]+)\/auto-update$/;
 const ROTATION_HTTP = { rotated: 200, offline: 409, busy: 409, timeout: 504, refused: 422 } as const;
@@ -198,6 +198,12 @@ export function createAdminHandler(deps: AdminDeps): (req: IncomingMessage, res:
       if (action === "update") {
         const result = connections.requestUpdate(id);
         return send(res, UPDATE_HTTP[result], { ok: result === "accepted", result });
+      }
+      if (action === "retire") {
+        return change(res, "client_retire", id, () => {
+          config.retireClient(id);
+          connections.forget(id);
+        });
       }
       const enable = action === "enable";
       return change(res, `client_${action}`, id, () => {

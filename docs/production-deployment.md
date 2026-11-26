@@ -56,7 +56,7 @@ An empty persistent root is a supported first-run condition and places REACH in 
 
 A new Client registers with its Client-owned Ed25519 public key and becomes **Pending**. It has no operational access until a human selects **Enable** in the Admin UI/API.
 
-Disable closes the active session and refuses reconnect/use. Rotate Key remains Client-generated; only the replacement public key reaches the Server.
+Disable closes the active session and refuses reconnect/use. Retire permanently removes the Server record (it does not uninstall the Client). Rotate Key remains Client-generated; only the replacement public key reaches the Server.
 
 No trusted-network auto-admission, manual key copy, TLS/WSS requirement or third reverse-proxy/TLS container is part of V1.
 

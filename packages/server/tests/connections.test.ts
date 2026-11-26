@@ -1095,3 +1095,23 @@ test("policy refusal: kept per authenticated client across reconnects, cleared o
   assert.equal(t.registry.policyRefusal("laptop"), null, "a malformed outcome creates no state");
   await t.done();
 });
+
+test("retire: the live session closes, nothing about the Client is kept, and the same identity returns through the ordinary Pending admission", async () => {
+  const t = await setup(compatSrv);
+  const first = await t.connect({ extra: { update_capable: true } });
+  const second = await t.connect({ id: "desktop", identity: DESKTOP, extra: { update_capable: true } });
+  await until(() => first.frames.length === 3 && second.frames.length === 3, "admitted");
+  optIn(t, ["laptop", "desktop"]);
+  await until(() => updateFrames(first).length === 1, "an automatic attempt is in flight");
+  t.config.retireClient("laptop");
+  t.registry.forget("laptop");
+  await first.closed;
+  assert.deepEqual([t.registry.lastSeen("laptop"), t.registry.lastBuild("laptop"), t.registry.updateView("laptop")], [null, null, { current: null, last: null }]);
+  t.registry.syncAllPolicies();
+  await until(() => updateFrames(second).length === 1, "the retired Client no longer holds back the rollout");
+  const back = await t.connect();
+  await back.closed;
+  assert.equal(code(back.frames), "PENDING_APPROVAL");
+  assert.equal(t.config.admissionOf("laptop")?.status, "pending");
+  await t.done();
+});

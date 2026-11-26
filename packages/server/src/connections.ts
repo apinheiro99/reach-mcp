@@ -207,6 +207,17 @@ export class ClientConnectionRegistry {
     session.socket.terminate();
   }
 
+  /** Closes the live session of a retired Client and drops every runtime fact kept about it, so a later registration of that id starts clean. */
+  forget(clientId: string): void {
+    this.disconnect(clientId);
+    this.#updates.forget(clientId);
+    this.#lastHeard.delete(clientId);
+    this.#lastBuild.delete(clientId);
+    this.#policyRefusals.delete(clientId);
+    // An automatic attempt of a Client that no longer exists would otherwise hold back every other one.
+    if (this.#auto?.clientId === clientId) this.#auto = null;
+  }
+
   /**
    * Asks the connected, enabled Client to generate a new Ed25519 pair locally and waits for the answer: only its public key
    * comes back and is STAGED next to the valid key (one atomic config write). Only then is the Client told to commit; it makes the

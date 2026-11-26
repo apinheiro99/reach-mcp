@@ -89,6 +89,12 @@ export class UpdateLifecycle {
     return same ? "duplicate" : "conflict";
   }
 
+  /** Drops both facts of a Client that was retired. */
+  forget(clientId: string): void {
+    this.#current.delete(clientId);
+    this.#last.delete(clientId);
+  }
+
   /** The session ended: an attempt that never reached the handoff dies with it; one already handed off stays `restarting` until a receipt says otherwise. */
   sessionEnded(clientId: string, holder: object): void {
     const attempt = this.#current.get(clientId);
