@@ -392,3 +392,10 @@ test("Clients table: the unlabeled Access and Auto Update toggles render in thei
   (toggles[1]!.args[2] as (on: boolean) => void)(true);
   assert.deepEqual(calls.filter((c) => c[0] !== "GET"), [["POST", "/admin/api/clients/c1/disable"], ["PUT", "/admin/api/clients/c1/auto-update", { auto_update: true }]]);
 });
+
+test("Clients Status shows the standing policy refusal with project and count, and nothing once it is gone", () => {
+  const refusalText = new Function("ago", `${CLIENTS_JS}; return refusalText;`)(() => "5s ago") as (r: object) => string;
+  assert.equal(refusalText({ reason: "OUTSIDE_ROOT", project_id: "reach", refused_at: 1, occurrences: 4 }), "Policy refused: OUTSIDE_ROOT · project reach · repeated 4× · 5s ago");
+  assert.equal(refusalText({ reason: "INTERNAL", refused_at: 1, occurrences: 1 }), "Policy refused: INTERNAL · 5s ago");
+  assert.match(uiSource["clients.ts"] as string, /c\.policy_refusal \? detail\(refusalText\(c\.policy_refusal\), "bad"\) : "",/);
+});
