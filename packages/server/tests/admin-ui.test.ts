@@ -12,6 +12,7 @@ import { ClientConnectionRegistry, createAdminHandler, ProposalStore, ServerConf
 import { renderAdminPage } from "../src/admin-page.ts";
 import { NAV_ITEMS } from "../src/admin-ui/nav.ts";
 import { REDRAW_JS } from "../src/admin-ui/components.ts";
+import { CLIENTS_JS } from "../src/admin-ui/clients.ts";
 import { watchSources } from "../src/admin-ui/dev-reload.ts";
 
 const SRC = path.join(import.meta.dirname, "..", "src");
@@ -134,15 +135,16 @@ test("page: vanilla and self-contained, autosave states, no Save button, no fram
   assert.ok(!page.includes("EventSource"), "no live reload outside DEV");
 });
 
-test("Clients screen: the approved reference as structure: six counters in order, one search, one status filter, the four columns, one toggle and one Rotate Key per row, a highlighted Pending row, only canonical components", () => {
+test("Clients screen: the approved reference as structure: six counters in order, one search, one status filter, the six columns, two unlabeled toggles and one Rotate Key per row, a highlighted Pending row, only canonical components", () => {
   const clients = uiSource["clients.ts"] as string;
   const labels = [...clients.matchAll(/UI\.stat\(\{ icon: "[a-z-]+", value: n\.\w+, label: "(\w+)"/g)].map((m) => m[1]);
   assert.deepEqual(labels, ["Total", "Enabled", "Pending", "Disabled", "Online", "Incompatible", "Offline"], "the counters of docs/screens/02_clients.png plus Incompatible, in that order");
   assert.equal(clients.match(/UI\.search\(/g)?.length, 1, "one search field");
   assert.equal(clients.match(/UI\.select\(/g)?.length, 1, "one status filter");
-  assert.ok(clients.includes('["Client", "Status", "Public Key (Fingerprint)", "Actions"]'), "Status is the one operational column; the administrative Enabled pill column is gone");
-  assert.equal(clients.match(/UI\.toggle\(/g)?.length, 2, "one Enable/Disable toggle and one per-Client Auto Update toggle");
-  assert.equal(clients.match(/UI\.toggle\(AUTH_LABEL/g)?.length, 1, "one Enable/Disable toggle owner");
+  assert.ok(clients.includes('["Client", "Status", "Public Key (Fingerprint)", "Access", "Auto Update", "Actions"]'), "Status is the one operational column; the administrative Enabled pill column is gone");
+  assert.equal(clients.match(/UI\.toggle\(""/g)?.length, 1, "one table toggle builder, with no visible label");
+  assert.equal(clients.match(/cellToggle\("Client access"/g)?.length, 1, "one Enable/Disable toggle owner");
+  assert.ok(/cells: \[name, conn, fp, access, autoUpdate, UI\.el\("div", \{ className: "cl-actions" \}, update, rotate\)\]/.test(clients), "Access and Auto Update have their own columns; Actions keeps Update Client and Rotate Key");
   assert.equal(clients.match(/UI\.button\("Rotate Key"/g)?.length, 1, "one Rotate Key action");
   assert.ok(/tone: c\.status === "pending" \? "warn"/.test(clients) && /Awaiting approval\./.test(clients), "the Pending row is highlighted and says why");
   assert.ok(/STATE_PILL = \{ online: \["Online", "ok"/.test(clients) && /UI\.pill\(label, tone, icon\)/.test(clients), "status uses the canonical pill");
@@ -237,7 +239,8 @@ test("Clients status: Online, Offline and Incompatible come from the Server's fa
   assert.ok(!/STATUS_PILL|\["Enabled", "ok", "check"\]/.test(clients), "no administrative Status pill competes with health");
   assert.ok(/state === "incompatible" \? detail\("Build " \+ c\.client_build \+ " is not accepted by this Server \(build " \+ serverBuild/.test(clients), "the reason shows the two builds the Server reported");
   assert.ok(!/client_build\s*[!=]==?\s*serverBuild|serverBuild\s*[!=]==?/.test(clients), "the browser never compares builds");
-  assert.ok(/AUTH_LABEL = \{ enabled: "Enabled", pending: "Pending approval", disabled: "Disabled" \}/.test(clients) && /UI\.toggle\(AUTH_LABEL\[c\.status\]/.test(clients), "authorization is the toggle with a text label");
+  assert.ok(/cellToggle\("Client access",[^\n]*c\.status === "enabled", \(on\) => act\(base \+ \(on \? "\/enable" : "\/disable"\)/.test(clients), "authorization is the unlabeled toggle calling enable/disable");
+  assert.ok(/toggle\.querySelector\("input"\)\.setAttribute\("aria-label", name\)/.test(clients), "the unlabeled toggle keeps an accessible name");
   assert.ok(/Awaiting approval\./.test(clients) && /tone: c\.status === "pending" \? "warn"/.test(clients), "Pending stays visible as an onboarding note, apart from health");
   for (const filter of ['["online", "Online"]', '["offline", "Offline"]', '["incompatible", "Incompatible"]']) assert.ok(clients.includes(filter), `filter ${filter}`);
 });
@@ -258,8 +261,8 @@ test("Clients actions: Update Client only when the Server's facts allow it and t
 
 test("Clients Auto Update: one per-Client toggle on the shared primitive, a narrow PUT that reloads the Server's value, no global control and no browser rollout logic", () => {
   const clients = uiSource["clients.ts"] as string;
-  assert.equal(clients.match(/UI\.toggle\("Auto Update"/g)?.length, 1, "one Auto Update toggle per row");
-  assert.ok(/UI\.toggle\("Auto Update", c\.auto_update === true, \(on\) => saveAutoUpdate\(c\.client_id, on\)\)/.test(clients), "checked from the Server's c.auto_update");
+  assert.equal(clients.match(/cellToggle\("Auto Update"/g)?.length, 1, "one Auto Update toggle per row");
+  assert.ok(/cellToggle\("Auto Update",[^\n]*c\.auto_update === true, \(on\) => saveAutoUpdate\(c\.client_id, on\)\)/.test(clients), "checked from the Server's c.auto_update");
   assert.ok(/api\("PUT", "\/admin\/api\/clients\/" \+ encodeURIComponent\(clientId\) \+ "\/auto-update", \{ auto_update: on \}\)/.test(clients), "the narrow PUT with exactly { auto_update }");
   assert.ok(/async function saveAutoUpdate[\s\S]*?await load\(true\);\s*\}/.test(clients), "success and failure both reload the canonical value");
   assert.ok(!/\/admin\/api\/config/.test(clients), "the Clients screen never rewrites the whole configuration");
@@ -358,4 +361,34 @@ test("Clients Update: the press disables the button at once, an action reloads e
   assert.ok(/await load\(true\);\n {2}\}\n\n {2}async function saveDisplayName/.test(clients), "an action forces its reload, so the Server's update state shows at once");
   assert.ok(/async function load\(force\) \{\n {4}if \(ui\.editing \|\| \(!force && tableHost\.contains\(document\.activeElement\)\)\) return;/.test(clients), "only a poll skips a focused table; typing a name is always protected");
   assert.ok(/every\(load\)/.test(clients), "the poll itself is unchanged");
+});
+
+test("Clients table: the unlabeled Access and Auto Update toggles render in their own columns and call the existing routes", async () => {
+  type Node = { tag: string; args: unknown[]; kids: Node[]; attrs: Record<string, string>; title?: string; dataset: object; classList: { add(): void }; append(): void; replaceChildren(): void; setAttribute(k: string, v: string): void; querySelector(): Node; contains(): boolean };
+  const node = (tag: string, args: unknown[] = [], kids: unknown[] = []): Node => {
+    const n: Node = { tag, args, kids: kids as Node[], attrs: {}, dataset: {}, classList: { add() {} }, append() {}, replaceChildren() {}, setAttribute: (k, v) => { n.attrs[k] = v; }, querySelector: () => n.kids[0] as Node, contains: () => false };
+    return n;
+  };
+  let headers: string[] = [];
+  let cells: Node[] = [];
+  const calls: unknown[][] = [];
+  const ui = new Proxy({
+    el: (tag: string, _props: unknown, ...kids: unknown[]) => node(tag, [], kids),
+    toggle: (...args: unknown[]) => node("toggle", args, [node("input")]),
+    button: (...args: unknown[]) => node("button", args),
+    table: (h: string[], rows: { cells: Node[] }[]) => { headers = h; cells = (rows[0] as { cells: Node[] }).cells; return node("table"); },
+  } as Record<string, unknown>, { get: (t, k: string) => t[k] ?? ((...args: unknown[]) => node(k, args)) });
+  const client = { client_id: "c1", status: "enabled", auto_update: false, online: true, fingerprint: "" };
+  const api = async (...args: unknown[]) => { calls.push(args); return { ok: true, json: { server_build: "b", counts: {}, clients: [client] } }; };
+  const render = new Function("UI", "api", "say", "clock", "ago", "every", "document", `${CLIENTS_JS}; return renderClients;`)(
+    ui, api, () => {}, () => "", () => "", () => {}, { activeElement: null }) as (view: unknown) => Promise<void>;
+  await render(node("view"));
+
+  assert.deepEqual(headers.slice(3), ["Access", "Auto Update", "Actions"]);
+  const toggles = [cells[3], cells[4]].map((cell) => cell!.kids[0] as Node);
+  assert.deepEqual(toggles.map((t) => [t.args[0], t.args[1], (t.kids[0] as Node).attrs["aria-label"]]), [["", true, "Client access"], ["", false, "Auto Update"]]);
+  assert.deepEqual(cells[5]!.kids.map((k) => k.args[0]), ["Update Client", "Rotate Key"]);
+  (toggles[0]!.args[2] as (on: boolean) => void)(false);
+  (toggles[1]!.args[2] as (on: boolean) => void)(true);
+  assert.deepEqual(calls.filter((c) => c[0] !== "GET"), [["POST", "/admin/api/clients/c1/disable"], ["PUT", "/admin/api/clients/c1/auto-update", { auto_update: true }]]);
 });
