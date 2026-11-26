@@ -40,7 +40,15 @@ The operator supplies one durable host path, `REACH_PRIVATE_PATH` (root `.env`, 
 
 The deployment controller (`deploy.ts`, `--private-path` on `deploy` and `rollback`) is the owner of the root: an existing directory is reused, a missing one is created owner-only, and anything else stops the command before Docker. The container writes as uid 1000, so the directory must be owned by that uid: a missing root is created directly when the deployer is uid 1000, or by root which then hands only that new directory to uid 1000; any other deployer must create it first. An existing directory with another owner is refused, never chowned or widened with chmod.
 
-Upgrading an installation that still has the previous layout (a state file recording separate config and proposal paths, with logs in a `logs/` directory next to their parent): the first deploy copies the config, proposal and logs into the private root before Docker starts and leaves the old files untouched, so they can be removed later by hand. It refuses, before Docker, when the old paths are not that canonical layout, when an old file is missing, or when the private root already holds different Server data; it never starts an empty root over existing state and never overwrites a populated one. Deploy, update, automatic restore and rollback all use the same root, and the controller refuses to switch a running deployment to a different one. Never silently use ephemeral storage.
+A deployer that is neither uid 1000 nor root (the CI runner) prepares a fresh host once, as root, before its first deploy:
+
+```sh
+sudo node deploy/prod/deploy.ts bootstrap --private-path <dir> --deployer-gid "$(id -g gitlab-runner)"
+```
+
+It creates the missing directory (its parent must exist) owned by uid 1000, with that group and mode 0770, because the deploy itself needs group read and write access. An existing directory is only checked (owner, group, group access) and never changed; Docker is not touched. Ordinary deploy and rollback need no extra privilege.
+
+Upgrading an installation that still has the previous layout (a state file recording separate config and proposal paths, with logs in a `logs/` directory next to their parent): the first deploy copies the config, proposal and logs into the private root before Docker starts and leaves the old files untouched. Removing them is a manual operator step, done only after verifying that the running Server uses `REACH_PRIVATE_PATH`: the deployment state does not keep the old paths, so nothing deletes them automatically. It refuses, before Docker, when the old paths are not that canonical layout, when an old file is missing, or when the private root already holds different Server data; it never starts an empty root over existing state and never overwrites a populated one. Deploy, update, automatic restore and rollback all use the same root, and the controller refuses to switch a running deployment to a different one. Never silently use ephemeral storage.
 
 An empty persistent root is a supported first-run condition and places REACH in setup mode until valid configuration exists.
 

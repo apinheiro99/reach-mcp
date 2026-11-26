@@ -3,12 +3,13 @@
 //   node deploy/prod/deploy.ts deploy   --release <dir> --state <dir> --private-path <dir> --admin-bind <addr> --admin-allow-from <addr-or-cidr,...> [options]
 //   node deploy/prod/deploy.ts rollback --state <dir> --private-path <dir> --admin-bind <addr> --admin-allow-from <list> ... (uses the recorded previous deployment)
 //   node deploy/prod/deploy.ts status   --state <dir>
+//   node deploy/prod/deploy.ts bootstrap --private-path <dir> --deployer-gid <gid>     (once per fresh host, as root)
 // The Server's whole persistent state (configuration, proposal, logs) lives under ONE host directory, --private-path, mounted at /reach-private.
 // State (<state>/state.json) keeps two known-good deployments, `current` and `previous`, each: build_id, repository_commit, image,
 // private_path (a path only, never contents), deployed_at. A candidate becomes `current` only after the Server answers healthy,
 // reports exactly the candidate's build id and commit, and the smoke checks pass; the switch is one atomic rename.
 import { execFileSync } from "node:child_process";
-import { accessSync, chownSync, closeSync, constants, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chownSync, closeSync, constants, copyFileSync, existsSync, fchmodSync, fchownSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -50,6 +51,7 @@ export type Options = {
   adminAllowFrom?: string;
   privatePath?: string;
   containerUid?: number;
+  deployerGid?: number;
 };
 type DeploymentRecord = { build_id: string; repository_commit: string; image: string; private_path: string | null; deployed_at: string | null };
 type State = { schema_version: number; current: DeploymentRecord | null; previous: DeploymentRecord | null; legacy?: { config?: string; proposal?: string } | null };
@@ -249,6 +251,48 @@ function assertSamePrivateRoot(opts: Options, record: DeploymentRecord | null) {
   }
 }
 
+/** Owner and deploying group both need full access: the container writes the state, and every deploy checks (and may migrate into) the root. */
+const PREPARED_ROOT_MODE = 0o770;
+
+/**
+ * One-time privileged preparation of a fresh host's private root. Only a directory created here is changed; an existing one is validated and left as it
+ * is. The parent must already exist, so nothing else is created. Ownership and mode are applied through a descriptor that does not follow symlinks.
+ */
+export function bootstrapPrivateRoot(opts: Pick<Options, "privatePath" | "deployerGid" | "containerUid">, deps: Pick<Deps, "uid"> = defaultDeps()) {
+  const root = opts.privatePath as string;
+  const owner = opts.containerUid ?? CONTAINER_UID;
+  const group = opts.deployerGid as number;
+  if (deps.uid() !== 0) throw new Error(`bootstrap prepares the private root for another user and must run as root: nothing was changed`);
+  let created = true;
+  try {
+    // Owner-only until it has its final owner and group.
+    mkdirSync(root, { mode: 0o700 });
+  } catch (error) {
+    const { code, message } = error as NodeJS.ErrnoException;
+    if (code !== "EEXIST") throw new Error(`the private root ${root} could not be created (${code ?? message}); its parent directory must already exist`, { cause: error });
+    created = false;
+  }
+  let fd: number | undefined;
+  try {
+    fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    if (created) {
+      fchownSync(fd, owner, group);
+      fchmodSync(fd, PREPARED_ROOT_MODE);
+    }
+    const { uid, gid, mode } = fstatSync(fd);
+    if (uid !== owner || gid !== group || (mode & 0o070) !== 0o070) {
+      throw new Error(`found owner ${uid}, group ${gid}, mode ${(mode & 0o777).toString(8)}; expected owner ${owner}, group ${group} with group read, write and search`);
+    }
+    return { command: "bootstrap", private_path: root, result: created ? "created" : "ready", uid, gid, mode: (mode & 0o777).toString(8) };
+  } catch (error) {
+    if (created) rmdirSync(root);
+    const { code, message } = error as NodeJS.ErrnoException;
+    throw new Error(`the private root ${root} is not ready (${code ?? message}): no existing directory was changed`, { cause: error });
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /** Compose is the only runtime definition; the deployment only chooses the image and the external inputs. */
 function apply(deps: Deps, opts: Options, d: DeploymentRecord) {
   deps.run(opts.docker, ["compose", "-p", opts.project, "-f", COMPOSE_FILE, "up", "-d"], {
@@ -365,6 +409,12 @@ export function parseArgs(argv: string[]): Options {
     if (flags[name] === undefined) throw new Error(`missing --${name}`);
     return flags[name];
   };
+  if (command === "bootstrap") {
+    const gid = need("deployer-gid");
+    if (!/^[0-9]+$/.test(gid)) throw new Error("--deployer-gid must be a numeric group id");
+    if (need("private-path") === "") throw new Error("--private-path must not be empty");
+    return { command, privatePath: path.resolve(need("private-path")), deployerGid: Number(gid) } as Options;
+  }
   const opts: Options = {
     state: path.resolve(need("state")), docker: flags.docker ?? "docker", project: flags.project ?? "reach", imageRepo: flags["image-repo"] ?? "reach-server",
     port: Number(flags.port ?? 8787), adminPort: Number(flags["admin-port"] ?? 8788),
@@ -379,13 +429,14 @@ export function parseArgs(argv: string[]): Options {
   if (command === "deploy") return { command, ...opts, release: path.resolve(need("release")), ...tunnel(), ...policy() };
   if (command === "rollback") return { command, ...opts, ...tunnel(), ...policy() };
   if (command === "status") return { command, ...opts };
-  throw new Error("usage: deploy.ts deploy|rollback|status --state <dir> ...");
+  throw new Error("usage: deploy.ts deploy|rollback|status --state <dir> ... | bootstrap --private-path <dir> --deployer-gid <gid>");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     const opts = parseArgs(process.argv.slice(2));
     if (opts.command === "status") process.stdout.write(`${JSON.stringify(status(opts), null, 2)}\n`);
+    else if (opts.command === "bootstrap") process.stdout.write(`${JSON.stringify(bootstrapPrivateRoot(opts), null, 2)}\n`);
     else {
       const { exit, evidence } = await (opts.command === "deploy" ? deploy(opts) : rollback(opts));
       process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
