@@ -91,7 +91,7 @@ Everything else fails the smoke:
 | `401` without the exact `Bearer` challenge, or with a body | not the REACH authentication owner |
 | any other status | not the contract |
 
-No status range counts as success. The deployment controller does not enforce this contract yet: its `smoke-data-plane` check still accepts any status below 500 until Story #156 replaces that predicate.
+No status range counts as success. The deployment controller (`deploy.ts`) enforces this contract in its `smoke-data-plane` check; a candidate that fails it is not promoted and the previous known-good deployment is restored.
 
 ## Acceptance
 
