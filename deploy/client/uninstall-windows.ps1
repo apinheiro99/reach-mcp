@@ -15,8 +15,9 @@ $DefaultInstallDir = 'C:\Program Files\REACH\Client'
 
 function Fail([string]$Message) { throw "uninstall-windows: $Message" }
 
-$Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Fail 'run this in an elevated (Administrator) PowerShell' }
+# Elevation is proved by the capability itself, not by token membership: opening the machine hive for writing succeeds only with
+# administrative rights, changes nothing, and any failure stops here, before the first change.
+try { [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE', $true).Dispose() } catch { Fail 'run this in an elevated (Administrator) PowerShell' }
 $StateDir = $StateDir.TrimEnd('\')
 $Receipt = Join-Path $StateDir 'install-receipt.json'
 
