@@ -57,6 +57,29 @@ test("policy snapshots are atomic: a bad entry, a duplicate or an escaping root 
   assert.deepEqual(d.projects(), []);
 });
 
+test("a refused snapshot names the failing project and a bounded reason only; unclassified errors are INTERNAL", () => {
+  const file = path.join(anchor, "plain-file");
+  writeFileSync(file, "x");
+  const d = new ClientDispatcher({ anchors: [anchor] });
+  const refusal = (dispatcher: ClientDispatcher, ...policies: object[]) => {
+    try {
+      dispatcher.applyPolicy(snapshot(...policies));
+    } catch (err) {
+      const { code, projectId, message } = err as { code: string; projectId: string; message: string };
+      assert.equal(message, "policy snapshot refused");
+      return [code, projectId];
+    }
+    return "applied";
+  };
+  assert.deepEqual(refusal(d, pol("ok", dir("refusal-ok")), pol("escape", outside)), ["OUTSIDE_ROOT", "escape"]);
+  assert.deepEqual(refusal(d, pol("gone", path.join(anchor, "missing"))), ["NOT_FOUND", "gone"]);
+  assert.deepEqual(refusal(d, pol("file", file)), ["NOT_DIRECTORY", "file"]);
+  assert.deepEqual(refusal(d, pol("dup", dir("refusal-dup")), pol("dup", dir("refusal-dup"))), ["BAD_REQUEST", "dup"]);
+  const broken = new ClientDispatcher({ anchors: [anchor], createRuntime: () => { throw new Error("secret " + outside); } });
+  assert.deepEqual(refusal(broken, pol("boom", dir("refusal-boom"))), ["INTERNAL", "boom"]);
+  assert.deepEqual(d.projects(), []);
+});
+
 test("unknown project answers NOT_FOUND with the request id", async () => {
   const d = new ClientDispatcher({ anchors: [anchor] });
   const r = await d.handle(req("nope", { op: "fs_list" }, "abc"));
