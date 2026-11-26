@@ -41,8 +41,9 @@ if ($Root.Length -le 3) {
 
 $Arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($Arch -ne 'AMD64') { Fail "unsupported architecture ${Arch}: only x64 is supported" }
-$Principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Fail 'run this in an elevated (Administrator) PowerShell' }
+# Elevation is proved by the capability itself, not by token membership: opening the machine hive for writing succeeds only with
+# administrative rights, changes nothing, and any failure stops here, before the first change.
+try { [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE', $true).Dispose() } catch { Fail 'run this in an elevated (Administrator) PowerShell' }
 
 # Ownership is decided before the first change: what this installer creates is recorded as owned, anything that already existed is never claimed.
 # A rerun keeps the original flags and the root of the first install; a different REACH_ROOT has to wait for an uninstall.

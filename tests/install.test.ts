@@ -598,3 +598,16 @@ test("installer pin (structural): both installers fetch the key before any chang
   assert.ok(ps.includes("differs from the one pinned in the bootstrap") && /\$ExistingPin -eq ''/.test(ps), "a changed key fails closed and a missing pin is added once");
   assert.doesNotMatch(ps, /Ed25519|ConvertFrom-SecureString|System\.Security\.Cryptography\.(ECDsa|RSA)/, "no signature verifier is invented in PowerShell 5.1: first install is explicit trust on first use");
 });
+
+test("Windows elevation (structural only): install and uninstall share one capability check that runs before the first machine change", () => {
+  const preflight = "try { [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SOFTWARE', $true).Dispose() } catch { Fail 'run this in an elevated (Administrator) PowerShell' }";
+  const mutation = /^\s*[^#\n]*\b(New-Item|Remove-Item|Move-Item|Copy-Item|Set-Acl|icacls|Stop-ScheduledTask|Unregister-ScheduledTask|Stop-Process|Invoke-WebRequest|WriteAllText)\b/m;
+  for (const file of ["install.ps1", "uninstall-windows.ps1"]) {
+    const ps = readFileSync(path.join(import.meta.dirname, "..", "deploy", "client", file), "utf8").replace(/^\s*#.*$/gm, "");
+    const at = ps.indexOf(preflight);
+    assert.ok(at > 0, `${file} carries the one check`);
+    assert.ok(!/IsInRole|WindowsPrincipal/.test(ps), `${file} keeps no second elevation heuristic`);
+    const first = ps.search(mutation);
+    assert.ok(first > at, `${file} checks elevation before it changes anything`);
+  }
+});
