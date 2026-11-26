@@ -23,7 +23,6 @@ const shortFingerprint = (f) => (f ? f.slice(0, 16) + "…" + f.slice(-8) : "—
 // compatible=false is Incompatible (it is connected, never Offline), any other live session is Online. The browser compares no versions.
 const operationalState = (c) => (!c.online ? "offline" : c.compatible === false ? "incompatible" : "online");
 const STATE_PILL = { online: ["Online", "ok", "wifi"], offline: ["Offline", "bad", "wifi-off"], incompatible: ["Incompatible", "warn", "alert"] };
-const AUTH_LABEL = { enabled: "Enabled", pending: "Pending approval", disabled: "Disabled" };
 const UPDATE_TEXT = { requested: "Update requested…", staging: "Updating: downloading and verifying…", restarting: "Restarting: update result pending", applied: "Update applied", failed: "Update failed" };
 // The two update facts the Server keeps apart: the attempt in flight, and the last terminal result (shown as the previous one while a retry runs). The browser renders them and infers nothing.
 const currentUpdateText = (u) => UPDATE_TEXT[u.state];
@@ -77,6 +76,14 @@ async function renderClients(view) {
     ui.timer = setTimeout(() => saveDisplayName(clientId, displayName), autosaveDebounceMs);
   }
 
+  // A table toggle shows no text (the column header names it), so the control itself carries the accessible name.
+  const cellToggle = (name, hint, checked, onChange) => {
+    const toggle = UI.toggle("", checked, onChange);
+    toggle.title = hint;
+    toggle.querySelector("input").setAttribute("aria-label", name);
+    return UI.el("div", { className: "cl-actions" }, toggle);
+  };
+
   const row = (c) => {
     const base = "/admin/api/clients/" + encodeURIComponent(c.client_id);
     const state = operationalState(c);
@@ -94,10 +101,8 @@ async function renderClients(view) {
       c.last_update_result ? detail(lastUpdateText(c.last_update_result, !!c.current_update), c.last_update_result.state === "failed" ? "bad" : "ok") : "");
     const fp = UI.el("div", { className: "cl-fp" }, UI.el("span", { textContent: shortFingerprint(c.fingerprint), title: c.fingerprint || "" }),
       c.fingerprint ? UI.iconButton("copy", "Copy fingerprint", () => navigator.clipboard.writeText(c.fingerprint).then(() => say("saved", "Fingerprint copied · " + clock()))) : "");
-    const toggle = UI.toggle(AUTH_LABEL[c.status], c.status === "enabled", (on) => act(base + (on ? "/enable" : "/disable"), on ? "Enabled" : "Disabled"));
-    toggle.title = c.status === "enabled" ? "Disable this client" : "Enable this client";
-    const autoUpdate = UI.toggle("Auto Update", c.auto_update === true, (on) => saveAutoUpdate(c.client_id, on));
-    autoUpdate.title = c.auto_update === true ? "Automatically update this Client to the Server canonical build" : "Manual updates only";
+    const access = cellToggle("Client access", c.status === "enabled" ? "Disable this client" : "Enable this client", c.status === "enabled", (on) => act(base + (on ? "/enable" : "/disable"), on ? "Enabled" : "Disabled"));
+    const autoUpdate = cellToggle("Auto Update", c.auto_update === true ? "Automatically update this Client to the Server canonical build" : "Manual updates only", c.auto_update === true, (on) => saveAutoUpdate(c.client_id, on));
     const update = UI.button("Update Client", { icon: "refresh", onClick: () => { update.disabled = true; update.title = "An update is already in progress"; act(base + "/update", "Update requested: the Client downloads, verifies and restarts (about 20 s)"); } });
     const blocked = updateBlock(c);
     if (blocked) { update.disabled = true; update.title = blocked; }
@@ -105,7 +110,7 @@ async function renderClients(view) {
     if (state !== "online") { rotate.disabled = true; rotate.title = state === "incompatible" ? "An incompatible client cannot rotate its key: update it first" : "The client must be online to rotate its key"; }
     return {
       tone: c.status === "pending" ? "warn" : undefined,
-      cells: [name, conn, fp, UI.el("div", { className: "cl-actions" }, toggle, autoUpdate, update, rotate)],
+      cells: [name, conn, fp, access, autoUpdate, UI.el("div", { className: "cl-actions" }, update, rotate)],
       note: c.status === "pending" ? UI.el("div", { className: "cl-note" }, UI.icon("info"), UI.el("strong", { textContent: "Awaiting approval." }), "Enable the client to grant access to projects.") : undefined,
     };
   };
@@ -123,7 +128,7 @@ async function renderClients(view) {
       UI.stat({ icon: "wifi-off", value: n.offline, label: "Offline" })]));
     const shown = ui.data.clients.filter((c) => matchesFilter(c, ui.filter) && matchesSearch(c, ui.search));
     UI.redraw(tableHost, UI.card({ variant: "table", children: [shown.length
-      ? UI.table(["Client", "Status", "Public Key (Fingerprint)", "Actions"], shown.map(row))
+      ? UI.table(["Client", "Status", "Public Key (Fingerprint)", "Access", "Auto Update", "Actions"], shown.map(row))
       : UI.el("div", { className: "cl-empty" }, UI.unavailable(ui.data.clients.length ? "No client matches this search" : "No client has registered yet"))] }));
   }
 
